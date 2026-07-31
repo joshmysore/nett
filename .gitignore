@@ -1,0 +1,13 @@
+node_modules/
+dist/
+.vite/
+*.tsbuildinfo
+data/*.db
+data/*.db-shm
+data/*.db-wal
+data/*.sqlite
+data/imports/
+test-results/
+playwright-report/
+.env
+.DS_Store

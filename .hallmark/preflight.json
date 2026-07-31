@@ -1,0 +1,13 @@
+{
+  "date": "2026-07-15",
+  "framework": "React 18 with Vite 6",
+  "fontStackBefore": "Avenir Next with system fallbacks",
+  "fontStackAfter": "Geist Variable with JetBrains Mono Variable",
+  "paletteBefore": "Dark violet gradients with translucent glass surfaces",
+  "paletteAfter": "System-adaptive cool neutrals with a restrained cobalt signal accent",
+  "motion": "Motion installed; restrained state transitions only",
+  "spacingBefore": "Ad-hoc pixel values",
+  "spacingAfter": "Named 4-point scale",
+  "scope": "multi-page app",
+  "designSystem": "design.md"
+}
