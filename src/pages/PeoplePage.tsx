@@ -1,294 +1,661 @@
+import "@/styles/people.css";
 import {
   ArrowLeft,
   ArrowRight,
-  List,
+  FunnelSimple,
+  ListChecks,
   MagnifyingGlass,
-  Network,
   SpinnerGap,
   WarningCircle,
+  X,
 } from "@phosphor-icons/react";
-import { useEffect, useRef, useState } from "react";
-import { useSearchParams } from "react-router-dom";
-import { NetworkField } from "@/components/NetworkField";
+import { differenceInCalendarDays, isValid, parseISO } from "date-fns";
+import {
+  type KeyboardEvent as ReactKeyboardEvent,
+  useCallback,
+  useEffect,
+  useId,
+  useRef,
+  useState,
+} from "react";
+import { Link, useSearchParams } from "react-router-dom";
+import {
+  ActiveFilters,
+  FACET_PARAMS,
+  type FacetParam,
+  type FacetValues,
+  PeopleFilters,
+} from "@/components/PeopleFilters";
+import { FillGapsDialog } from "@/components/FillGapsDialog";
 import {
   asList,
   Avatar,
+  calendarDate,
   EmptyState,
   friendlyDate,
-  IconButton,
-  SignalRing,
-  SourceBadge,
 } from "@/components/Primitives";
-import { api } from "@/lib/api";
+import { api, isAbortError, type PeopleFacets } from "@/lib/api";
+import { MASS_FILL_FIELDS } from "@/lib/person-fields";
 import type { Person } from "@/types";
 
 const PAGE_SIZE = 50;
+/** Long enough that a settled search never flashes a spinner, short enough that
+ *  a genuinely slow request still explains itself. */
+const SLOW_REQUEST_MS = 250;
+/** Measured: /api/people/page answers a search in 11–31 ms against the real
+ *  1,616-person database, so a short debounce keeps the whole keystroke-to-
+ *  results path inside the 150 ms budget while still coalescing fast typing. */
+const SEARCH_DEBOUNCE_MS = 70;
+
 const filters = ["all", "strong", "due", "cold"] as const;
 type Filter = (typeof filters)[number];
-type View = "list" | "map";
 
-const filterLabels: Record<Filter, string> = {
-  all: "All people",
-  strong: "Strong ties",
-  due: "Follow-up due",
-  cold: "Going cold",
+/** Narrow screens get the short label. Only one of the two is in the document,
+ *  so the accessible name always matches what is on screen. */
+const filterTabs: { value: Filter; short: string; long: string }[] = [
+  { value: "all", short: "All", long: "All people" },
+  { value: "strong", short: "Strong", long: "Strong ties" },
+  { value: "due", short: "Due", long: "Follow-up due" },
+  { value: "cold", short: "Cold", long: "Going cold" },
+];
+
+const emptyFilterCopy: Record<Filter, string> = {
+  all: "Nothing matches this combination. Remove a filter to widen the search.",
+  strong:
+    "No relationship strength has been recorded yet, so nobody qualifies as a strong tie.",
+  due: "Nobody has a follow-up date in the past. People appear here once a follow-up comes due.",
+  cold: "Nobody in this view has gone quiet.",
 };
 
 function isFilter(value: string | null): value is Filter {
   return filters.includes(value as Filter);
 }
 
-export function PeoplePage({
-  onOpen,
-}: {
-  onOpen: (id: string) => void;
-}) {
+/** Compact, tabular age of the last contact. The column header and the
+ *  screen-reader text carry the meaning; this is the scannable form. */
+function compactAge(value: string) {
+  const date = parseISO(value);
+  if (!isValid(date)) return "";
+  const days = differenceInCalendarDays(new Date(), date);
+  if (days <= 0) return "today";
+  if (days < 7) return `${days}d`;
+  if (days < 31) return `${Math.round(days / 7)}w`;
+  if (days < 365) return `${Math.round(days / 30)}mo`;
+  return `${Math.round(days / 365)}y`;
+}
+
+/** The most identifying facts Nett actually holds for this person, best first.
+ *  Absent fields are omitted rather than announced. */
+function personDetail(person: Person) {
+  const parts: string[] = [];
+  const push = (value?: string | null) => {
+    const text = (value || "").trim();
+    if (text && !parts.includes(text)) parts.push(text);
+  };
+  const relationship = (person.relationship || "").trim();
+  push(relationship && relationship.charAt(0).toUpperCase() + relationship.slice(1));
+  const role = [person.job_title, person.company].filter(Boolean).join(" at ");
+  push(role || person.headline);
+  push(asList(person.institutions)[0]);
+  push(person.location || asList(person.hometown)[0]);
+  push(person.industry);
+  if (parts.length < 2) push(asList(person.languages).join(", "));
+  return parts.slice(0, 3).join(" · ");
+}
+
+function personReach(person: Person) {
+  const methods = asList(person.methods).filter((method) => method.value);
+  const email = methods.find((method) => method.kind === "email");
+  return (email || methods[0])?.value || "";
+}
+
+function Highlight({ text, term }: { text: string; term: string }) {
+  if (!text) return null;
+  if (term.length < 2) return <>{text}</>;
+  const index = text.toLowerCase().indexOf(term.toLowerCase());
+  if (index < 0) return <>{text}</>;
+  return (
+    <>
+      {text.slice(0, index)}
+      <mark>{text.slice(index, index + term.length)}</mark>
+      {text.slice(index + term.length)}
+    </>
+  );
+}
+
+export function PeoplePage({ onOpen }: { onOpen: (id: string) => void }) {
   const [params, setParams] = useSearchParams();
   const query = params.get("q") || "";
   const requestedFilter = params.get("filter");
   const filter: Filter = isFilter(requestedFilter) ? requestedFilter : "all";
-  const view: View = params.get("view") === "map" ? "map" : "list";
   const page = Math.max(1, Number(params.get("page")) || 1);
-  const [serverResults, setServerResults] = useState<Person[]>([]);
-  const [total, setTotal] = useState(0);
-  const [searching, setSearching] = useState(false);
-  const [searchError, setSearchError] = useState<string | null>(null);
-  const requestId = useRef(0);
-
-  const updateParams = (updates: Record<string, string | null>) => {
-    const next = new URLSearchParams(params);
-    Object.entries(updates).forEach(([key, value]) => {
-      if (!value || value === "all" || (key === "page" && value === "1")) {
-        next.delete(key);
-      } else {
-        next.set(key, value);
-      }
-    });
-    setParams(next, { replace: true });
+  const country = params.get("country") || "";
+  const industry = params.get("industry") || "";
+  const language = params.get("language") || "";
+  const relationship = params.get("relationship") || "";
+  const tag = params.get("tag") || "";
+  const recency = params.get("recency") || "";
+  const missing = params.get("missing") || "";
+  const facetValues: FacetValues = {
+    recency,
+    relationship,
+    country,
+    industry,
+    language,
+    tag,
+    missing,
   };
+  const activeFacetCount = FACET_PARAMS.filter((param) => facetValues[param]).length;
+
+  const [draft, setDraft] = useState(query);
+  const draftRef = useRef(query);
+  const [rows, setRows] = useState<Person[]>([]);
+  const [total, setTotal] = useState(0);
+  const [loaded, setLoaded] = useState(false);
+  const [pending, setPending] = useState(true);
+  const [slow, setSlow] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [facets, setFacets] = useState<PeopleFacets | null>(null);
+  const [refineOpen, setRefineOpen] = useState(activeFacetCount > 0);
+  const [fillGapsOpen, setFillGapsOpen] = useState(false);
+  const [activeIndex, setActiveIndex] = useState(0);
+  const searchRef = useRef<HTMLInputElement>(null);
+  const rowRefs = useRef<Array<HTMLButtonElement | null>>([]);
+  const facetsId = useId();
+  const hintId = useId();
+  const searchId = useId();
+
+  const commit = useCallback(
+    (updates: Record<string, string | null>) => {
+      setParams(
+        (previous) => {
+          const next = new URLSearchParams(previous);
+          for (const [key, value] of Object.entries(updates)) {
+            if (
+              !value ||
+              (key === "filter" && value === "all") ||
+              (key === "page" && value === "1")
+            ) {
+              next.delete(key);
+            } else {
+              next.set(key, value);
+            }
+          }
+          return next;
+        },
+        { replace: true },
+      );
+    },
+    [setParams],
+  );
+
+  // The relationship map answered no question, so the view parameter is gone.
+  // Old links still resolve: the parameter is dropped and the list renders.
+  useEffect(() => {
+    if (params.has("view")) commit({ view: null });
+  }, [params, commit]);
+
+  // The input is never driven by the URL, so typing can never wait on a route
+  // update. The URL catches up once typing pauses.
+  useEffect(() => {
+    if (query === draftRef.current) return;
+    draftRef.current = query;
+    setDraft(query);
+  }, [query]);
 
   useEffect(() => {
-    const currentRequest = ++requestId.current;
-    setSearching(true);
-    setSearchError(null);
-    const timeout = window.setTimeout(() => {
-      api
-        .peoplePage({ query: query.trim(), filter, page, limit: PAGE_SIZE })
-        .then((result) => {
-          if (currentRequest === requestId.current) {
-            setServerResults(asList(result.people));
-            setTotal(result.total);
-          }
-        })
-        .catch((error) => {
-          if (currentRequest === requestId.current) {
-            setServerResults([]);
-            setTotal(0);
-            setSearchError(
-              error instanceof Error ? error.message : "Search is unavailable",
-            );
-          }
-        })
-        .finally(() => {
-          if (currentRequest === requestId.current) setSearching(false);
-        });
-    }, query.trim() ? 180 : 0);
+    if (draft === query) return;
+    const timeout = window.setTimeout(
+      () => commit({ q: draft, page: null }),
+      SEARCH_DEBOUNCE_MS,
+    );
     return () => window.clearTimeout(timeout);
-  }, [query, filter, page]);
+  }, [draft, query, commit]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    setPending(true);
+    api
+      .peoplePage(
+        {
+          query: query.trim(),
+          filter,
+          country,
+          industry,
+          language,
+          relationship,
+          tag,
+          recency,
+          missing,
+          page,
+          limit: PAGE_SIZE,
+        },
+        controller.signal,
+      )
+      .then((result) => {
+        setRows(asList(result.people));
+        setTotal(result.total);
+        setError(null);
+        setLoaded(true);
+        setPending(false);
+      })
+      .catch((reason) => {
+        if (isAbortError(reason)) return;
+        setRows([]);
+        setTotal(0);
+        setLoaded(true);
+        setPending(false);
+        setError(reason instanceof Error ? reason.message : "Search is unavailable");
+      });
+    return () => controller.abort();
+  }, [
+    query,
+    filter,
+    country,
+    industry,
+    language,
+    relationship,
+    tag,
+    recency,
+    missing,
+    page,
+  ]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    api
+      .peopleFacets(
+        { query: query.trim(), filter, country, industry, language, relationship, tag, recency, missing },
+        controller.signal,
+      )
+      .then(setFacets)
+      .catch((reason) => {
+        if (!isAbortError(reason)) setFacets(null);
+      });
+    return () => controller.abort();
+  }, [query, filter, country, industry, language, relationship, tag, recency, missing]);
+
+  useEffect(() => {
+    if (!pending) {
+      setSlow(false);
+      return;
+    }
+    const timeout = window.setTimeout(() => setSlow(true), SLOW_REQUEST_MS);
+    return () => window.clearTimeout(timeout);
+  }, [pending]);
+
+  useEffect(() => {
+    setActiveIndex(0);
+  }, [rows]);
+
+  useEffect(() => {
+    const listener = (event: KeyboardEvent) => {
+      if (event.key !== "/" || event.metaKey || event.ctrlKey || event.altKey) return;
+      const target = event.target;
+      if (
+        target instanceof HTMLElement &&
+        target.closest(
+          "input, textarea, select, [contenteditable='true'], [role='dialog']",
+        )
+      ) {
+        return;
+      }
+      event.preventDefault();
+      searchRef.current?.focus();
+      searchRef.current?.select();
+    };
+    window.addEventListener("keydown", listener);
+    return () => window.removeEventListener("keydown", listener);
+  }, []);
 
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const safePage = Math.min(page, totalPages);
-  const visible = serverResults;
 
   useEffect(() => {
-    if (page > totalPages) updateParams({ page: String(totalPages) });
-    // URL correction should only run when the page count changes.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [page, totalPages]);
+    if (loaded && page > totalPages) commit({ page: String(totalPages) });
+  }, [loaded, page, totalPages, commit]);
+
+  const focusRow = (index: number) => {
+    if (!rows.length) return;
+    const clamped = Math.max(0, Math.min(index, rows.length - 1));
+    setActiveIndex(clamped);
+    const row = rowRefs.current[clamped];
+    row?.focus();
+    row?.scrollIntoView({ block: "nearest" });
+  };
+
+  const onRowKeyDown = (event: ReactKeyboardEvent<HTMLButtonElement>, index: number) => {
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      focusRow(index + 1);
+    } else if (event.key === "ArrowUp") {
+      event.preventDefault();
+      if (index === 0) searchRef.current?.focus();
+      else focusRow(index - 1);
+    } else if (event.key === "Home") {
+      event.preventDefault();
+      focusRow(0);
+    } else if (event.key === "End") {
+      event.preventDefault();
+      focusRow(rows.length - 1);
+    }
+  };
+
+  const onSearchKeyDown = (event: ReactKeyboardEvent<HTMLInputElement>) => {
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      focusRow(0);
+    } else if (event.key === "ArrowUp") {
+      event.preventDefault();
+      focusRow(rows.length - 1);
+    } else if (event.key === "Enter") {
+      event.preventDefault();
+      commit({ q: draft, page: null });
+    }
+  };
+
+  const toggleFacet = (param: FacetParam, value: string) => {
+    commit({ [param]: facetValues[param] === value ? null : value, page: null });
+  };
+
+  const clearSearch = () => {
+    setDraft("");
+    draftRef.current = "";
+    commit({ q: null, page: null });
+    searchRef.current?.focus();
+  };
+
+  const clearAll = () => {
+    setDraft("");
+    draftRef.current = "";
+    setParams(new URLSearchParams(), { replace: true });
+  };
+
+  const term = query.trim();
+  const narrowed = Boolean(term) || filter !== "all" || activeFacetCount > 0;
+  const rangeStart = total ? (safePage - 1) * PAGE_SIZE + 1 : 0;
+  const rangeEnd = Math.min(safePage * PAGE_SIZE, total);
+  const status = !loaded
+    ? "Loading people"
+    : `${total.toLocaleString()} ${total === 1 ? "person" : "people"}${
+        narrowed ? " match this view" : ""
+      }${total > PAGE_SIZE ? ` · showing ${rangeStart}–${rangeEnd}` : ""}`;
 
   return (
     <div className="people-page">
       <section className="page-heading">
         <div>
-          <p className="section-kicker">People</p>
-          <h1>Find anyone without scanning.</h1>
-          <p>
-            Search runs against server-indexed people, memories, locations, and source
-            evidence.
-          </p>
+          <h1>People</h1>
+          <p>Search names, companies, memories, and messages indexed on this Mac.</p>
         </div>
-        <div className="heading-count">
-          <strong>{total}</strong>
-          <span>people</span>
-        </div>
+        <button
+          type="button"
+          className="secondary-button"
+          onClick={() => setFillGapsOpen(true)}
+        >
+          <ListChecks size={17} aria-hidden="true" />
+          Fill gaps
+        </button>
       </section>
 
+      {fillGapsOpen && (
+        <FillGapsDialog
+          initialField={
+            MASS_FILL_FIELDS.some((entry) => entry.key === missing) ? missing : undefined
+          }
+          onClose={() => setFillGapsOpen(false)}
+          onApplied={() => {
+            // Refresh the current page so accepted values leave the gap view.
+            setPending(true);
+            void (async () => {
+              try {
+                const pageResult = await api.peoplePage({
+                  query: query.trim(),
+                  filter,
+                  country,
+                  industry,
+                  language,
+                  relationship,
+                  tag,
+                  recency,
+                  missing,
+                  page: safePage,
+                  limit: PAGE_SIZE,
+                });
+                setRows(pageResult.people);
+                setTotal(pageResult.total);
+              } catch {
+                /* keep existing rows */
+              } finally {
+                setPending(false);
+              }
+            })();
+          }}
+        />
+      )}
+
       <div className="people-toolbar">
-        <label className="filter-search">
-          {searching ? (
-            <SpinnerGap size={17} className="spin" />
+        <div className="filter-search">
+          {slow ? (
+            <SpinnerGap size={17} className="spin" aria-hidden="true" />
           ) : (
-            <MagnifyingGlass size={17} />
+            <MagnifyingGlass size={17} aria-hidden="true" />
           )}
-          <span className="sr-only">Search people</span>
+          <label className="sr-only" htmlFor={searchId}>
+            Search people
+          </label>
           <input
-            value={query}
-            onChange={(event) =>
-              updateParams({ q: event.target.value, page: null })
-            }
-            placeholder="Name, company, memory, mutual..."
+            id={searchId}
+            ref={searchRef}
+            value={draft}
+            onChange={(event) => {
+              draftRef.current = event.target.value;
+              setDraft(event.target.value);
+            }}
+            onKeyDown={onSearchKeyDown}
+            placeholder="Name, company, memory, place..."
             type="search"
             autoComplete="off"
+            aria-describedby={hintId}
           />
-        </label>
-        <div className="filter-tabs" role="group" aria-label="Filter people">
-          {filters.map((item) => (
+          {draft ? (
             <button
-              className={filter === item ? "is-active" : ""}
-              onClick={() => updateParams({ filter: item, page: null })}
-              key={item}
-              aria-pressed={filter === item}
+              type="button"
+              className="icon-button search-clear"
+              onClick={clearSearch}
+              aria-label="Clear search"
             >
-              {filterLabels[item]}
+              <X size={15} aria-hidden="true" />
+            </button>
+          ) : (
+            <kbd aria-hidden="true">/</kbd>
+          )}
+          <span className="sr-only" id={hintId}>
+            Press slash to return here. Press the down arrow to step into the
+            results, and Enter to open a person.
+          </span>
+        </div>
+        <div className="filter-tabs" role="group" aria-label="Filter people">
+          {filterTabs.map((tab) => (
+            <button
+              key={tab.value}
+              type="button"
+              className={filter === tab.value ? "is-active" : ""}
+              onClick={() => commit({ filter: tab.value, page: null })}
+              aria-pressed={filter === tab.value}
+            >
+              <span className="tab-short">{tab.short}</span>
+              <span className="tab-long">{tab.long}</span>
             </button>
           ))}
         </div>
-        <div className="view-switch">
-          <IconButton
-            label="List view"
-            active={view === "list"}
-            onClick={() => updateParams({ view: null })}
-          >
-            <List size={17} />
-          </IconButton>
-          <IconButton
-            label="Relationship map"
-            active={view === "map"}
-            onClick={() => updateParams({ view: "map" })}
-          >
-            <Network size={17} />
-          </IconButton>
-        </div>
+        <button
+          type="button"
+          className="quiet-action people-refine"
+          onClick={() => setRefineOpen((open) => !open)}
+          aria-expanded={refineOpen}
+          aria-controls={facetsId}
+        >
+          <FunnelSimple size={16} aria-hidden="true" />
+          Refine
+          {activeFacetCount > 0 && (
+            <span className="refine-count">{activeFacetCount}</span>
+          )}
+        </button>
       </div>
 
-      <div className="people-result-status" aria-live="polite">
-        {searching
-          ? "Searching all indexed records..."
-          : `${total} ${total === 1 ? "person" : "people"} in this view`}
-      </div>
+      <PeopleFilters
+        id={facetsId}
+        hidden={!refineOpen}
+        facets={facets}
+        values={facetValues}
+        onToggle={toggleFacet}
+      />
 
-      {searchError && (
+      <ActiveFilters values={facetValues} onToggle={toggleFacet} onClear={clearAll} />
+
+      <p className="people-result-status" aria-live="polite" aria-busy={pending}>
+        {status}
+      </p>
+
+      {error && (
         <p className="inline-error" role="alert">
-          <WarningCircle size={15} />
-          {searchError}
+          <WarningCircle size={15} aria-hidden="true" />
+          {error}
         </p>
       )}
 
-      {view === "map" ? (
-        <div className="people-map-shell glass-panel">
-          <NetworkField people={visible.slice(0, 12)} onOpen={onOpen} />
-          <div>
-            <h2>Current selection</h2>
-            <p>
-              The map shows up to 12 people from the active server search and filter.
-              Open a node for source details.
-            </p>
-          </div>
+      {!loaded ? (
+        <div className="people-index">
+          <ul className="people-list" aria-hidden="true">
+            {Array.from({ length: 12 }).map((_, index) => (
+              <li key={index}>
+                <span className="person-row is-placeholder">
+                  <span />
+                </span>
+              </li>
+            ))}
+          </ul>
         </div>
-      ) : visible.length ? (
+      ) : rows.length ? (
         <>
-          <div className="people-table">
+          <div className="people-index">
             <div className="people-table-head" aria-hidden="true">
               <span>Person</span>
-              <span>Context</span>
-              <span>Relationship</span>
+              <span>Email or phone</span>
               <span>Last contact</span>
-              <span>Sources</span>
               <span />
             </div>
-            {visible.map((person) => (
-              <button
-                className="person-row"
-                key={person.id}
-                onClick={() => onOpen(person.id)}
-              >
-                <span className="person-cell">
-                  <Avatar person={person} size="sm" />
-                  <span>
-                    <strong>{person.name}</strong>
-                    <small>{person.company || "Company not recorded"}</small>
-                  </span>
-                </span>
-                <span className="context-cell">
-                  <strong>{person.location || "Location not recorded"}</strong>
-                  <small>{person.industry || "Industry not recorded"}</small>
-                </span>
-                <span className="relationship-cell">
-                  <SignalRing value={person.relationship_strength || 0} />
-                  <small>{person.relationship || "Unclassified"}</small>
-                </span>
-                <span className="date-cell">
-                  <strong>{friendlyDate(person.last_contact)}</strong>
-                  <small>
-                    {person.follow_up_date
-                      ? `Follow up ${person.follow_up_date}`
-                      : "No follow-up set"}
-                  </small>
-                </span>
-                <span className="source-cell">
-                  {asList(person.sources)
-                    .slice(0, 2)
-                    .map((source) => (
-                      <SourceBadge source={source} key={source} />
-                    ))}
-                </span>
-                <ArrowRight size={16} className="row-arrow" />
-              </button>
-            ))}
+            <ul className="people-list">
+              {rows.map((person, index) => {
+                const detail = personDetail(person);
+                const reach = personReach(person);
+                const age = person.last_contact ? compactAge(person.last_contact) : "";
+                return (
+                  <li key={person.id}>
+                    <button
+                      type="button"
+                      className="person-row"
+                      ref={(element) => {
+                        rowRefs.current[index] = element;
+                      }}
+                      tabIndex={index === activeIndex ? 0 : -1}
+                      onFocus={() => setActiveIndex(index)}
+                      onKeyDown={(event) => onRowKeyDown(event, index)}
+                      onClick={() => onOpen(person.id)}
+                    >
+                      <span className="person-cell">
+                        <Avatar person={person} size="sm" />
+                        <span>
+                          <strong>
+                            <Highlight text={person.name} term={term} />
+                          </strong>
+                          {detail && (
+                            <small>
+                              <Highlight text={detail} term={term} />
+                            </small>
+                          )}
+                        </span>
+                      </span>
+                      <span className="person-reach">
+                        <Highlight text={reach} term={term} />
+                      </span>
+                      <span className="person-last">
+                        {age && person.last_contact && (
+                          <time
+                            dateTime={person.last_contact}
+                            title={calendarDate(person.last_contact)}
+                          >
+                            <span aria-hidden="true">{age}</span>
+                            <span className="sr-only">
+                              Last contact {friendlyDate(person.last_contact)}
+                            </span>
+                          </time>
+                        )}
+                      </span>
+                      <ArrowRight size={16} className="row-arrow" aria-hidden="true" />
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
           </div>
-          <nav className="people-pagination" aria-label="People pages">
-            <button
-              className="secondary-button"
-              disabled={safePage === 1}
-              onClick={() => updateParams({ page: String(safePage - 1) })}
-            >
-              <ArrowLeft size={15} />
-              Previous
-            </button>
-            <span>
-              {safePage} of {totalPages}
-              <small>
-                Showing {(safePage - 1) * PAGE_SIZE + 1}-
-                {Math.min(safePage * PAGE_SIZE, total)}
-              </small>
-            </span>
-            <button
-              className="secondary-button"
-              disabled={safePage === totalPages}
-              onClick={() => updateParams({ page: String(safePage + 1) })}
-            >
-              Next
-              <ArrowRight size={15} />
-            </button>
-          </nav>
+          {totalPages > 1 && (
+            <nav className="people-pagination" aria-label="People pages">
+              <button
+                type="button"
+                className="secondary-button"
+                disabled={safePage === 1}
+                onClick={() => commit({ page: String(safePage - 1) })}
+              >
+                <ArrowLeft size={15} aria-hidden="true" />
+                Previous
+              </button>
+              <span>
+                {safePage} of {totalPages}
+                <small>
+                  Showing {rangeStart}–{rangeEnd} of {total.toLocaleString()}
+                </small>
+              </span>
+              <button
+                type="button"
+                className="secondary-button"
+                disabled={safePage === totalPages}
+                onClick={() => commit({ page: String(safePage + 1) })}
+              >
+                Next
+                <ArrowRight size={15} aria-hidden="true" />
+              </button>
+            </nav>
+          )}
         </>
+      ) : narrowed ? (
+        <EmptyState
+          title="Nobody matches this view"
+          message={term ? `Nothing matches “${term}” here.` : emptyFilterCopy[filter]}
+          action={
+            <div className="people-empty-actions">
+              {term && (
+                <button type="button" className="secondary-button" onClick={clearSearch}>
+                  Clear the search
+                </button>
+              )}
+              <button type="button" className="primary-button" onClick={clearAll}>
+                Clear every filter
+              </button>
+            </div>
+          }
+        />
       ) : (
         <EmptyState
-          title={searching ? "Searching the network" : "No people match this view"}
-          message={
-            searching
-              ? "Nett is checking indexed people and relationship context."
-              : "Clear the search or choose a different relationship filter."
-          }
+          title="No people yet"
+          message="Nett reads Apple Contacts and Messages locally, or imports a spreadsheet you own. Nothing leaves this Mac."
           action={
-            !searching ? (
-              <button
-                className="secondary-button"
-                onClick={() => setParams(new URLSearchParams(), { replace: true })}
-              >
-                Clear filters
-              </button>
-            ) : undefined
+            <div className="people-empty-actions">
+              <Link className="secondary-button" to="/settings/connectors">
+                Connect a source
+              </Link>
+            </div>
           }
         />
       )}

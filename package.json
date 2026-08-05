@@ -13,11 +13,12 @@
     "check": "tsc -b --pretty false",
     "test": "npm run test:smoke && npm run test:unit",
     "test:smoke": "tsx server/smoke.ts",
-    "test:unit": "node --import tsx --test server/platform/__tests__/platform.test.ts server/intelligence/__tests__/ollama.test.ts",
+    "test:unit": "node --import tsx --test \"server/**/__tests__/*.test.ts\" \"src/**/__tests__/*.test.ts\"",
     "test:e2e": "playwright test",
     "test:all": "npm run check && npm test && npm run test:e2e && npm run build"
   },
   "dependencies": {
+    "@countrystatecity/countries": "^1.0.7",
     "@fontsource-variable/geist": "^5.2.9",
     "@fontsource-variable/jetbrains-mono": "^5.2.8",
     "@modelcontextprotocol/sdk": "^1.29.0",

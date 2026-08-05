@@ -48,7 +48,7 @@ try {
   assert.equal(db.pragma("user_version", { simple: true }), latestSchemaVersion);
   assert.equal(getPeople().length, 0, "a new production database must not auto-seed demo people");
   assert.ok(connectorStates().length >= 10, "connector registry should include implemented and future adapters");
-  assert.ok(connectors.has("apple-contacts") && connectors.has("messages"));
+  assert.ok(connectors.has("apple-contacts") && connectors.has("messages") && connectors.has("whatsapp"));
 
   const contactResult = upsertSourceContacts("apple-contacts", [{
     sourceId: "apple-alice",
@@ -59,6 +59,18 @@ try {
   }]);
   assert.equal(contactResult.created, 1);
   const alice = getPeople()[0] as any;
+  const aliceCreated = getPerson(alice.id) as any;
+  assert.equal(aliceCreated.gender, "female", "gender should auto-fill from the given-name table at creation");
+  assert.ok(
+    aliceCreated.provenance.some((row: any) => row.field_name === "gender" && row.connector_id === "name-inference"),
+    "auto-filled gender must record name-inference provenance"
+  );
+  updatePerson(alice.id, { gender: "M" });
+  assert.equal((getPerson(alice.id) as any).gender, "male", "gender shorthand must normalise to male");
+  updatePerson(alice.id, { gender: "unrecognised text" });
+  assert.equal((getPerson(alice.id) as any).gender, "", "unrecognised gender text must clear rather than store free text");
+  updatePerson(alice.id, { gender: "f" });
+  assert.equal((getPerson(alice.id) as any).gender, "female", "gender shorthand must normalise to female");
   updatePerson(alice.id, { notes: "Editable Nett note" });
   upsertSourceContacts("apple-contacts", [{
     sourceId: "apple-alice",
@@ -83,7 +95,7 @@ try {
   assert.equal(publicPreview.suggestions.find((item) => item.field === "location")?.value, "Greater San Francisco Bay Area");
   assert.equal(publicPreview.suggestions.find((item) => item.field === "job_title")?.value, "Research Lead");
   assert.throws(() => normalizeLinkedInProfileUrl("https://www.linkedin.com/company/example"), /public LinkedIn profile URL/);
-  applyLinkedInPublicProfile(alice.id, {
+  await applyLinkedInPublicProfile(alice.id, {
     profileUrl: publicPreview.profileUrl,
     publicText: "Alice Test\nResearch Lead at Example Labs\nGreater San Francisco Bay Area",
     acceptedFields: ["headline", "job_title", "company", "location", "linkedin_url"]

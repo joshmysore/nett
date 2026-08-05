@@ -102,10 +102,21 @@ function progress(connectorId: string, accountId: string) {
   };
 }
 
+function bundledGmailClientId(): string {
+  return String(process.env.NETT_GMAIL_CLIENT_ID || process.env.GOOGLE_CLIENT_ID || "").trim();
+}
+
+export function gmailDefaults() {
+  return {
+    bundledClientId: bundledGmailClientId() || null,
+    redirectUri: GMAIL_REDIRECT,
+  };
+}
+
 function gmailFor(accountId: string): GmailConnector {
   const row = account("gmail", accountId);
   const settings = json<Record<string, unknown>>(row?.settings_json, {});
-  const clientId = String(settings.clientId || process.env.GOOGLE_CLIENT_ID || "");
+  const clientId = String(settings.clientId || bundledGmailClientId() || "");
   if (!clientId) {
     throw new ConnectorError({
       code: "INVALID_CONFIGURATION",
@@ -160,12 +171,16 @@ export function connectorPlatformStatus() {
 export async function configureGmail(input: {
   accountId?: string;
   accountLabel?: string;
-  clientId: string;
+  clientId?: string;
   clientSecret?: string;
   maxInitialMessages?: number;
+  useBundledClient?: boolean;
 }) {
   const accountId = input.accountId?.trim() || "primary";
-  if (!input.clientId?.trim()) throw new Error("Google OAuth client ID is required");
+  const clientId = (
+    input.useBundledClient ? bundledGmailClientId() : ""
+  ) || input.clientId?.trim() || bundledGmailClientId();
+  if (!clientId) throw new Error("Google OAuth client ID is required");
   if (input.clientSecret?.trim()) {
     await vault.setString(`gmail:${accountId}:client-secret`, input.clientSecret.trim());
   }
@@ -174,12 +189,12 @@ export async function configureGmail(input: {
     credentialRef: `keychain:gmail:${accountId}`,
     authState: "missing",
     settings: {
-      clientId: input.clientId.trim(),
+      clientId,
       maxInitialMessages: Math.min(Math.max(Number(input.maxInitialMessages || 2_000), 50), 10_000)
     }
   });
   setConnectorState("gmail", { permission: "unknown", status: "idle" });
-  return { accountId, redirectUri: GMAIL_REDIRECT };
+  return { accountId, redirectUri: GMAIL_REDIRECT, clientId };
 }
 
 export async function beginGmailAuthorization(accountId = "primary") {

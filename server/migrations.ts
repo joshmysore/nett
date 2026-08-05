@@ -3,7 +3,7 @@ import { mkdirSync } from "node:fs";
 import path from "node:path";
 import { parsePhoneNumberFromString, type CountryCode } from "libphonenumber-js";
 
-export const latestSchemaVersion = 6;
+export const latestSchemaVersion = 8;
 
 export function normalizePhoneValue(value: string, defaultCountry = process.env.NETT_PHONE_REGION || "US"): string {
   const raw = value.trim();
@@ -452,6 +452,31 @@ const migrations: Migration[] = [
           ON memories(person_id);
         CREATE INDEX IF NOT EXISTS idx_contact_tags_person
           ON contact_tags(person_id, tag_id);
+      `);
+    }
+  },
+  {
+    version: 7,
+    name: "foods-and-online-personality",
+    run(database) {
+      database.exec(`
+        ALTER TABLE nett_metadata ADD COLUMN foods TEXT;
+        ALTER TABLE nett_metadata ADD COLUMN online_personality TEXT;
+      `);
+    }
+  },
+  {
+    version: 8,
+    name: "standardize-gender-values",
+    run(database) {
+      // Gender is a two-option field: male or female. Normalise shorthand that
+      // accumulated before the constraint existed; anything unrecognised is
+      // left for the owner to resolve by hand.
+      database.exec(`
+        UPDATE nett_metadata SET gender='male'
+          WHERE LOWER(TRIM(COALESCE(gender,''))) IN ('m','male','man','boy');
+        UPDATE nett_metadata SET gender='female'
+          WHERE LOWER(TRIM(COALESCE(gender,''))) IN ('f','female','woman','girl');
       `);
     }
   }

@@ -51,6 +51,13 @@ const liveConnectors = [
       "Live personal-message sync through a local MTProto session stored in macOS Keychain.",
     icon: PaperPlaneTilt,
   },
+  {
+    id: "whatsapp",
+    label: "WhatsApp",
+    description:
+      "Reads all chats from WhatsApp Desktop through wacrawl’s local archive. Links by phone to people already in Nett.",
+    icon: Quotes,
+  },
 ];
 
 const futureConnectors = [
@@ -71,10 +78,11 @@ export function ConnectorsPage({
 }) {
   const [syncing, setSyncing] = useState<string | null>(null);
   const [syncStage, setSyncStage] = useState("");
-  const [setup, setSetup] = useState<"gmail" | "telegram" | "whatsapp" | "messages" | null>(null);
+  const [setup, setSetup] = useState<"gmail" | "telegram" | "whatsapp" | "whatsapp-export" | "messages" | null>(null);
   const [platform, setPlatform] = useState<Awaited<ReturnType<typeof api.platformStatus>> | null>(null);
   const [intelligence, setIntelligence] = useState<Awaited<ReturnType<typeof api.intelligenceStatus>> | null>(null);
   const [messagesStatus, setMessagesStatus] = useState<Awaited<ReturnType<typeof api.messagesStatus>> | null>(null);
+  const [whatsappStatus, setWhatsappStatus] = useState<Awaited<ReturnType<typeof api.whatsappStatus>> | null>(null);
   const [indexing, setIndexing] = useState(false);
   const timers = useRef<number[]>([]);
 
@@ -86,6 +94,7 @@ export function ConnectorsPage({
     api.platformStatus().then(setPlatform).catch(() => setPlatform(null));
     api.intelligenceStatus().then(setIntelligence).catch(() => setIntelligence(null));
     api.messagesStatus().then(setMessagesStatus).catch(() => setMessagesStatus(null));
+    api.whatsappStatus().then(setWhatsappStatus).catch(() => setWhatsappStatus(null));
   }, []);
   useEffect(() => loadPlatform(), [loadPlatform]);
 
@@ -101,6 +110,10 @@ export function ConnectorsPage({
       setSetup("messages");
       return;
     }
+    if (id === "whatsapp" && whatsappStatus && !whatsappStatus.readable) {
+      setSetup("whatsapp");
+      return;
+    }
     timers.current.forEach((timer) => window.clearTimeout(timer));
     setSyncing(id);
     setSyncStage("Requesting source access");
@@ -109,8 +122,9 @@ export function ConnectorsPage({
       window.setTimeout(() => setSyncStage("Resolving source identities"), 1700),
     ];
     try {
-      let result = await api.sync(id, undefined, id === "messages" ? 50 : undefined);
-      while (id === "messages" && result.done === false) {
+      const batched = id === "messages" || id === "whatsapp";
+      let result = await api.sync(id, undefined, batched ? 50 : undefined);
+      while (batched && result.done === false) {
         setSyncStage(result.message);
         result = await api.sync(id, undefined, 50);
       }
@@ -119,7 +133,7 @@ export function ConnectorsPage({
       loadPlatform();
       notify("success", result.message);
     } catch (error) {
-      if (id === "messages") setSetup("messages");
+      if (id === "messages" || id === "whatsapp") setSetup(id);
       notify("error", error instanceof Error ? error.message : "Sync failed");
       refresh();
       loadPlatform();
@@ -166,6 +180,42 @@ export function ConnectorsPage({
     }
   };
 
+  const pullNewWhatsApp = async () => {
+    if (whatsappStatus && !whatsappStatus.readable) {
+      setSetup("whatsapp");
+      return;
+    }
+    timers.current.forEach((timer) => window.clearTimeout(timer));
+    setSyncing("whatsapp");
+    setSyncStage("Syncing WhatsApp Desktop through wacrawl");
+    try {
+      const prepared = await api.prepareWhatsAppArchive({ resetCursor: false });
+      setSyncStage(prepared.message);
+      let result = await api.sync("whatsapp", undefined, 50);
+      while (result.done === false) {
+        setSyncStage(result.message);
+        result = await api.sync("whatsapp", undefined, 50);
+      }
+      await Promise.resolve(refresh());
+      loadPlatform();
+      notify(
+        "success",
+        result.seen
+          ? `Pulled ${result.seen.toLocaleString()} new WhatsApp records.`
+          : "WhatsApp archive is current. No new records since the last import.",
+      );
+    } catch (error) {
+      setSetup("whatsapp");
+      notify("error", error instanceof Error ? error.message : "Could not pull WhatsApp messages");
+      refresh();
+      loadPlatform();
+    } finally {
+      timers.current.forEach((timer) => window.clearTimeout(timer));
+      setSyncing(null);
+      setSyncStage("");
+    }
+  };
+
   return (
     <div className="connectors-page">
       <nav className="settings-nav" aria-label="Settings sections">
@@ -194,7 +244,7 @@ export function ConnectorsPage({
         </div>
       </section>
 
-      <section className="local-intelligence-card glass-panel">
+      <section className="local-intelligence-card panel">
         <div className="connector-icon"><GearSix size={23} weight="duotone" /></div>
         <div>
           <span className={`permission-state ${intelligence?.ok ? "state-granted" : "state-blocked"}`}>
@@ -302,12 +352,60 @@ export function ConnectorsPage({
                         Options
                       </button>
                     </>
+                  ) : id === "whatsapp" && whatsappStatus?.readable ? (
+                    <>
+                      <button
+                        className="primary-button"
+                        onClick={() => void pullNewWhatsApp()}
+                        disabled={Boolean(syncing)}
+                      >
+                        {active ? <SpinnerGap className="spin" /> : <DownloadSimple />}
+                        {active ? "Pulling…" : "Pull new"}
+                      </button>
+                      <button
+                        className="secondary-button"
+                        onClick={() => setSetup("whatsapp")}
+                        disabled={Boolean(syncing)}
+                        aria-label="WhatsApp setup options"
+                      >
+                        <GearSix />
+                        Options
+                      </button>
+                    </>
+                  ) : id === "gmail" || id === "telegram" ? (
+                    <>
+                      <button
+                        className="primary-button"
+                        onClick={() => void sync(id)}
+                        disabled={Boolean(syncing)}
+                      >
+                        {active ? <SpinnerGap className="spin" /> : <ArrowClockwise />}
+                        {active
+                          ? "Syncing"
+                          : account?.authState === "authenticated" || state?.last_sync_at
+                            ? "Refresh"
+                            : "Connect"}
+                      </button>
+                      <button
+                        className="secondary-button"
+                        onClick={() => setSetup(id)}
+                        disabled={Boolean(syncing)}
+                        aria-label={`${label} setup options`}
+                      >
+                        <GearSix />
+                        Options
+                      </button>
+                    </>
                   ) : (
                     <button
                       className="secondary-button"
                       onClick={() => {
                         if (id === "messages" && messagesStatus && !messagesStatus.readable) {
                           setSetup("messages");
+                          return;
+                        }
+                        if (id === "whatsapp" && whatsappStatus && !whatsappStatus.readable) {
+                          setSetup("whatsapp");
                           return;
                         }
                         void sync(id);
@@ -321,7 +419,8 @@ export function ConnectorsPage({
                       )}
                       {active
                         ? "Syncing"
-                        : id === "messages" && messagesStatus && !messagesStatus.readable
+                        : (id === "messages" && messagesStatus && !messagesStatus.readable)
+                          || (id === "whatsapp" && whatsappStatus && !whatsappStatus.readable)
                           ? "Set up"
                           : account?.authState === "authenticated" || state?.last_sync_at
                             ? "Refresh"
@@ -363,8 +462,20 @@ export function ConnectorsPage({
           notify={notify}
         />
       )}
+      {setup === "whatsapp" && (
+        <WhatsAppDesktopSetup
+          status={whatsappStatus}
+          onClose={() => setSetup(null)}
+          onReady={async () => {
+            loadPlatform();
+            setSetup(null);
+            await sync("whatsapp");
+          }}
+          notify={notify}
+        />
+      )}
 
-      <section className="import-connector glass-panel">
+      <section className="import-connector panel">
         <div className="connector-icon">
           <FileCsv size={23} weight="duotone" />
         </div>
@@ -382,25 +493,25 @@ export function ConnectorsPage({
         </button>
       </section>
 
-      <section className="import-connector glass-panel">
+      <section className="import-connector panel">
         <div className="connector-icon">
           <Quotes size={23} weight="duotone" />
         </div>
         <div>
-          <span className="connector-kind import-kind">Repeatable import</span>
-          <h2>WhatsApp history</h2>
+          <span className="connector-kind import-kind">Fallback import</span>
+          <h2>WhatsApp chat export</h2>
           <p>
-            Import an official chat .txt or .zip export. Re-importing the same file is
-            idempotent and updates the local evidence timeline.
+            Prefer the live WhatsApp connector above. Use this only for a single official
+            .txt or .zip export when Desktop is unavailable.
           </p>
         </div>
-        <button className="primary-button" onClick={() => setSetup("whatsapp")}>
+        <button className="primary-button" onClick={() => setSetup("whatsapp-export")}>
           <Plus size={17} />
           Import export
         </button>
       </section>
-      {setup === "whatsapp" && (
-        <WhatsAppSetup
+      {setup === "whatsapp-export" && (
+        <WhatsAppExportSetup
           onClose={() => setSetup(null)}
           onChanged={() => { loadPlatform(); refresh(); }}
           notify={notify}
@@ -460,6 +571,17 @@ export function ConnectorsPage({
             also upload a copied chat.db.
           </p>
         </div>
+        <div>
+          <strong>WhatsApp</strong>
+          <p>
+            Install{" "}
+            <a href="https://github.com/openclaw/wacrawl" target="_blank" rel="noreferrer">
+              wacrawl
+            </a>
+            , keep WhatsApp Desktop synced, then use Sources → WhatsApp → Sync archive.
+            Nett reads only a local snapshot; it never talks to WhatsApp’s network.
+          </p>
+        </div>
       </section>
 
       <section className="future-connectors">
@@ -509,7 +631,7 @@ function SetupShell({
   children: ReactNode;
 }) {
   return (
-    <section className="connector-setup glass-panel" aria-label={`${title} setup`}>
+    <section className="connector-setup panel" aria-label={`${title} setup`}>
       <div className="section-heading">
         <div>
           <p className="section-kicker">Local connector setup</p>
@@ -625,15 +747,37 @@ function GmailSetup({
 }) {
   const [clientId, setClientId] = useState(String(account?.settings.clientId || ""));
   const [clientSecret, setClientSecret] = useState("");
+  const [bundledClientId, setBundledClientId] = useState<string | null>(null);
+  const [step, setStep] = useState<1 | 2 | 3>(account?.settings.clientId ? 3 : 1);
   const [working, setWorking] = useState(false);
-  const configured = Boolean(clientId || account?.settings.clientId);
+  const configured = Boolean(clientId || account?.settings.clientId || bundledClientId);
+  const authState = account?.authState || "missing";
 
-  const configure = async (event: FormEvent) => {
-    event.preventDefault();
+  useEffect(() => {
+    let current = true;
+    api.gmailDefaults()
+      .then((defaults) => {
+        if (!current) return;
+        setBundledClientId(defaults.bundledClientId);
+        if (defaults.bundledClientId && !account?.settings.clientId) setStep(3);
+      })
+      .catch(() => undefined);
+    return () => { current = false; };
+  }, [account?.settings.clientId]);
+
+  const configure = async (event?: FormEvent, useBundled = false) => {
+    event?.preventDefault();
     setWorking(true);
     try {
-      await api.configureGmail({ clientId, clientSecret, accountId: account?.accountId || "primary" });
+      const result = await api.configureGmail({
+        clientId: useBundled ? undefined : clientId,
+        clientSecret: useBundled ? undefined : clientSecret,
+        accountId: account?.accountId || "primary",
+        useBundledClient: useBundled,
+      });
+      setClientId(result.clientId);
       setClientSecret("");
+      setStep(3);
       onChanged();
       notify("success", "Google OAuth configuration saved to this Mac");
     } catch (error) {
@@ -642,9 +786,14 @@ function GmailSetup({
       setWorking(false);
     }
   };
-  const authorize = async () => {
+
+  const connectBundled = async () => {
     setWorking(true);
     try {
+      await api.configureGmail({
+        accountId: account?.accountId || "primary",
+        useBundledClient: true,
+      });
       const result = await api.authorizeGmail(account?.accountId || "primary");
       window.location.assign(result.url);
     } catch (error) {
@@ -653,32 +802,112 @@ function GmailSetup({
     }
   };
 
+  const authorize = async () => {
+    setWorking(true);
+    try {
+      if (!account?.settings.clientId && clientId.trim()) {
+        await api.configureGmail({
+          clientId,
+          clientSecret,
+          accountId: account?.accountId || "primary",
+        });
+      }
+      const result = await api.authorizeGmail(account?.accountId || "primary");
+      window.location.assign(result.url);
+    } catch (error) {
+      notify("error", error instanceof Error ? error.message : "Gmail authorization failed");
+      setWorking(false);
+    }
+  };
+
+  const statusCopy = (() => {
+    if (authState === "authorized" || authState === "ready") return "Gmail linked. Refresh to sync up to 2,000 recent messages.";
+    if (authState === "pending-user") return "Authorization started — finish consent in Google, then refresh.";
+    if (authState === "expired") return "Authorization expired. Connect again.";
+    if (configured) return "Configured. Authorize in Google to start a read-only sync.";
+    return "Not configured yet.";
+  })();
+
   return (
     <SetupShell
       title="Gmail"
-      detail="Create a Desktop OAuth client in Google Cloud, then paste its client ID. The refresh token is stored in macOS Keychain and mail access is read-only."
+      detail="Read-only OAuth. Tokens stay in macOS Keychain. Mail is normalized into the same local conversation model as Messages."
       onClose={onClose}
     >
-      <form className="connector-setup-form" onSubmit={configure}>
-        <label>
-          <span>OAuth client ID</span>
-          <input value={clientId} onChange={(event) => setClientId(event.target.value)} placeholder="…apps.googleusercontent.com" required />
-        </label>
-        <label>
-          <span>Client secret</span>
-          <input type="password" value={clientSecret} onChange={(event) => setClientSecret(event.target.value)} placeholder={account ? "Leave blank to keep saved secret" : "Stored only in Keychain"} />
-        </label>
-        <div className="modal-actions">
-          <button className="secondary-button" disabled={working || !clientId.trim()}>
-            {working ? <SpinnerGap className="spin" /> : <Check />}
-            Save configuration
-          </button>
-          <button type="button" className="primary-button" onClick={() => void authorize()} disabled={working || !configured}>
-            <LinkSimple />
-            Authorize in Google
-          </button>
-        </div>
-      </form>
+      <div className="gmail-wizard">
+        <p className="gmail-wizard-status" role="status">{statusCopy}</p>
+        {bundledClientId ? (
+          <div className="modal-actions">
+            <button
+              type="button"
+              className="primary-button"
+              onClick={() => void connectBundled()}
+              disabled={working}
+            >
+              {working ? <SpinnerGap className="spin" /> : <LinkSimple />}
+              Connect Gmail
+            </button>
+            <button type="button" className="secondary-button" onClick={() => setStep(2)} disabled={working}>
+              Use my own client ID
+            </button>
+          </div>
+        ) : null}
+        {(!bundledClientId || step !== 3) && (
+          <>
+            <ol className="gmail-wizard-steps">
+              <li>
+                In Google Cloud Console, enable the Gmail API and create a Desktop OAuth client.
+                {step === 1 && !bundledClientId ? " Add yourself as a test user if the app is in Testing." : ""}
+              </li>
+              <li>Paste the client ID below. Client secret is optional for desktop PKCE.</li>
+              <li>Authorize in Google, then refresh Gmail (bounded to 2,000 recent messages).</li>
+            </ol>
+            <form className="connector-setup-form" onSubmit={(event) => void configure(event, false)}>
+              <label>
+                <span>OAuth client ID</span>
+                <input
+                  value={clientId}
+                  onChange={(event) => {
+                    setClientId(event.target.value);
+                    setStep(2);
+                  }}
+                  placeholder="…apps.googleusercontent.com"
+                  required={!bundledClientId}
+                />
+              </label>
+              <label>
+                <span>Client secret (optional)</span>
+                <input
+                  type="password"
+                  value={clientSecret}
+                  onChange={(event) => setClientSecret(event.target.value)}
+                  placeholder={account ? "Leave blank to keep saved secret" : "Stored only in Keychain"}
+                />
+              </label>
+              <div className="modal-actions">
+                <button className="secondary-button" disabled={working || !clientId.trim()}>
+                  {working ? <SpinnerGap className="spin" /> : <Check />}
+                  Save configuration
+                </button>
+                <button
+                  type="button"
+                  className="primary-button"
+                  onClick={() => void authorize()}
+                  disabled={working || !configured}
+                >
+                  <LinkSimple />
+                  Authorize in Google
+                </button>
+              </div>
+            </form>
+          </>
+        )}
+        {bundledClientId && step === 3 && authState !== "authorized" && authState !== "ready" ? (
+          <p className="person-capture-note">
+            One click uses Nett&apos;s desktop OAuth client. Advanced setup is still available above.
+          </p>
+        ) : null}
+      </div>
     </SetupShell>
   );
 }
@@ -787,7 +1016,87 @@ function TelegramSetup({
   );
 }
 
-function WhatsAppSetup({
+function WhatsAppDesktopSetup({
+  status,
+  onClose,
+  onReady,
+  notify,
+}: {
+  status: Awaited<ReturnType<typeof api.whatsappStatus>> | null;
+  onClose: () => void;
+  onReady: () => void | Promise<void>;
+  notify: (kind: ToastKind, message: string) => void;
+}) {
+  const [working, setWorking] = useState(false);
+
+  const prepare = async (resetCursor: boolean, importIntoNett: boolean) => {
+    setWorking(true);
+    try {
+      const result = await api.prepareWhatsAppArchive({ resetCursor });
+      notify("success", result.message);
+      if (importIntoNett) await onReady();
+      else onClose();
+    } catch (error) {
+      notify("error", error instanceof Error ? error.message : "Could not prepare WhatsApp archive");
+    } finally {
+      setWorking(false);
+    }
+  };
+
+  return (
+    <SetupShell
+      title="WhatsApp Desktop"
+      detail="Nett uses openclaw/wacrawl to snapshot WhatsApp Desktop’s local SQLite databases into a private archive, then links messages to people by phone."
+      onClose={onClose}
+    >
+      <div className="connector-setup-form">
+        <div className="full-field">
+          <span>Current status</span>
+          <p>
+            {!status?.binaryFound
+              ? status?.error || "wacrawl is not installed"
+              : status.desktopAvailable
+                ? `Desktop readable · ${(status.desktopMessageCount || 0).toLocaleString()} messages · ${(status.desktopChatCount || 0).toLocaleString()} chats`
+                : status.error || "WhatsApp Desktop database is not available"}
+          </p>
+          {status?.archiveReadable && (
+            <p>
+              Archive · {(status.archiveMessageCount || 0).toLocaleString()} messages
+              {status.syncCursor.lastRowId
+                ? ` · Nett cursor at rowid ${status.syncCursor.lastRowId}`
+                : " · not imported into Nett yet"}
+            </p>
+          )}
+          {!status?.binaryFound && (
+            <p>
+              Install with <code>brew install openclaw/tap/wacrawl</code>, or place the binary at{" "}
+              <code>tools/bin/wacrawl</code>, or set <code>NETT_WACRAWL_BIN</code>.
+            </p>
+          )}
+        </div>
+        <div className="modal-actions">
+          <button
+            className="primary-button"
+            disabled={working || !status?.binaryFound || !status.desktopAvailable}
+            onClick={() => void prepare(!status?.syncCursor.lastRowId, true)}
+          >
+            {working ? <SpinnerGap className="spin" /> : <Database />}
+            Sync archive and import
+          </button>
+          <button
+            className="secondary-button"
+            disabled={working || !status?.binaryFound || !status.desktopAvailable}
+            onClick={() => void prepare(false, false)}
+          >
+            Refresh archive only
+          </button>
+        </div>
+      </div>
+    </SetupShell>
+  );
+}
+
+function WhatsAppExportSetup({
   onClose,
   onChanged,
   notify,
@@ -823,7 +1132,7 @@ function WhatsAppSetup({
   return (
     <SetupShell
       title="WhatsApp export"
-      detail="Export a chat without media from WhatsApp and choose the .txt or .zip. Message text is indexed only in your local Nett database."
+      detail="Export a chat without media from WhatsApp and choose the .txt or .zip. Prefer the Desktop connector when available."
       onClose={onClose}
     >
       <form className="connector-setup-form" onSubmit={submit}>

@@ -9,7 +9,6 @@ import {
   X,
 } from "@phosphor-icons/react";
 import {
-  type CSSProperties,
   type ReactNode,
   useEffect,
   useId,
@@ -54,6 +53,10 @@ export function sourceLabel(source = "") {
       csv: "CSV",
       "apple-contacts": "Apple Contacts",
       messages: "Messages",
+      gmail: "Gmail",
+      telegram: "Telegram",
+      whatsapp: "WhatsApp",
+      "linkedin-archive": "LinkedIn archive",
       "linkedin-public": "LinkedIn public",
       manual: "Nett",
       voice: "Voice capture",
@@ -114,6 +117,7 @@ export function IconButton({
   active,
   type = "button",
   buttonRef,
+  className = "",
 }: {
   label: string;
   children: ReactNode;
@@ -121,12 +125,13 @@ export function IconButton({
   active?: boolean;
   type?: "button" | "submit";
   buttonRef?: React.Ref<HTMLButtonElement>;
+  className?: string;
 }) {
   return (
     <button
       ref={buttonRef}
       type={type}
-      className={`icon-button ${active ? "is-active" : ""}`}
+      className={`icon-button ${active ? "is-active" : ""} ${className}`.trim()}
       onClick={onClick}
       aria-label={label}
       aria-pressed={active}
@@ -235,10 +240,12 @@ export function Modal({
     const keydown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         event.preventDefault();
+        event.stopPropagation();
         closeHandler.current();
         return;
       }
       if (event.key !== "Tab") return;
+      if (!container.contains(document.activeElement)) return;
       const focusable = getFocusable(container);
       if (!focusable.length) return;
       const first = focusable[0];
@@ -251,10 +258,12 @@ export function Modal({
         first.focus();
       }
     };
-    container.addEventListener("keydown", keydown);
+    // Capture on document so Escape is consumed before App-level handlers
+    // clear drawers or nested UI underneath the modal.
+    document.addEventListener("keydown", keydown, true);
     return () => {
       window.cancelAnimationFrame(frame);
-      container.removeEventListener("keydown", keydown);
+      document.removeEventListener("keydown", keydown, true);
       returnTo?.focus();
     };
   }, [initialFocusRef]);
@@ -318,18 +327,5 @@ export function ToastMessage({ toast }: { toast: NonNullable<Toast> }) {
       )}
       <span>{toast.message}</span>
     </motion.div>
-  );
-}
-
-export function SignalRing({ value }: { value: number }) {
-  const safeValue = Math.max(0, Math.min(100, Number(value) || 0));
-  return (
-    <span
-      className="signal-ring"
-      style={{ "--signal": `${safeValue * 3.6}deg` } as CSSProperties}
-      aria-label={`${safeValue} out of 100`}
-    >
-      <i aria-hidden="true">{safeValue}</i>
-    </span>
   );
 }

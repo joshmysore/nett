@@ -1,23 +1,25 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   autofillSuggestions,
   db,
   getPerson,
+  getPersonCommunications,
   updatePerson
 } from "../db.js";
+import {
+  evidenceDocumentsByIds,
+  personEvidenceDocuments,
+  personEvidenceIndexState,
+  refreshEvidenceIndex,
+  refreshPersonEvidenceIndex,
+  type EvidenceDocument,
+  type EvidenceIndexState
+} from "./evidence-index.js";
 import { OllamaProvider } from "./ollama.js";
+import { collectTraitSuggestions } from "./traits.js";
 
-type EvidenceDocument = {
-  id: string;
-  person_id: string | null;
-  kind: string;
-  source: string;
-  source_record_id: string;
-  text: string;
-  occurred_at: string | null;
-  metadata_json: string;
-  embedding_json: string | null;
-};
+export { refreshEvidenceIndex, refreshPersonEvidenceIndex, personEvidenceIndexState };
+export type { EvidenceDocument, EvidenceIndexState };
 
 type IntelligenceCitation = {
   personId: string;
@@ -29,13 +31,52 @@ type IntelligenceCitation = {
 };
 
 const ollama = new OllamaProvider();
-const allowedFields = new Set([
-  "hometown", "location", "industry", "company", "headline", "job_title", "spike", "languages", "skills",
-  "interests", "culture", "personality", "relationship", "when_met", "where_met",
-  "how_met", "institutions", "mutuals", "notes", "quick_memories", "follow_up_date",
-  "relationship_strength", "priority", "warmth", "intro_potential"
+
+/**
+ * Fields a suggestion may ever target.
+ *
+ * Gender and culture may be proposed from name tables / pronouns and require
+ * explicit acceptance. `online_personality` is adjective lists mined from
+ * stored messages. Offline `personality` stays user-typed only.
+ */
+const suggestibleFields = new Set([
+  "hometown", "location", "industry", "company", "headline", "job_title", "spike", "languages",
+  "skills", "interests", "foods", "gender", "culture", "online_personality", "relationship",
+  "when_met", "where_met", "how_met", "institutions", "mutuals", "notes", "quick_memories",
+  "follow_up_date", "relationship_strength", "priority", "warmth", "intro_potential", "tags",
 ]);
-const listFields = new Set(["languages", "skills", "interests", "institutions", "mutuals"]);
+
+/** Never proposed by the model or deterministic paths — whatever asks for them. */
+const forbiddenFields = new Set([
+  "personality", "ethnicity", "race", "nationality", "religion",
+  "religious_belief", "politics", "political_view", "political_affiliation", "health",
+  "medical", "medical_condition", "disability", "sexuality", "sexual_orientation",
+  "orientation", "marital_status", "pregnancy", "immigration_status", "citizenship",
+  "criminal_record", "union_membership",
+]);
+
+const listFields = new Set([
+  "hometown", "languages", "skills", "interests", "foods", "institutions", "mutuals",
+  "online_personality", "tags",
+]);
+const numericFields = new Set(["relationship_strength", "priority", "warmth", "intro_potential"]);
+
+/** Documents handed to the model, and the ceiling on the autofill read. */
+const EVIDENCE_WINDOW = 40;
+/** Embedded documents scored in memory by a single retrieval call. */
+const VECTOR_CANDIDATE_LIMIT = 600;
+const EMBEDDING_DIMENSIONS = 384;
+
+export class AutofillCancelled extends Error {
+  constructor() {
+    super("Autofill was cancelled");
+    this.name = "AbortError";
+  }
+}
+
+function assertActive(signal?: AbortSignal): void {
+  if (signal?.aborted) throw new AutofillCancelled();
+}
 
 function parse<T>(value: string | null | undefined, fallback: T): T {
   if (!value) return fallback;
@@ -44,186 +85,6 @@ function parse<T>(value: string | null | undefined, fallback: T): T {
   } catch {
     return fallback;
   }
-}
-
-function text(value: unknown): string {
-  if (Array.isArray(value)) return value.filter(Boolean).join(", ");
-  return String(value ?? "").trim();
-}
-
-function addDocument(
-  row: Omit<EvidenceDocument, "metadata_json" | "embedding_json"> & { metadata?: Record<string, unknown> }
-): void {
-  const timestamp = new Date().toISOString();
-  db.prepare(`
-    INSERT INTO evidence_documents
-      (id, person_id, kind, source, source_record_id, text, occurred_at, metadata_json, embedding_json, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)
-    ON CONFLICT(id) DO UPDATE SET
-      person_id=excluded.person_id,
-      kind=excluded.kind,
-      source=excluded.source,
-      source_record_id=excluded.source_record_id,
-      text=excluded.text,
-      occurred_at=excluded.occurred_at,
-      metadata_json=excluded.metadata_json,
-      embedding_json=CASE WHEN evidence_documents.text=excluded.text THEN evidence_documents.embedding_json ELSE NULL END,
-      updated_at=excluded.updated_at
-  `).run(
-    row.id,
-    row.person_id,
-    row.kind,
-    row.source,
-    row.source_record_id,
-    row.text,
-    row.occurred_at,
-    JSON.stringify(row.metadata ?? {}),
-    timestamp
-  );
-  db.prepare("DELETE FROM evidence_fts WHERE document_id=?").run(row.id);
-  db.prepare(`
-    INSERT INTO evidence_fts (document_id, person_id, source, kind, text)
-    VALUES (?, ?, ?, ?, ?)
-  `).run(row.id, row.person_id, row.source, row.kind, row.text);
-  db.prepare("INSERT OR IGNORE INTO temp.evidence_seen (id) VALUES (?)").run(row.id);
-}
-
-export function refreshEvidenceIndex(personId?: string): { indexed: number } {
-  let indexed = 0;
-  db.transaction(() => {
-    db.exec("CREATE TEMP TABLE IF NOT EXISTS evidence_seen (id TEXT PRIMARY KEY); DELETE FROM temp.evidence_seen;");
-
-    const where = personId ? "WHERE p.id=?" : "";
-    const profiles = db.prepare(`
-      SELECT p.id, p.preferred_name, p.first_name, p.last_name, p.nickname,
-        m.*, GROUP_CONCAT(DISTINCT t.name) AS tag_names
-      FROM people p
-      LEFT JOIN nett_metadata m ON m.person_id=p.id
-      LEFT JOIN contact_tags ct ON ct.person_id=p.id
-      LEFT JOIN tags t ON t.id=ct.tag_id
-      ${where}
-      GROUP BY p.id
-    `).all(...(personId ? [personId] : [])) as Record<string, unknown>[];
-    for (const profile of profiles) {
-      const fields = [
-        ["name", profile.preferred_name], ["nickname", profile.nickname],
-        ["company", profile.company], ["industry", profile.industry],
-        ["location", profile.location], ["hometown", profile.hometown],
-        ["relationship", profile.relationship], ["how met", profile.how_met],
-        ["where met", profile.where_met], ["when met", profile.when_met],
-        ["interests", parse(String(profile.interests || ""), [])],
-        ["skills", parse(String(profile.skills || ""), [])],
-        ["institutions", parse(String(profile.institutions || ""), [])],
-        ["mutuals", parse(String(profile.mutuals || ""), [])],
-        ["tags", profile.tag_names], ["notes", profile.notes],
-        ["memory summary", profile.quick_memories]
-      ].filter(([, value]) => text(value));
-      addDocument({
-        id: `profile:${profile.id}`,
-        person_id: String(profile.id),
-        kind: "profile-field",
-        source: "nett",
-        source_record_id: String(profile.id),
-        text: fields.map(([label, value]) => `${label}: ${text(value)}`).join("\n"),
-        occurred_at: String(profile.updated_at || profile.created_at || ""),
-        metadata: { name: profile.preferred_name }
-      });
-      indexed++;
-    }
-
-    const memories = db.prepare(`
-      SELECT mm.* FROM memories mm
-      ${personId ? "WHERE mm.person_id=?" : ""}
-    `).all(...(personId ? [personId] : [])) as Record<string, unknown>[];
-    for (const memory of memories) {
-      addDocument({
-        id: `memory:${memory.id}`,
-        person_id: String(memory.person_id),
-        kind: "memory",
-        source: String(memory.source),
-        source_record_id: String(memory.id),
-        text: String(memory.raw_text),
-        occurred_at: String(memory.occurred_at),
-        metadata: parse(String(memory.structured_json || "{}"), {})
-      });
-      indexed++;
-    }
-
-    const communications = db.prepare(`
-      SELECT c.*, cp.person_id, p.preferred_name
-      FROM communications c
-      JOIN communication_people cp ON cp.communication_id=c.id
-      JOIN people p ON p.id=cp.person_id
-      ${personId ? "WHERE cp.person_id=?" : ""}
-    `).all(...(personId ? [personId] : [])) as Record<string, unknown>[];
-    for (const communication of communications) {
-      const body = text(communication.body);
-      if (!body) continue;
-      addDocument({
-        id: `communication:${communication.id}:${communication.person_id}`,
-        person_id: String(communication.person_id),
-        kind: "interaction",
-        source: String(communication.connector_id),
-        source_record_id: String(communication.external_id),
-        text: [
-          communication.direction ? `direction: ${communication.direction}` : "",
-          body
-        ].filter(Boolean).join("\n"),
-        occurred_at: String(communication.occurred_at),
-        metadata: parse(String(communication.evidence_json || "{}"), {})
-      });
-      indexed++;
-    }
-
-    const provenance = db.prepare(`
-      SELECT fp.* FROM field_provenance fp
-      ${personId ? "WHERE fp.person_id=?" : ""}
-    `).all(...(personId ? [personId] : [])) as Record<string, unknown>[];
-    for (const fact of provenance) {
-      if (!text(fact.field_value)) continue;
-      addDocument({
-        id: `provenance:${fact.id}`,
-        person_id: String(fact.person_id),
-        kind: "profile-field",
-        source: String(fact.connector_id),
-        source_record_id: String(fact.source_record_id || fact.id),
-        text: `${String(fact.field_name).replaceAll("_", " ")}: ${text(fact.field_value)}`,
-        occurred_at: String(fact.observed_at),
-        metadata: { field: fact.field_name, confidence: fact.confidence }
-      });
-      indexed++;
-    }
-    if (personId) {
-      db.prepare(`
-        DELETE FROM evidence_fts WHERE document_id IN (
-          SELECT id FROM evidence_documents
-          WHERE person_id=? AND id NOT IN (SELECT id FROM temp.evidence_seen)
-        )
-      `).run(personId);
-      db.prepare(`
-        DELETE FROM evidence_documents
-        WHERE person_id=? AND id NOT IN (SELECT id FROM temp.evidence_seen)
-      `).run(personId);
-    } else {
-      db.prepare(`
-        DELETE FROM evidence_fts
-        WHERE document_id NOT IN (SELECT id FROM temp.evidence_seen)
-      `).run();
-      db.prepare(`
-        DELETE FROM evidence_documents
-        WHERE id NOT IN (SELECT id FROM temp.evidence_seen)
-      `).run();
-    }
-    db.prepare("DELETE FROM temp.evidence_seen").run();
-  })();
-  return { indexed };
-}
-
-function ftsQuery(query: string): string {
-  return [...new Set(query.toLocaleLowerCase().match(/[\p{L}\p{N}@._+-]{2,}/gu) ?? [])]
-    .slice(0, 14)
-    .map((token) => `"${token.replaceAll('"', '""')}"*`)
-    .join(" OR ");
 }
 
 function cosine(left: readonly number[], right: readonly number[]): number {
@@ -238,11 +99,25 @@ function cosine(left: readonly number[], right: readonly number[]): number {
   return leftNorm && rightNorm ? dot / Math.sqrt(leftNorm * rightNorm) : 0;
 }
 
-export async function searchEvidence(query: string, limit = 12): Promise<Array<EvidenceDocument & { score: number }>> {
+function ftsQuery(query: string): string {
+  return [...new Set(query.toLocaleLowerCase().match(/[\p{L}\p{N}@._+-]{2,}/gu) ?? [])]
+    .slice(0, 14)
+    .map((token) => `"${token.replaceAll('"', '""')}"*`)
+    .join(" OR ");
+}
+
+const evidenceColumns = "id, person_id, kind, source, source_record_id, text, occurred_at, metadata_json, embedding_json";
+const joinedEvidenceColumns = "d.id, d.person_id, d.kind, d.source, d.source_record_id, d.text, d.occurred_at, d.metadata_json, d.embedding_json";
+
+export async function searchEvidence(
+  query: string,
+  limit = 12,
+  options: { signal?: AbortSignal } = {}
+): Promise<Array<EvidenceDocument & { score: number }>> {
   const match = ftsQuery(query);
   const lexical = match
     ? db.prepare(`
-      SELECT d.*, bm25(evidence_fts) AS rank
+      SELECT ${joinedEvidenceColumns}, bm25(evidence_fts) AS rank
       FROM evidence_fts
       JOIN evidence_documents d ON d.id=evidence_fts.document_id
       WHERE evidence_fts MATCH ?
@@ -257,29 +132,41 @@ export async function searchEvidence(query: string, limit = 12): Promise<Array<E
   });
 
   try {
-    const model = await selectedModel();
-    const [queryEmbedding] = await ollama.embed(model, [query]);
-    const compactQuery = queryEmbedding.slice(0, 384);
-    const vectorRows = db.prepare(`
-      SELECT * FROM evidence_documents WHERE embedding_json IS NOT NULL
-      ORDER BY updated_at DESC LIMIT 5000
-    `).all() as EvidenceDocument[];
-    const vector = vectorRows
-      .map((row) => ({ row, score: cosine(compactQuery, parse<number[]>(row.embedding_json, [])) }))
-      .filter((item) => item.score > 0)
-      .sort((a, b) => b.score - a.score)
-      .slice(0, limit * 2);
-    vector.forEach(({ row, score }) => {
-      documents.set(row.id, row);
-      scores.set(row.id, (scores.get(row.id) ?? 0) * 0.6 + Math.max(0, score) * 0.4);
-    });
+    assertActive(options.signal);
+    const model = await selectedModel(options.signal);
+    const [queryEmbedding] = await ollama.embed(model, [query], options.signal);
+    if (queryEmbedding?.length) {
+      const compactQuery = queryEmbedding.slice(0, EMBEDDING_DIMENSIONS);
+      // Rank on identifiers and vectors only. Loading whole documents here is
+      // what made retrieval allocate tens of megabytes per request.
+      const candidates = db.prepare(`
+        SELECT id, embedding_json FROM evidence_documents
+        WHERE embedding_json IS NOT NULL
+        ORDER BY updated_at DESC LIMIT ?
+      `).all(VECTOR_CANDIDATE_LIMIT) as { id: string; embedding_json: string }[];
+      const ranked = candidates
+        .map((row) => ({ id: row.id, score: cosine(compactQuery, parse<number[]>(row.embedding_json, [])) }))
+        .filter((item) => item.score > 0)
+        .sort((a, b) => b.score - a.score)
+        .slice(0, limit * 2);
+      const hydrated = new Map(
+        evidenceDocumentsByIds(ranked.map((item) => item.id)).map((row) => [row.id, row])
+      );
+      for (const item of ranked) {
+        const row = hydrated.get(item.id);
+        if (!row) continue;
+        documents.set(row.id, row);
+        scores.set(row.id, (scores.get(row.id) ?? 0) * 0.6 + item.score * 0.4);
+      }
+    }
   } catch {
     // Lexical retrieval remains fully functional when Ollama is unavailable.
   }
+
   if (!documents.size) {
     const fallback = db.prepare(`
-      SELECT * FROM evidence_documents
-      ORDER BY COALESCE(occurred_at, updated_at) DESC LIMIT ?
+      SELECT ${evidenceColumns} FROM evidence_documents
+      ORDER BY updated_at DESC LIMIT ?
     `).all(limit) as EvidenceDocument[];
     fallback.forEach((row, index) => {
       documents.set(row.id, row);
@@ -292,12 +179,24 @@ export async function searchEvidence(query: string, limit = 12): Promise<Array<E
     .slice(0, limit);
 }
 
-async function selectedModel(): Promise<string> {
-  const models = await ollama.listModels();
+/** Prefer stronger local chat models when installed; fall back to whatever is available. */
+const PREFERRED_CHAT_MODELS = [
+  "qwen3:14b",
+  "qwen3.5:9b",
+  "qwen3:8b",
+  "llama3.2:3b",
+  "llama3.2:1b",
+];
+
+async function selectedModel(signal?: AbortSignal): Promise<string> {
+  const models = await ollama.listModels(signal);
   const requested = process.env.NETT_OLLAMA_MODEL;
   if (requested && models.some((model) => model.name === requested)) return requested;
-  return models.find((model) => model.name === "llama3.2:3b")?.name
-    ?? models.find((model) => !model.name.includes("embed"))?.name
+  for (const preferred of PREFERRED_CHAT_MODELS) {
+    const hit = models.find((model) => model.name === preferred);
+    if (hit) return hit.name;
+  }
+  return models.find((model) => !model.name.includes("embed"))?.name
     ?? models[0]?.name
     ?? (() => { throw new Error("No Ollama model is installed"); })();
 }
@@ -314,8 +213,8 @@ export async function intelligenceStatus() {
   };
 }
 
-export async function refreshEvidenceEmbeddings(limit = 250) {
-  const model = await selectedModel();
+export async function refreshEvidenceEmbeddings(limit = 250, options: { signal?: AbortSignal } = {}) {
+  const model = await selectedModel(options.signal);
   const rows = db.prepare(`
     SELECT id, text FROM evidence_documents
     WHERE embedding_json IS NULL ORDER BY updated_at DESC LIMIT ?
@@ -323,11 +222,12 @@ export async function refreshEvidenceEmbeddings(limit = 250) {
   const update = db.prepare("UPDATE evidence_documents SET embedding_json=?, updated_at=? WHERE id=?");
   let embedded = 0;
   for (let offset = 0; offset < rows.length; offset += 32) {
+    if (options.signal?.aborted) break;
     const batch = rows.slice(offset, offset + 32);
-    const vectors = await ollama.embed(model, batch.map((row) => row.text.slice(0, 4_000)));
+    const vectors = await ollama.embed(model, batch.map((row) => row.text.slice(0, 4_000)), options.signal);
     db.transaction(() => {
       batch.forEach((row, index) => {
-        const compact = (vectors[index] ?? []).slice(0, 384);
+        const compact = (vectors[index] ?? []).slice(0, EMBEDDING_DIMENSIONS);
         update.run(JSON.stringify(compact), new Date().toISOString(), row.id);
         embedded++;
       });
@@ -336,14 +236,12 @@ export async function refreshEvidenceEmbeddings(limit = 250) {
   return { embedded, model };
 }
 
-export async function answerRelationshipQuestion(question: string): Promise<{
+export async function answerRelationshipQuestion(question: string, options: { signal?: AbortSignal } = {}): Promise<{
   answer: string;
   citations: IntelligenceCitation[];
   provider: string;
 }> {
-  const count = (db.prepare("SELECT COUNT(*) AS count FROM evidence_documents").get() as { count: number }).count;
-  if (!count) refreshEvidenceIndex();
-  const evidence = await searchEvidence(question, 14);
+  const evidence = await searchEvidence(question, 14, options);
   if (!evidence.length) {
     return { answer: "I could not find local evidence for that question.", citations: [], provider: "local-evidence" };
   }
@@ -354,10 +252,12 @@ export async function answerRelationshipQuestion(question: string): Promise<{
     if (person) people.set(row.person_id, person);
   }
   try {
-    const model = await selectedModel();
+    assertActive(options.signal);
+    const model = await selectedModel(options.signal);
     const generated = await ollama.answerWithCitations({
       model,
       question,
+      signal: options.signal,
       evidence: evidence.map((row) => ({
         id: row.id,
         title: `${people.get(row.person_id || "")?.name || "Network evidence"} · ${row.source}`,
@@ -398,12 +298,80 @@ export async function answerRelationshipQuestion(question: string): Promise<{
   }
 }
 
+export type SuggestionEvidence = {
+  kind: "evidence-document" | "memory" | "provenance" | "derived-signal";
+  documentId?: string;
+  sourceType: string;
+  sourceId: string;
+  excerpt?: string;
+  structured?: Record<string, unknown>;
+  observedAt: string | null;
+};
+
+export type AutofillSuggestion = {
+  id: string;
+  personId: string;
+  field: string;
+  operation: "set" | "extend" | "replace";
+  value: unknown;
+  normalizedValue: unknown;
+  existingValue: unknown;
+  conflict: boolean;
+  conflictNote: string | null;
+  confidence: number;
+  reason: string;
+  source: string;
+  sourceType: string;
+  provider: string | null;
+  evidence: SuggestionEvidence[];
+  /** Retained for the existing client contract. */
+  evidenceIds: string[];
+  observedAt: string | null;
+  generatedAt: string;
+  status: "pending";
+  accepted: boolean;
+  rejected: boolean;
+  personMatch: { personId: string; name: string; basis: "explicit-person"; confidence: number };
+};
+
+export type AutofillResult = {
+  suggestions: AutofillSuggestion[];
+  degraded: boolean;
+  note?: string;
+  model: string | null;
+  provider: string | null;
+  generatedAt: string;
+  index: EvidenceIndexState;
+};
+
+export type AutofillOptions = {
+  /** Abort the whole call: the model request is cancelled and no rows are written. */
+  signal?: AbortSignal;
+  /** Skip the local model and return evidence-backed deterministic suggestions only. */
+  generate?: boolean;
+  /**
+   * Refresh this person's evidence index before reading it. Off by default:
+   * indexing is an explicit or background concern, never an implicit cost of
+   * asking for suggestions.
+   */
+  reindex?: boolean;
+};
+
 type GeneratedSuggestion = {
   field: string;
   value: unknown;
   confidence: number;
   rationale: string;
   evidenceIds: string[];
+};
+
+type Candidate = {
+  field: string;
+  value: unknown;
+  confidence: number;
+  reason: string;
+  evidence: SuggestionEvidence[];
+  provider: string | null;
 };
 
 const suggestionSchema = {
@@ -419,7 +387,7 @@ const suggestionSchema = {
         additionalProperties: false,
         required: ["field", "value", "confidence", "rationale", "evidenceIds"],
         properties: {
-          field: { type: "string" },
+          field: { type: "string", enum: [...suggestibleFields] },
           value: {},
           confidence: { type: "number", minimum: 0, maximum: 1 },
           rationale: { type: "string" },
@@ -430,111 +398,530 @@ const suggestionSchema = {
   }
 };
 
-export async function intelligentAutofill(personId: string) {
+const extractionSystemPrompt = [
+  "Extract relationship facts only when a supplied evidence block states them explicitly.",
+  "Every suggestion must cite the evidence ids it came from. Prefer returning nothing over an unsupported guess.",
+  "You may propose gender only from clear pronouns or an explicit self-identification in evidence.",
+  "You may propose culture only from an explicit self-identification in evidence — never guess ethnicity.",
+  "You may propose online_personality as a short list of communication-style adjectives grounded in message tone.",
+  "You may propose foods when messages or memories name specific foods or drinks.",
+  "Never propose offline personality, health, medical status, disability, religion, political belief,",
+  "sexuality, ethnicity, race, nationality, or immigration status. Absence of evidence is not evidence.",
+].join(" ");
+
+function isProposable(field: string): boolean {
+  return suggestibleFields.has(field) && !forbiddenFields.has(field);
+}
+
+function isEmptyValue(value: unknown): boolean {
+  if (value === null || value === undefined) return true;
+  if (Array.isArray(value)) return value.length === 0;
+  if (typeof value === "number") return value === 0;
+  return String(value).trim() === "";
+}
+
+function normalizeValue(field: string, value: unknown): unknown {
+  if (listFields.has(field)) {
+    const items = (Array.isArray(value) ? value : String(value ?? "").split(","))
+      .map((item) => String(item).replace(/\s+/g, " ").trim())
+      .filter(Boolean);
+    return [...new Map(items.map((item) => [item.toLocaleLowerCase(), item])).values()];
+  }
+  if (numericFields.has(field)) {
+    const numeric = Number(value);
+    return Number.isFinite(numeric) ? Math.round(numeric) : null;
+  }
+  if (typeof value === "string") return value.replace(/\s+/g, " ").trim();
+  return value;
+}
+
+function sameValue(left: unknown, right: unknown): boolean {
+  if (Array.isArray(left) && Array.isArray(right)) {
+    const normalize = (items: unknown[]) => items.map((item) => String(item).toLocaleLowerCase()).sort();
+    return JSON.stringify(normalize(left)) === JSON.stringify(normalize(right));
+  }
+  if (typeof left === "string" && typeof right === "string") {
+    return left.toLocaleLowerCase() === right.toLocaleLowerCase();
+  }
+  return JSON.stringify(left ?? null) === JSON.stringify(right ?? null);
+}
+
+/**
+ * Decides how a proposal relates to what Nett already holds. A value that would
+ * replace existing content is always marked as a conflict so the reviewer sees
+ * both sides rather than discovering an overwrite afterwards.
+ */
+function compareWithExisting(field: string, proposed: unknown, existing: unknown): {
+  operation: "set" | "extend" | "replace";
+  conflict: boolean;
+  conflictNote: string | null;
+} | null {
+  if (isEmptyValue(existing)) return { operation: "set", conflict: false, conflictNote: null };
+  if (sameValue(proposed, existing)) return null;
+  if (listFields.has(field) && Array.isArray(proposed) && Array.isArray(existing)) {
+    const known = new Set(existing.map((item) => String(item).toLocaleLowerCase()));
+    const keepsAll = existing.every((item) =>
+      proposed.some((candidate) => String(candidate).toLocaleLowerCase() === String(item).toLocaleLowerCase()));
+    const added = proposed.filter((item) => !known.has(String(item).toLocaleLowerCase()));
+    if (!added.length) return null;
+    if (keepsAll) return { operation: "extend", conflict: false, conflictNote: null };
+    return {
+      operation: "replace",
+      conflict: true,
+      conflictNote: `Nett already records ${existing.length} entries; this proposal would drop some of them.`
+    };
+  }
+  return {
+    operation: "replace",
+    conflict: true,
+    conflictNote: `Nett already records ${JSON.stringify(existing)} for ${field.replaceAll("_", " ")}.`
+  };
+}
+
+function fingerprint(field: string, normalizedValue: unknown, evidence: readonly SuggestionEvidence[]): string {
+  const keys = evidence.map((item) => `${item.kind}:${item.documentId ?? item.sourceId}`).sort();
+  return createHash("sha256")
+    .update(JSON.stringify([field, normalizedValue ?? null, keys]))
+    .digest("hex");
+}
+
+/**
+ * A suggestion the user already rejected must not come back unless something
+ * new supports it, so the fingerprint covers the value *and* its evidence.
+ * Rejected rows themselves are never deleted — they are local ranking signal.
+ */
+function rejectedFingerprints(personId: string): Set<string> {
+  const rows = db.prepare(`
+    SELECT field_name, proposed_value_json, evidence_json
+    FROM inference_suggestions WHERE person_id=? AND status='rejected'
+  `).all(personId) as { field_name: string; proposed_value_json: string; evidence_json: string }[];
+  const result = new Set<string>();
+  for (const row of rows) {
+    const payload = parse<unknown>(row.evidence_json, []);
+    if (payload && !Array.isArray(payload) && typeof payload === "object") {
+      const stored = (payload as { fingerprint?: unknown }).fingerprint;
+      if (typeof stored === "string") {
+        result.add(stored);
+        continue;
+      }
+    }
+    // Rows written before suggestions carried a fingerprint, including those
+    // from the LinkedIn archive importer, store a plain array of evidence ids.
+    const ids = Array.isArray(payload) ? payload.map(String) : [];
+    const value = normalizeValue(row.field_name, parse<unknown>(row.proposed_value_json, null));
+    result.add(fingerprint(
+      row.field_name,
+      value,
+      ids.map((id) => ({ kind: "evidence-document", documentId: id, sourceType: "unknown", sourceId: id, observedAt: null } as SuggestionEvidence))
+    ));
+  }
+  return result;
+}
+
+function documentEvidence(document: EvidenceDocument): SuggestionEvidence {
+  return {
+    kind: "evidence-document",
+    documentId: document.id,
+    sourceType: document.source,
+    sourceId: document.source_record_id,
+    excerpt: document.text.replace(/\s+/g, " ").slice(0, 400),
+    observedAt: document.occurred_at
+  };
+}
+
+/**
+ * Ties each deterministic suggestion back to the row it actually came from.
+ * Anything we cannot attribute is dropped rather than shipped with borrowed
+ * evidence — the previous implementation attached whichever document happened
+ * to be first, which made an unsupported proposal look sourced.
+ */
+function deterministicEvidence(
+  person: Record<string, any>,
+  item: { field: string; value: unknown; reason: string }
+): SuggestionEvidence[] {
+  const memories = (person.memories ?? []) as Record<string, any>[];
+  const provenance = (person.provenance ?? []) as Record<string, any>[];
+  const proposed = String(item.value ?? "").toLocaleLowerCase();
+
+  if (item.field === "company" || item.field === "location") {
+    const fact = provenance.find((row) =>
+      row.field_name === item.field && String(row.field_value ?? "").toLocaleLowerCase() === proposed);
+    return fact ? [{
+      kind: "provenance",
+      sourceType: String(fact.connector_id),
+      sourceId: String(fact.id),
+      excerpt: `${item.field.replaceAll("_", " ")}: ${fact.field_value}`,
+      observedAt: fact.observed_at ?? null
+    }] : [];
+  }
+  if (item.field === "quick_memories") {
+    const memory = memories.find((row) => String(row.raw_text ?? "").toLocaleLowerCase() === proposed);
+    return memory ? [{
+      kind: "memory",
+      sourceType: String(memory.source),
+      sourceId: String(memory.id),
+      excerpt: String(memory.raw_text).replace(/\s+/g, " ").slice(0, 400),
+      observedAt: memory.occurred_at ?? null
+    }] : [];
+  }
+  if (item.field === "follow_up_date") {
+    const memory = memories.find((row) => row.structured?.followUpDate === item.value);
+    return memory ? [{
+      kind: "memory",
+      sourceType: String(memory.source),
+      sourceId: String(memory.id),
+      excerpt: String(memory.raw_text).replace(/\s+/g, " ").slice(0, 400),
+      structured: { followUpDate: item.value },
+      observedAt: memory.occurred_at ?? null
+    }] : [];
+  }
+  if (item.field === "industry" || item.field === "interests") {
+    // The deterministic industry rule matches a keyword rather than the label
+    // it proposes, and reports that keyword in its reason. Cite the keyword,
+    // otherwise a genuine match looks unsupported and gets dropped.
+    const matched = /Matched relationship context:\s*(.+)$/.exec(item.reason)?.[1]?.trim();
+    const terms = [
+      ...(matched ? [matched] : []),
+      ...(Array.isArray(item.value) ? item.value : [item.value])
+    ].map((term) => String(term).toLocaleLowerCase());
+    return memories
+      .filter((row) => {
+        const haystack = `${row.raw_text ?? ""} ${JSON.stringify(row.structured ?? {})}`.toLocaleLowerCase();
+        return terms.some((term) => term && haystack.includes(term));
+      })
+      .slice(0, 3)
+      .map((row) => ({
+        kind: "memory" as const,
+        sourceType: String(row.source),
+        sourceId: String(row.id),
+        excerpt: String(row.raw_text).replace(/\s+/g, " ").slice(0, 400),
+        observedAt: row.occurred_at ?? null
+      }));
+  }
+  if (item.field === "relationship_strength") {
+    const interactions = (person.interactions ?? []) as Record<string, any>[];
+    return interactions.length ? [{
+      kind: "derived-signal",
+      sourceType: "nett",
+      sourceId: `interactions:${person.id}`,
+      structured: {
+        recentInteractions: interactions.length,
+        mostRecent: interactions[0]?.occurred_at ?? null,
+        connectors: [...new Set(interactions.map((row) => String(row.source_connector)))]
+      },
+      observedAt: interactions[0]?.occurred_at ?? null
+    }] : [];
+  }
+  if (item.field === "warmth") {
+    return person.last_contact ? [{
+      kind: "derived-signal",
+      sourceType: "nett",
+      sourceId: `last-contact:${person.id}`,
+      structured: { lastContact: person.last_contact },
+      observedAt: person.last_contact
+    }] : [];
+  }
+  if (item.field === "gender" || item.field === "culture") {
+    const term = String((item as { evidenceTerms?: string[] }).evidenceTerms?.[0]
+      || namePartsForEvidence(person)[0]
+      || person.name
+      || "").trim();
+    if (!term) return [];
+    return [{
+      kind: "derived-signal",
+      sourceType: "name-inference",
+      sourceId: `name:${person.id}`,
+      excerpt: `Name used for suggestion: ${term}`,
+      structured: { field: item.field, nameToken: term },
+      observedAt: null
+    }];
+  }
+  if (item.field === "online_personality" || item.field === "foods") {
+    const terms = (item as { evidenceTerms?: string[] }).evidenceTerms ?? [];
+    if (!terms.length) return [];
+    return terms.slice(0, 4).map((excerpt, index) => ({
+      kind: "derived-signal" as const,
+      sourceType: "messages",
+      sourceId: `messages:${person.id}:${index}`,
+      excerpt: String(excerpt).slice(0, 400),
+      structured: { field: item.field },
+      observedAt: null
+    }));
+  }
+  return [];
+}
+
+function namePartsForEvidence(person: Record<string, any>) {
+  const full = String(person.preferred_name || person.name || "").trim();
+  return [person.first_name, person.last_name, ...full.split(/\s+/)].map((part) => String(part || "").trim()).filter(Boolean);
+}
+
+function buildSuggestion(
+  person: Record<string, any>,
+  candidate: Candidate,
+  generatedAt: string
+): AutofillSuggestion | null {
+  if (!isProposable(candidate.field)) return null;
+  if (!candidate.evidence.length) return null;
+  const normalizedValue = normalizeValue(candidate.field, candidate.value);
+  if (isEmptyValue(normalizedValue)) return null;
+  const existingValue = person[candidate.field] ?? null;
+  const comparison = compareWithExisting(candidate.field, normalizedValue, existingValue);
+  if (!comparison) return null;
+  const observedAt = candidate.evidence
+    .map((item) => item.observedAt)
+    .filter((value): value is string => Boolean(value))
+    .sort()
+    .at(-1) ?? null;
+  return {
+    id: randomUUID(),
+    personId: String(person.id),
+    field: candidate.field,
+    operation: comparison.operation,
+    value: candidate.value,
+    normalizedValue,
+    existingValue,
+    conflict: comparison.conflict,
+    conflictNote: comparison.conflictNote,
+    confidence: Math.max(0, Math.min(1, candidate.confidence)),
+    reason: candidate.reason,
+    source: [...new Set(candidate.evidence.map((item) => item.sourceType))].join(", ") || "nett",
+    sourceType: candidate.evidence[0]?.kind ?? "derived-signal",
+    provider: candidate.provider,
+    evidence: candidate.evidence,
+    evidenceIds: candidate.evidence.flatMap((item) => item.documentId ? [item.documentId] : []),
+    observedAt,
+    generatedAt,
+    status: "pending",
+    accepted: false,
+    rejected: false,
+    personMatch: {
+      personId: String(person.id),
+      name: String(person.name ?? ""),
+      basis: "explicit-person",
+      confidence: 1
+    }
+  };
+}
+
+export async function intelligentAutofill(
+  personId: string,
+  options: AutofillOptions = {}
+): Promise<AutofillResult> {
+  const { signal, generate = true, reindex = false } = options;
+  const generatedAt = new Date().toISOString();
   const person = getPerson(personId) as Record<string, any> | null;
   if (!person) throw new Error("Person not found");
-  refreshEvidenceIndex(personId);
-  const evidence = db.prepare(`
-    SELECT * FROM evidence_documents WHERE person_id=?
-    ORDER BY COALESCE(occurred_at, updated_at) DESC LIMIT 40
-  `).all(personId) as EvidenceDocument[];
-  const deterministic = autofillSuggestions(personId);
-  let generated: GeneratedSuggestion[] = [];
-  let model = "deterministic";
-  try {
-    model = await selectedModel();
-    const result = await ollama.generateStructured<{ suggestions: GeneratedSuggestion[] }>({
-      model,
-      jsonSchema: suggestionSchema,
-      system: "Extract relationship facts only when explicitly supported by the supplied local evidence. Never guess sensitive attributes. Prefer no suggestion over an unsupported one.",
-      prompt: [
-        `Current profile:\n${JSON.stringify({
-          name: person.name, company: person.company, headline: person.headline,
-          job_title: person.job_title, industry: person.industry,
-          location: person.location, hometown: person.hometown, interests: person.interests,
-          skills: person.skills, institutions: person.institutions, relationship: person.relationship,
-          how_met: person.how_met, where_met: person.where_met, notes: person.notes
-        })}`,
-        `Evidence:\n${evidence.map((row) => `[${row.id}] ${row.text.slice(0, 1_200)}`).join("\n\n")}`
-      ].join("\n\n"),
-      validate: (value): value is { suggestions: GeneratedSuggestion[] } => {
-        const candidate = value as { suggestions?: unknown };
-        return Boolean(candidate && Array.isArray(candidate.suggestions));
+  assertActive(signal);
+
+  // The index is a background concern. Autofill reads it, reports how fresh it
+  // is, and only rebuilds when the caller explicitly asked for it.
+  if (reindex) await refreshPersonEvidenceIndex(personId, { signal });
+  assertActive(signal);
+  const index = personEvidenceIndexState(personId, person.updated_at);
+  const documents = personEvidenceDocuments(personId, EVIDENCE_WINDOW);
+  assertActive(signal);
+
+  const candidates: Candidate[] = [];
+  let model: string | null = null;
+  let modelUnavailable = false;
+
+  if (generate && documents.length) {
+    try {
+      model = await selectedModel(signal);
+      const result = await ollama.generateStructured<{ suggestions: GeneratedSuggestion[] }>({
+        model,
+        signal,
+        jsonSchema: suggestionSchema,
+        system: extractionSystemPrompt,
+        prompt: [
+          `Current profile:\n${JSON.stringify({
+            name: person.name, company: person.company, headline: person.headline,
+            job_title: person.job_title, industry: person.industry,
+            location: person.location, hometown: person.hometown, interests: person.interests,
+            skills: person.skills, institutions: person.institutions, relationship: person.relationship,
+            how_met: person.how_met, where_met: person.where_met, notes: person.notes
+          })}`,
+          `Evidence:\n${documents.map((row) => `[${row.id}] ${row.text.slice(0, 1_200)}`).join("\n\n")}`
+        ].join("\n\n"),
+        validate: (value): value is { suggestions: GeneratedSuggestion[] } => {
+          const candidate = value as { suggestions?: unknown };
+          return Boolean(candidate && Array.isArray(candidate.suggestions));
+        }
+      });
+      const byId = new Map(documents.map((row) => [row.id, row]));
+      for (const suggestion of result.suggestions) {
+        if (!isProposable(suggestion.field)) continue;
+        if (!(suggestion.confidence >= 0.55)) continue;
+        const cited = (suggestion.evidenceIds ?? []).flatMap((id) => {
+          const document = byId.get(id);
+          return document ? [documentEvidence(document)] : [];
+        });
+        // A citation the model invented is not evidence.
+        if (!cited.length || cited.length !== (suggestion.evidenceIds ?? []).length) continue;
+        candidates.push({
+          field: suggestion.field,
+          value: suggestion.value,
+          confidence: suggestion.confidence,
+          reason: suggestion.rationale,
+          evidence: cited,
+          provider: `ollama:${model}`
+        });
       }
+    } catch (error) {
+      if (signal?.aborted) throw new AutofillCancelled();
+      modelUnavailable = true;
+      model = null;
+    }
+  }
+  assertActive(signal);
+
+  const modelFields = new Set(candidates.map((candidate) => candidate.field));
+  for (const item of autofillSuggestions(personId)) {
+    if (modelFields.has(item.field)) continue;
+    const evidence = deterministicEvidence(person, item);
+    if (!evidence.length) continue;
+    candidates.push({
+      field: item.field,
+      value: item.value,
+      confidence: item.confidence,
+      reason: item.reason,
+      evidence,
+      provider: null
     });
-    generated = result.suggestions.filter((suggestion) =>
-      allowedFields.has(suggestion.field)
-      && suggestion.confidence >= 0.55
-      && suggestion.evidenceIds.length > 0
-      && suggestion.evidenceIds.every((id) => evidence.some((row) => row.id === id))
-    );
-  } catch {
-    // Deterministic suggestions remain available if local inference is offline.
+  }
+  assertActive(signal);
+
+  // Name + message trait suggestions (gender, culture, online_personality, foods).
+  const messageBodies = getPersonCommunications(personId, { limit: 120 }).items
+    .filter((row) => row.direction === "incoming" && String(row.body || "").trim())
+    .map((row) => String(row.body));
+  for (const item of collectTraitSuggestions(person, messageBodies)) {
+    if (modelFields.has(item.field) || !isProposable(item.field)) continue;
+    const evidence = deterministicEvidence(person, item);
+    if (!evidence.length) continue;
+    candidates.push({
+      field: item.field,
+      value: item.value,
+      confidence: item.confidence,
+      reason: item.reason,
+      evidence,
+      provider: null
+    });
+  }
+  assertActive(signal);
+
+  const rejected = rejectedFingerprints(personId);
+  const seenFields = new Set<string>();
+  const suggestions: AutofillSuggestion[] = [];
+  for (const candidate of candidates) {
+    if (seenFields.has(candidate.field)) continue;
+    const suggestion = buildSuggestion(person, candidate, generatedAt);
+    if (!suggestion) continue;
+    if (rejected.has(fingerprint(suggestion.field, suggestion.normalizedValue, suggestion.evidence))) continue;
+    seenFields.add(candidate.field);
+    suggestions.push(suggestion);
+    if (suggestions.length >= 12) break;
+  }
+  assertActive(signal);
+
+  persistSuggestions(personId, suggestions, generatedAt);
+
+  const notes: string[] = [];
+  if (modelUnavailable) {
+    notes.push("The local model was not reachable, so these suggestions come from stored evidence only.");
+  }
+  if (index.stale) {
+    notes.push(index.reason === "not-indexed"
+      ? "Nett has not indexed this person's messages yet, so only profile and memory evidence was used. Refresh the evidence index to include conversations."
+      : "This profile changed since the evidence index was last refreshed, so recent edits may not be reflected.");
+  }
+  if (!documents.length && !suggestions.length) {
+    notes.push("There is no stored evidence for this person, so Nett has nothing to propose.");
   }
 
-  const combined = [
-    ...generated,
-    ...deterministic
-      .filter((item) => !generated.some((generatedItem) => generatedItem.field === item.field))
-      .map((item) => ({
-        field: item.field,
-        value: item.value,
-        confidence: item.confidence,
-        rationale: item.reason,
-        evidenceIds: evidence.slice(0, 1).map((row) => row.id)
-      }))
-  ];
+  return {
+    suggestions,
+    degraded: modelUnavailable || index.stale,
+    note: notes.length ? notes.join(" ") : undefined,
+    model,
+    provider: model ? `ollama:${model}` : null,
+    generatedAt,
+    index
+  };
+}
+
+function persistSuggestions(personId: string, suggestions: readonly AutofillSuggestion[], generatedAt: string): void {
+  if (!suggestions.length) return;
+  const supersede = db.prepare(
+    "UPDATE inference_suggestions SET status='superseded', reviewed_at=? WHERE person_id=? AND field_name=? AND status='pending'"
+  );
   const insert = db.prepare(`
     INSERT INTO inference_suggestions
       (id, person_id, field_name, proposed_value_json, current_value_json, evidence_json,
        rationale, confidence, model, status, created_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)
   `);
-  return db.transaction(() => combined.slice(0, 12).map((suggestion) => {
-    db.prepare("UPDATE inference_suggestions SET status='superseded', reviewed_at=? WHERE person_id=? AND field_name=? AND status='pending'")
-      .run(new Date().toISOString(), personId, suggestion.field);
-    const id = randomUUID();
-    insert.run(
-      id,
-      personId,
-      suggestion.field,
-      JSON.stringify(suggestion.value),
-      JSON.stringify(person[suggestion.field] ?? null),
-      JSON.stringify(suggestion.evidenceIds),
-      suggestion.rationale,
-      Math.max(0, Math.min(1, suggestion.confidence)),
-      model,
-      new Date().toISOString()
-    );
-    const sources = evidence.filter((row) => suggestion.evidenceIds.includes(row.id)).map((row) => row.source);
-    return {
-      id,
-      field: suggestion.field,
-      value: suggestion.value,
-      confidence: suggestion.confidence,
-      reason: suggestion.rationale,
-      source: [...new Set(sources)].join(", ") || "Nett inference",
-      evidenceIds: suggestion.evidenceIds
-    };
-  }))();
+  db.transaction(() => {
+    for (const suggestion of suggestions) {
+      supersede.run(generatedAt, personId, suggestion.field);
+      insert.run(
+        suggestion.id,
+        personId,
+        suggestion.field,
+        JSON.stringify(suggestion.value),
+        JSON.stringify(suggestion.existingValue),
+        JSON.stringify({
+          version: 2,
+          fingerprint: fingerprint(suggestion.field, suggestion.normalizedValue, suggestion.evidence),
+          operation: suggestion.operation,
+          normalizedValue: suggestion.normalizedValue,
+          conflict: suggestion.conflict,
+          conflictNote: suggestion.conflictNote,
+          observedAt: suggestion.observedAt,
+          provider: suggestion.provider,
+          personMatch: suggestion.personMatch,
+          evidence: suggestion.evidence,
+          evidenceIds: suggestion.evidenceIds
+        }),
+        suggestion.reason,
+        suggestion.confidence,
+        suggestion.provider ?? "deterministic",
+        generatedAt
+      );
+    }
+  })();
+}
+
+function evidenceSourcePattern(evidenceJson: string): string {
+  const payload = parse<unknown>(evidenceJson, []);
+  if (Array.isArray(payload)) {
+    return payload.map((id) => String(id).split(":")[0]).join(",");
+  }
+  const evidence = (payload as { evidence?: SuggestionEvidence[] }).evidence ?? [];
+  return [...new Set(evidence.map((item) => item.sourceType))].join(",");
 }
 
 export function reviewInferenceSuggestion(id: string, decision: "accepted" | "rejected", apply = false) {
   const row = db.prepare("SELECT * FROM inference_suggestions WHERE id=?").get(id) as Record<string, any> | undefined;
   if (!row) throw new Error("Suggestion not found");
   if (!["pending", "superseded"].includes(row.status)) throw new Error("Suggestion was already reviewed");
+  if (forbiddenFields.has(row.field_name)) throw new Error("This field cannot be written by inference");
   const value = parse(row.proposed_value_json, null);
   db.transaction(() => {
     db.prepare("UPDATE inference_suggestions SET status=?, reviewed_at=? WHERE id=?")
       .run(decision, new Date().toISOString(), id);
     db.prepare(`
       INSERT INTO inference_feedback
-        (id, suggestion_id, person_id, field_name, decision, source_pattern, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
+        (id, suggestion_id, person_id, field_name, decision, source_pattern, created_at,
+         original_value_json, final_value_json)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       randomUUID(), id, row.person_id, row.field_name, decision,
-      parse<string[]>(row.evidence_json, []).map((evidenceId) => evidenceId.split(":")[0]).join(","),
-      new Date().toISOString()
+      evidenceSourcePattern(row.evidence_json),
+      new Date().toISOString(),
+      row.current_value_json ?? null,
+      decision === "accepted" && apply ? row.proposed_value_json : null
     );
     if (decision === "accepted" && apply) updatePerson(row.person_id, { [row.field_name]: value });
   })();

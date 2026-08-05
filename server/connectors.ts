@@ -19,6 +19,18 @@ import {
   upsertInteraction,
   upsertSourceContacts
 } from "./db.js";
+import { whatsappDesktopConnector } from "./connectors/whatsapp-desktop.js";
+import { describeAppleMessage } from "./connectors/message-body.js";
+
+export {
+  findWacrawlBinary,
+  phoneFromWhatsAppJid,
+  prepareWhatsAppArchive,
+  resolveWacrawlArchivePath,
+  resolveWacrawlBinary,
+  resolveWhatsAppDesktopSource,
+  whatsappDesktopStatus
+} from "./connectors/whatsapp-desktop.js";
 
 const execFileAsync = promisify(execFile);
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -37,7 +49,45 @@ function quoteSqliteCliPath(value: string) {
   return `"${value.replaceAll("\\", "\\\\").replaceAll("\"", "\\\"")}"`;
 }
 
-function inspectMessagesDatabase(databasePath: string) {
+type MessagesProbe = { messageCount: number; bytes: number };
+type ProbeCacheEntry = { key: string; result: MessagesProbe } | { key: string; error: Error };
+
+/** `quick_check` scans the entire Messages database. It is a connect-time
+ *  integrity gate, not something status polling can afford, so the result is
+ *  cached against the file's size and mtime. */
+let messagesProbeCache: ProbeCacheEntry | null = null;
+
+function messagesProbeKey(databasePath: string) {
+  try {
+    const stats = statSync(databasePath);
+    return `${databasePath}:${stats.size}:${stats.mtimeMs}`;
+  } catch {
+    return `${databasePath}:missing`;
+  }
+}
+
+export function invalidateMessagesProbe() {
+  messagesProbeCache = null;
+}
+
+function inspectMessagesDatabase(databasePath: string, options: { deep?: boolean } = {}): MessagesProbe {
+  const key = messagesProbeKey(databasePath);
+  if (!options.deep && messagesProbeCache && messagesProbeCache.key === key) {
+    if ("error" in messagesProbeCache) throw messagesProbeCache.error;
+    return messagesProbeCache.result;
+  }
+  try {
+    const result = readMessagesDatabase(databasePath, options.deep !== false);
+    messagesProbeCache = { key, result };
+    return result;
+  } catch (reason) {
+    const error = reason instanceof Error ? reason : new Error(String(reason));
+    messagesProbeCache = { key, error };
+    throw error;
+  }
+}
+
+function readMessagesDatabase(databasePath: string, deep: boolean): MessagesProbe {
   const source = new Database(databasePath, { readonly: true, fileMustExist: true });
   try {
     source.pragma("query_only = ON");
@@ -50,9 +100,11 @@ function inspectMessagesDatabase(databasePath: string) {
     if (missingTables.length) {
       throw new Error(`Not an Apple Messages database. Missing: ${missingTables.join(", ")}`);
     }
-    const integrity = source.pragma("quick_check") as { quick_check: string }[];
-    if (!integrity.every((row) => row.quick_check === "ok")) {
-      throw new Error("The Messages database failed SQLite integrity checks");
+    if (deep) {
+      const integrity = source.pragma("quick_check") as { quick_check: string }[];
+      if (!integrity.every((row) => row.quick_check === "ok")) {
+        throw new Error("The Messages database failed SQLite integrity checks");
+      }
     }
     const messageCount = (source.prepare("SELECT COUNT(*) AS count FROM message").get() as { count: number }).count;
     return { messageCount, bytes: statSync(databasePath).size };
@@ -79,7 +131,7 @@ export function messagesDatabaseStatus() {
   let bytes: number | null = null;
   let error: string | null = null;
   try {
-    const inspected = inspectMessagesDatabase(activePath);
+    const inspected = inspectMessagesDatabase(activePath, { deep: false });
     messageCount = inspected.messageCount;
     bytes = inspected.bytes;
     readable = true;
@@ -131,10 +183,11 @@ export async function prepareLocalMessagesCopy(
         `.backup ${quoteSqliteCliPath(stagingPath)}`
       ], { timeout: 120_000 });
     }
-    const inspected = inspectMessagesDatabase(stagingPath);
+    const inspected = inspectMessagesDatabase(stagingPath, { deep: true });
     removeSqliteSidecars(localMessagesCopy);
     renameSync(stagingPath, localMessagesCopy);
     chmodSync(localMessagesCopy, 0o600);
+    invalidateMessagesProbe();
 
     const preparedAt = new Date().toISOString();
     const settings = connectorSettings("messages");
@@ -298,6 +351,10 @@ type MessageRow = {
   guid: string | null;
   handle: string | null;
   text: string | null;
+  attributed_body: Buffer | null;
+  associated_type: number | null;
+  associated_emoji: string | null;
+  has_attachments: number | null;
   sent_at: string;
   is_from_me: number;
   chat_id: string | null;
@@ -360,12 +417,25 @@ export const messagesConnector: NettConnector = {
         ? Math.min(Math.max(Math.floor(options.maxBatches), 1), 100)
         : Number.POSITIVE_INFINITY;
       const affectedPeople = new Set<string>();
+      // Newer macOS versions move message text into `attributedBody` and mark
+      // tapbacks/attachments with dedicated columns. Older databases (and the
+      // smoke-test fixture) lack them, so select only what exists.
+      const messageColumns = new Set(
+        (source.prepare("PRAGMA table_info(message)").all() as { name: string }[]).map((column) => column.name)
+      );
+      const optionalColumns = [
+        messageColumns.has("attributedBody") ? "m.attributedBody AS attributed_body" : "NULL AS attributed_body",
+        messageColumns.has("associated_message_type") ? "m.associated_message_type AS associated_type" : "NULL AS associated_type",
+        messageColumns.has("associated_message_emoji") ? "m.associated_message_emoji AS associated_emoji" : "NULL AS associated_emoji",
+        messageColumns.has("cache_has_attachments") ? "m.cache_has_attachments AS has_attachments" : "0 AS has_attachments",
+      ].join(",\n          ");
       const query = source.prepare(`
         SELECT
           m.ROWID AS message_id,
           m.guid,
           h.id AS handle,
           m.text,
+          ${optionalColumns},
           strftime('%Y-%m-%dT%H:%M:%fZ', m.date / 1000000000 + 978307200, 'unixepoch') AS sent_at,
           m.is_from_me,
           COALESCE(c.guid, c.chat_identifier, CAST(c.ROWID AS TEXT)) AS chat_id,
@@ -416,7 +486,13 @@ export const messagesConnector: NettConnector = {
                 .run(conversation.id, identity.id, identity.handle);
             }
             const direction = row.is_from_me ? "outgoing" : "incoming";
-            const snippet = row.text?.trim().slice(0, 500) || "Attachment or tapback";
+            const snippet = describeAppleMessage({
+              text: row.text,
+              attributedBody: row.attributed_body,
+              associatedType: row.associated_type,
+              associatedEmoji: row.associated_emoji,
+              hasAttachments: row.has_attachments,
+            });
             const evidence = {
               handle: row.handle,
               direction,
@@ -517,4 +593,8 @@ export const messagesConnector: NettConnector = {
   }
 };
 
-export const connectors = new Map<string, NettConnector>([[appleContactsConnector.id, appleContactsConnector], [messagesConnector.id, messagesConnector]]);
+export const connectors = new Map<string, NettConnector>([
+  [appleContactsConnector.id, appleContactsConnector],
+  [messagesConnector.id, messagesConnector],
+  [whatsappDesktopConnector.id, whatsappDesktopConnector]
+]);

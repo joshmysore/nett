@@ -1,60 +1,165 @@
-import {
-  ArrowRight,
-  Brain,
-  Buildings,
-  CalendarBlank,
-  Clock,
-  Database,
-  MapPin,
-  ShieldCheck,
-  Users,
-} from "@phosphor-icons/react";
-import { motion, useReducedMotion } from "motion/react";
-import { format, isValid, parseISO } from "date-fns";
-import { useMemo, useState } from "react";
+import { ArrowRight, WarningCircle } from "@phosphor-icons/react";
+import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import { AskNett, personContext } from "@/components/AskNett";
-import { NetworkField } from "@/components/NetworkField";
-import {
-  asList,
-  Avatar,
-  calendarDate,
-  EmptyState,
-  friendlyDate,
-  isDue,
-  isThisWeek,
-  SourceBadge,
-} from "@/components/Primitives";
-import type { Overview, Person } from "@/types";
+import { asList, Avatar, calendarDate, friendlyDate } from "@/components/Primitives";
+import { api, isAbortError, type Facet, type PeopleFacets } from "@/lib/api";
+import type { Overview } from "@/types";
+import "@/styles/dashboard.css";
 
-type QueueRange = "today" | "week";
+const numbers = new Intl.NumberFormat();
+const count = (value: number) => numbers.format(value);
+const plural = (value: number, one: string, many: string) => (value === 1 ? one : many);
 
-function nextBirthday(person: Person) {
-  if (!person.birthday) return null;
-  const birthday = parseISO(person.birthday);
-  if (!isValid(birthday)) return null;
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  let next = new Date(today.getFullYear(), birthday.getMonth(), birthday.getDate());
-  if (next < today) {
-    next = new Date(today.getFullYear() + 1, birthday.getMonth(), birthday.getDate());
-  }
-  return {
-    person,
-    next,
-    days: Math.ceil((next.getTime() - today.getTime()) / 86_400_000),
-  };
+/** A number the page is willing to show: it has a stored definition, a real
+ *  count, and a list that reproduces it. */
+type Aggregate = {
+  key: string;
+  label: string;
+  definition: string;
+  value: number | null;
+  to: string;
+};
+
+const facetValue = (facets: Facet[] | undefined, value: string) =>
+  facets?.find((entry) => entry.value === value)?.count ?? 0;
+
+const facetTotal = (facets: Facet[] | undefined) =>
+  (facets || []).reduce((total, entry) => total + entry.count, 0);
+
+function share(value: number, total: number) {
+  if (!total) return null;
+  const percent = (value / total) * 100;
+  if (percent > 0 && percent < 1) return "<1%";
+  return `${Math.round(percent)}%`;
 }
 
-function missingFields(person: Person) {
-  return [
-    ["Location", person.location],
-    ["Industry", person.industry],
-    ["How you met", person.how_met],
-    ["Interests", asList(person.interests).length],
-    ["Contact method", asList(person.methods).length],
-  ]
-    .filter(([, value]) => !value)
-    .map(([label]) => label as string);
+function AggregateList({
+  aggregates,
+  total,
+  pending,
+}: {
+  aggregates: Aggregate[];
+  total: number;
+  pending: string;
+}) {
+  return (
+    <ul className="desk-aggregates">
+      {aggregates.map((aggregate) => {
+        const proportion = aggregate.value === null ? null : share(aggregate.value, total);
+        return (
+          <li key={aggregate.key}>
+            <Link className="desk-aggregate" to={aggregate.to}>
+              <span className="desk-aggregate-label">{aggregate.label}</span>
+              <span className="desk-aggregate-value">
+                {aggregate.value === null ? "--" : count(aggregate.value)}
+              </span>
+              <span className="desk-aggregate-definition">{aggregate.definition}</span>
+              <span className="desk-aggregate-share">
+                {proportion ? `${proportion} of ${count(total)}` : pending}
+              </span>
+              <span className="desk-bar" aria-hidden="true">
+                <i
+                  style={{
+                    width:
+                      aggregate.value && total
+                        ? `${Math.max((aggregate.value / total) * 100, 0.5)}%`
+                        : "0%",
+                  }}
+                />
+              </span>
+              <ArrowRight className="desk-aggregate-go" size={15} aria-hidden="true" />
+            </Link>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
+function RecordedValues({
+  title,
+  note,
+  facets,
+  href,
+  empty,
+}: {
+  title: string;
+  note: string;
+  facets: Facet[] | undefined;
+  href: (value: string) => string;
+  empty: string;
+}) {
+  const visible = (facets || []).slice(0, 6);
+  const remaining = (facets || []).length - visible.length;
+  return (
+    <div className="desk-recorded-group">
+      <h3>{title}</h3>
+      <p>{facets && !facets.length ? empty : note}</p>
+      <ul>
+        {visible.map((entry) => (
+          <li key={entry.value}>
+            <Link to={href(entry.value)}>
+              <span>{entry.value}</span>
+              <b>{count(entry.count)}</b>
+            </Link>
+          </li>
+        ))}
+      </ul>
+      {remaining > 0 && (
+        <p className="desk-recorded-more">
+          {count(remaining)} further {plural(remaining, "value", "values")} recorded.
+        </p>
+      )}
+    </div>
+  );
+}
+
+function FirstRun({ onCapture }: { onCapture: () => void }) {
+  return (
+    <div className="desk desk-first-run">
+      <h1>Nothing has been imported yet</h1>
+      <p className="desk-status">
+        Nett keeps one SQLite file on this Mac. There is no account and nothing is sent
+        anywhere. Three ways to start:
+      </p>
+      <ol className="desk-start-steps">
+        <li>
+          <h2>Read your Apple Contacts</h2>
+          <p>
+            Read-only. Nett copies names and contact methods into its own database and
+            records where each value came from.
+          </p>
+          <Link className="secondary-button" to="/settings/connectors">
+            Open connectors
+          </Link>
+        </li>
+        <li>
+          <h2>Import a spreadsheet you already keep</h2>
+          <p>
+            A CSV of people, one row each. Every raw row is kept so an import can be
+            traced or repeated without creating duplicates.
+          </p>
+          <Link className="secondary-button" to="/settings/connectors">
+            Import a file
+          </Link>
+        </li>
+        <li>
+          <h2>Write down one thing you remember</h2>
+          <p>
+            Plain language. Nett proposes the person and the fields it thinks it found,
+            and waits for you to accept them.
+          </p>
+          <button className="secondary-button" onClick={onCapture}>
+            Remember someone
+          </button>
+        </li>
+      </ol>
+      <p className="desk-note">
+        Guided setup is still available at <Link to="/setup">/setup</Link>.
+      </p>
+    </div>
+  );
 }
 
 export function DashboardPage({
@@ -66,442 +171,240 @@ export function DashboardPage({
   onOpen: (id: string) => void;
   onCapture: () => void;
 }) {
-  const reduced = useReducedMotion();
-  const people = asList(overview.people);
-  const [range, setRange] = useState<QueueRange>("today");
+  const [facets, setFacets] = useState<PeopleFacets | null>(null);
+  const [withoutContext, setWithoutContext] = useState<number | null>(null);
+  const [failed, setFailed] = useState<string | null>(null);
+  const [attempt, setAttempt] = useState(0);
+  const total = overview.total;
 
-  const actionQueue = useMemo(() => {
-    const explicit = people.filter((person) =>
-      range === "today"
-        ? isDue(person.follow_up_date)
-        : isDue(person.follow_up_date) || isThisWeek(person.follow_up_date),
-    );
-    const fallback = [...people]
-      .filter((person) => !explicit.some((item) => item.id === person.id))
-      .filter((person) =>
-        (person.priority || 0) > 0
-        || (person.relationship_strength || 0) > 0
-        || Boolean(person.quick_memories)
-      )
-      .sort((a, b) => (b.priority || 0) - (a.priority || 0));
-    return [...explicit, ...fallback].slice(0, 7);
-  }, [people, range]);
+  useEffect(() => {
+    if (!total) return;
+    const controller = new AbortController();
+    setFailed(null);
+    Promise.all([
+      api.peopleFacets({}, controller.signal),
+      api.peoplePage({ missing: "context", page: 1, limit: 1 }, controller.signal),
+    ])
+      .then(([nextFacets, contextGap]) => {
+        setFacets(nextFacets);
+        setWithoutContext(contextGap.total);
+      })
+      .catch((error) => {
+        if (isAbortError(error)) return;
+        setFailed(error instanceof Error ? error.message : "Counts are unavailable");
+      });
+    return () => controller.abort();
+  }, [total, attempt]);
 
-  const recent = useMemo(
-    () =>
-      [...people]
-        .filter((person) => person.last_contact)
-        .sort((a, b) =>
-          String(b.last_contact).localeCompare(String(a.last_contact)),
-        )
-        .slice(0, 6),
-    [people],
-  );
-  const drift = useMemo(
-    () =>
-      [...people]
-        .filter((person) => {
-          if (!person.last_contact) return false;
-          const days = (Date.now() - Date.parse(person.last_contact)) / 86_400_000;
-          return days > 75 && (person.relationship_strength || 0) >= 55;
-        })
-        .sort(
-          (a, b) =>
-            (b.relationship_strength || 0) - (a.relationship_strength || 0),
-        )
-        .slice(0, 5),
-    [people],
-  );
-  const gaps = useMemo(
-    () =>
-      people
-        .map((person) => ({ person, missing: missingFields(person) }))
-        .filter(({ missing }) => missing.length)
-        .sort((a, b) => b.missing.length - a.missing.length)
-        .slice(0, 5),
-    [people],
-  );
-  const birthdays = useMemo(
-    () =>
-      people
-        .map(nextBirthday)
-        .filter(
-          (
-            item,
-          ): item is { person: Person; next: Date; days: number } => Boolean(item),
-        )
-        .filter((item) => item.days <= 45)
-        .sort((a, b) => a.days - b.days)
-        .slice(0, 5),
-    [people],
-  );
-  const locations = asList(overview.locations).slice(0, 5);
-  const institutions = useMemo(
-    () =>
-      Object.entries(
-        people.reduce<Record<string, number>>((counts, person) => {
-          asList(person.institutions).forEach((institution) => {
-            counts[institution] = (counts[institution] || 0) + 1;
-          });
-          return counts;
-        }, {}),
-      )
-        .sort((a, b) => b[1] - a[1])
-        .slice(0, 5),
-    [people],
-  );
-  const averageWarmth = people.length
-    ? Math.round(
-        people.reduce((sum, person) => sum + (person.warmth || 0), 0) /
-          people.length,
-      )
-    : 0;
-  const queueDue = people.filter((person) => isDue(person.follow_up_date)).length;
-  const queueWeek = people.filter((person) => isThisWeek(person.follow_up_date)).length;
-  const topLocations = locations.map(([label]) => label).filter(Boolean).slice(0, 2);
+  if (!total) return <FirstRun onCapture={onCapture} />;
+
+  const stale = asList(overview.coldPeople).slice(0, 6);
+
+  const contact: Aggregate[] = [
+    {
+      key: "recent",
+      label: "Contacted in the last 30 days",
+      definition: "Most recent recorded interaction is 30 days old or less.",
+      value: facets ? facetValue(facets.recency, "30d") : null,
+      to: "/people?recency=30d",
+    },
+    {
+      key: "due",
+      label: "Follow-up due",
+      definition: "A follow-up date is set for today or earlier.",
+      value: overview.due,
+      to: "/people?filter=due",
+    },
+    {
+      key: "cold",
+      label: "Going quiet",
+      definition: "An interaction is recorded, but the most recent one is over 90 days old.",
+      value: overview.cold,
+      to: "/people?filter=cold",
+    },
+    {
+      key: "never",
+      label: "No contact ever recorded",
+      definition: "No message, call, or interaction from any connected source.",
+      value: facets ? facetValue(facets.recency, "never") : null,
+      to: "/people?recency=never",
+    },
+  ];
+
+  const gaps: Aggregate[] = [
+    {
+      key: "context",
+      label: "Nothing about the relationship",
+      definition: "No relationship label, no note, and no memory written down.",
+      value: withoutContext,
+      to: "/people?missing=context",
+    },
+    {
+      key: "industry",
+      label: "No industry",
+      definition: "The industry field is empty.",
+      value: facets ? facetValue(facets.missing, "industry") : null,
+      to: "/people?missing=industry",
+    },
+    {
+      key: "location",
+      label: "No location",
+      definition: "The location field is empty.",
+      value: facets ? facetValue(facets.missing, "location") : null,
+      to: "/people?missing=location",
+    },
+    {
+      key: "company",
+      label: "No company",
+      definition: "The company field is empty.",
+      value: facets ? facetValue(facets.missing, "company") : null,
+      to: "/people?missing=company",
+    },
+    {
+      key: "tags",
+      label: "No categories",
+      definition: "No tags or categories have been recorded yet.",
+      value: facets ? facetValue(facets.missing, "tags") : null,
+      to: "/people?missing=tags",
+    },
+  ];
+
+  const pending = failed ? "Unavailable" : "Counting";
+  const recordedNote = (values: Facet[] | undefined, subject: string) =>
+    values
+      ? `${count(facetTotal(values))} of ${count(total)} people have ${subject}.`
+      : `${pending}.`;
 
   return (
-    <motion.div
-      className="dashboard relationship-console"
-      initial={reduced ? false : { opacity: 0 }}
-      animate={{ opacity: 1 }}
-    >
-      <section className="dashboard-heading">
-        <div>
-          <p className="section-kicker">{format(new Date(), "EEEE, MMMM d")}</p>
-          <h1>Relationship desk</h1>
-          <p className="heading-note">
-            {queueDue
-              ? `${queueDue} ${queueDue === 1 ? "follow-up needs" : "follow-ups need"} attention today.`
-              : "No scheduled follow-ups are overdue."}{" "}
-            {drift.length
-              ? `${drift.length} valuable ${drift.length === 1 ? "tie is" : "ties are"} drifting.`
-              : "No high-value ties are currently drifting."}
-          </p>
-        </div>
-        <div className="local-seal">
-          <ShieldCheck size={18} weight="duotone" />
-          <span>
-            <strong>Local intelligence</strong>
-            Evidence remains on this device
-          </span>
-        </div>
-      </section>
+    <div className="desk">
+      <header className="desk-head">
+        <h1>Today</h1>
+        <p className="desk-status">
+          {count(total)} people in this local database.{" "}
+          {overview.due
+            ? `${count(overview.due)} ${plural(overview.due, "follow-up is", "follow-ups are")} due today or earlier.`
+            : "No follow-up is due."}{" "}
+          {overview.cold
+            ? `${count(overview.cold)} ${plural(overview.cold, "person has", "people have")} no recorded contact in over 90 days.`
+            : "No recorded relationship has been quiet for more than 90 days."}
+        </p>
+      </header>
 
-      <section className="action-window glass-panel" aria-labelledby="action-title">
-        <header className="action-window-header">
-          <div>
-            <h2 id="action-title">What needs attention</h2>
-            <p>Scheduled follow-ups first, then relationships with high priority.</p>
-          </div>
-          <div className="queue-switch" role="group" aria-label="Queue timeframe">
-            <button
-              className={range === "today" ? "is-active" : ""}
-              onClick={() => setRange("today")}
-              aria-pressed={range === "today"}
-            >
-              Today <span>{queueDue}</span>
-            </button>
-            <button
-              className={range === "week" ? "is-active" : ""}
-              onClick={() => setRange("week")}
-              aria-pressed={range === "week"}
-            >
-              Next 7 days <span>{queueDue + queueWeek}</span>
-            </button>
-          </div>
-        </header>
-        {actionQueue.length ? (
-          <div className="priority-list action-list">
-            {actionQueue.map((person) => {
-              const scheduled =
-                isDue(person.follow_up_date) || isThisWeek(person.follow_up_date);
-              return (
-                <button
-                  className="priority-row"
-                  key={person.id}
-                  onClick={() => onOpen(person.id)}
-                >
-                  <Avatar person={person} size="sm" />
-                  <span className="priority-person">
-                    <strong>{person.name}</strong>
-                    <small>{personContext(person) || "Context not recorded"}</small>
-                  </span>
-                  <span className="priority-context">
-                    {person.quick_memories ||
-                      (scheduled
-                        ? "Scheduled follow-up"
-                        : "High-priority relationship")}
-                  </span>
-                  <span className={`follow-state ${isDue(person.follow_up_date) ? "is-due" : ""}`}>
-                    <CalendarBlank size={14} />
-                    {person.follow_up_date
-                      ? calendarDate(person.follow_up_date, "Open")
-                      : "Open"}
-                  </span>
-                  <ArrowRight size={16} className="row-arrow" />
-                </button>
-              );
-            })}
-          </div>
-        ) : (
-          <EmptyState
-            title="Nothing is queued"
-            message="Add a memory with a follow-up date to build an action queue."
-            action={
-              <button className="secondary-button" onClick={onCapture}>
-                Add memory
-              </button>
-            }
-          />
-        )}
-      </section>
+      {failed && (
+        <p className="inline-error" role="alert">
+          <WarningCircle size={15} aria-hidden="true" />
+          {failed}
+          <button className="text-button" onClick={() => setAttempt((value) => value + 1)}>
+            Retry
+          </button>
+        </p>
+      )}
 
-      <section className="metric-ribbon" aria-label="Relationship health">
-        <div>
-          <span>People</span>
-          <strong>{overview.total || people.length}</strong>
-          <small>canonical profiles</small>
-        </div>
-        <div>
-          <span>Warmth</span>
-          <strong>{averageWarmth}</strong>
-          <small>network average</small>
-        </div>
-        <div>
-          <span>With context</span>
-          <strong>
-            {people.length
-              ? Math.round(
-                  (people.filter((person) => (person.memory_count || 0) > 0).length /
-                    people.length) *
-                    100,
-                )
-              : 0}
-            %
-          </strong>
-          <small>memory coverage</small>
-        </div>
-        <div>
-          <span>Top clusters</span>
-          <strong>{topLocations.length || 0}</strong>
-          <small>{topLocations.join(", ") || "none yet"}</small>
-        </div>
-      </section>
+      <div className="desk-columns">
+        <div className="desk-primary">
+          <section className="desk-section" aria-labelledby="desk-contact">
+            <h2 id="desk-contact">Contact</h2>
+            <p className="desk-section-note">
+              Counted across all {count(total)} people. Last contact is the most recent
+              message, call, or interaction stored from a connected source. Open a count to
+              see exactly who it contains.
+            </p>
+            <AggregateList aggregates={contact} total={total} pending={pending} />
+          </section>
 
-      <div className="dashboard-columns console-columns">
-        <div className="console-main">
-          <section className="recent-strip">
-            <div className="section-heading">
-              <div>
-                <h2>Recent exchanges</h2>
-                <p>Latest contact evidence across connected sources.</p>
-              </div>
-            </div>
-            {recent.length ? (
-              <div className="recent-grid">
-                {recent.map((person) => (
-                  <button key={person.id} onClick={() => onOpen(person.id)}>
-                    <Avatar person={person} size="sm" />
-                    <span>
-                      <strong>{person.name}</strong>
-                      <small>{friendlyDate(person.last_contact)}</small>
-                    </span>
-                    <SourceBadge
-                      source={
-                        asList(person.sources).includes("messages")
-                          ? "messages"
-                          : person.sources?.[0] || "nett"
-                      }
-                    />
-                  </button>
-                ))}
-              </div>
+          <section className="desk-section" aria-labelledby="desk-quiet">
+            <h2 id="desk-quiet">Longest without contact</h2>
+            <p className="desk-section-note">
+              People whose most recent recorded contact is over 90 days old, oldest first.
+            </p>
+            {stale.length ? (
+              <>
+                <ul className="desk-people">
+                  {stale.map((person) => (
+                    <li key={person.id}>
+                      <button className="desk-person" onClick={() => onOpen(person.id)}>
+                        <Avatar person={person} size="sm" />
+                        <span className="desk-person-name">{person.name}</span>
+                        <span className="desk-person-context">
+                          {person.quick_memories || personContext(person) || "No context recorded"}
+                        </span>
+                        <span className="desk-person-when">
+                          <b>{calendarDate(person.last_contact)}</b>
+                          <small>{friendlyDate(person.last_contact)}</small>
+                        </span>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+                <Link className="desk-more" to="/people?filter=cold">
+                  All {count(overview.cold)} people who have gone quiet
+                  <ArrowRight size={15} aria-hidden="true" />
+                </Link>
+              </>
             ) : (
-              <div className="section-empty">
-                <Clock size={22} />
-                <p>Connect an interaction source or record a memory to see recent exchanges.</p>
-              </div>
+              <p className="desk-empty">
+                Every person with a recorded interaction has been contacted in the last 90
+                days.
+              </p>
             )}
           </section>
 
-          <section className="drift-section">
-            <div className="section-heading">
-              <div>
-                <h2>Drift and cold ties</h2>
-                <p>Strong relationships whose latest recorded contact is aging.</p>
-              </div>
-            </div>
-            <div className="drift-list">
-              {drift.length ? (
-                drift.map((person) => (
-                  <button key={person.id} onClick={() => onOpen(person.id)}>
-                    <span>
-                      <strong>{person.name}</strong>
-                      <small>{personContext(person) || "Context incomplete"}</small>
-                    </span>
-                    <span>
-                      <b>{person.relationship_strength || 0}</b>
-                      <small>{friendlyDate(person.last_contact)}</small>
-                    </span>
-                    <ArrowRight size={15} />
-                  </button>
-                ))
-              ) : (
-                <p className="quiet-empty">No strong ties are currently in the drift window.</p>
-              )}
-            </div>
+          <section className="desk-section" aria-labelledby="desk-gaps">
+            <h2 id="desk-gaps">What Nett does not know</h2>
+            <p className="desk-section-note">
+              Empty fields across all {count(total)} people. Nett will not guess them: each
+              one has to arrive from a source or from you. These lists are where an
+              afternoon of filling in goes furthest.
+            </p>
+            <AggregateList aggregates={gaps} total={total} pending={pending} />
           </section>
 
-          <section className="opportunity-grid" aria-label="Relationship opportunities">
-            <article>
-              <header>
-                <CalendarBlank size={19} />
-                <div>
-                  <h2>Birthday moments</h2>
-                  <p>Recorded birthdays in the next 45 days.</p>
-                </div>
-              </header>
-              <div>
-                {birthdays.length ? (
-                  birthdays.map(({ person, next, days }) => (
-                    <button key={person.id} onClick={() => onOpen(person.id)}>
-                      <span>
-                        <strong>{person.name}</strong>
-                        <small>{format(next, "MMMM d")}</small>
-                      </span>
-                      <i>{days === 0 ? "Today" : `${days}d`}</i>
-                    </button>
-                  ))
-                ) : (
-                  <p>No upcoming birthdays are available from current sources.</p>
-                )}
-              </div>
-            </article>
-            <article>
-              <header>
-                <MapPin size={19} />
-                <div>
-                  <h2>Location opportunities</h2>
-                  <p>Places with enough context for a focused outreach pass.</p>
-                </div>
-              </header>
-              <div>
-                {locations.length ? (
-                  locations.map(([location, count]) => {
-                    const person = people.find((item) => item.location === location);
-                    return (
-                      <button
-                        key={location}
-                        onClick={() => person && onOpen(person.id)}
-                        disabled={!person}
-                      >
-                        <span>
-                          <strong>{location}</strong>
-                          <small>{count} {count === 1 ? "person" : "people"}</small>
-                        </span>
-                        <ArrowRight size={15} />
-                      </button>
-                    );
-                  })
-                ) : (
-                  <p>Add profile locations to surface place-based opportunities.</p>
-                )}
-              </div>
-            </article>
-          </section>
-
-          <section className="intelligence-spectrum">
-            <div className="section-heading">
-              <div>
-                <h2>Knowledge and clusters</h2>
-                <p>Incomplete profiles and shared relationship context.</p>
-              </div>
-            </div>
-            <div className="spectrum-grid compact-spectrum">
-              <article>
-                <header>
-                  <Brain size={18} />
-                  <span>
-                    <strong>Knowledge gaps</strong>
-                    <small>Profiles worth enriching</small>
-                  </span>
-                </header>
-                <div>
-                  {gaps.map(({ person, missing }) => (
-                    <button key={person.id} onClick={() => onOpen(person.id)}>
-                      <span>
-                        {person.name}
-                        <small>{missing.slice(0, 2).join(", ")}</small>
-                      </span>
-                      <i>{missing.length}</i>
-                    </button>
-                  ))}
-                  {!gaps.length && <p className="quiet-empty">No common profile gaps found.</p>}
-                </div>
-              </article>
-              <article>
-                <header>
-                  <Buildings size={18} />
-                  <span>
-                    <strong>Shared institutions</strong>
-                    <small>Affiliation density</small>
-                  </span>
-                </header>
-                <div>
-                  {institutions.map(([institution, count]) => (
-                    <div key={institution}>
-                      <span>{institution}</span>
-                      <i>{count}</i>
-                    </div>
-                  ))}
-                  {!institutions.length && <p className="quiet-empty">No institutions recorded.</p>}
-                </div>
-              </article>
-              <article>
-                <header>
-                  <Users size={18} />
-                  <span>
-                    <strong>Industry clusters</strong>
-                    <small>Current network concentration</small>
-                  </span>
-                </header>
-                <div>
-                  {asList(overview.industries)
-                    .slice(0, 5)
-                    .map(([industry, count]) => (
-                      <div key={industry}>
-                        <span>{industry}</span>
-                        <i>{count}</i>
-                      </div>
-                    ))}
-                  {!overview.industries?.length && (
-                    <p className="quiet-empty">No industries recorded.</p>
-                  )}
-                </div>
-              </article>
+          <section className="desk-section" aria-labelledby="desk-recorded">
+            <h2 id="desk-recorded">What is recorded</h2>
+            <p className="desk-section-note">
+              Only values that actually occur are listed. Nothing here is inferred, and
+              there is no bucket for the people a field is empty for.
+            </p>
+            <div className="desk-recorded">
+              <RecordedValues
+                title="Relationship"
+                note={recordedNote(facets?.relationships, "a relationship recorded")}
+                facets={facets?.relationships}
+                href={(value) => `/people?relationship=${encodeURIComponent(value)}`}
+                empty="No relationship has been recorded yet."
+              />
+              <RecordedValues
+                title="Language"
+                note="Counted once per language, so a person can appear in more than one row."
+                facets={facets?.languages}
+                href={(value) => `/people?language=${encodeURIComponent(value)}`}
+                empty="No languages have been recorded yet."
+              />
+              <RecordedValues
+                title="Country"
+                note={`Read from the end of the recorded location text. ${recordedNote(
+                  facets?.countries,
+                  "a location that names one",
+                )}`}
+                facets={facets?.countries}
+                href={(value) => `/people?country=${encodeURIComponent(value)}`}
+                empty="No location names a country yet."
+              />
+              <RecordedValues
+                title="Industry"
+                note={recordedNote(facets?.industries, "an industry recorded")}
+                facets={facets?.industries}
+                href={(value) => `/people?industry=${encodeURIComponent(value)}`}
+                empty="No industry has been recorded yet."
+              />
             </div>
           </section>
         </div>
 
-        <aside className="signal-column console-aside">
-          <AskNett overview={overview} onOpen={onOpen} />
-          <section className="mini-network glass-panel">
-            <div className="section-heading compact">
-              <div>
-                <h2>Relationship field</h2>
-                <p>High-priority people in the current network.</p>
-              </div>
-            </div>
-            <NetworkField
-              people={[...people]
-                .sort((a, b) => (b.priority || 0) - (a.priority || 0))
-                .slice(0, 12)}
-              onOpen={onOpen}
-            />
-          </section>
+        <aside className="desk-aside" aria-label="Ask Nett">
+          <AskNett onOpen={onOpen} />
         </aside>
       </div>
-    </motion.div>
+    </div>
   );
 }

@@ -129,14 +129,15 @@ function NettApp() {
         setDialog("capture");
       }
       if (event.key === "Escape") {
-        setCommandOpen(false);
+        // Modals consume Escape in the capture phase. Only clear the drawer
+        // here when no dialog or command palette is open.
+        if (dialog || commandOpen) return;
         setDrawerId(null);
-        setDialog(null);
       }
     };
     window.addEventListener("keydown", listener);
     return () => window.removeEventListener("keydown", listener);
-  }, []);
+  }, [dialog, commandOpen]);
 
   useEffect(() => {
     if (!toast) return;

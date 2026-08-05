@@ -6,10 +6,13 @@ import {
   Sparkle,
   SpinnerGap,
   WarningCircle,
+  X,
 } from "@phosphor-icons/react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { HometownEditor, PlacePicker } from "@/components/PlacePicker";
 import { Modal, sourceLabel } from "@/components/Primitives";
-import { api, type PublicProfileSuggestion } from "@/lib/api";
+import { api, isAbortError, type PublicProfileSuggestion } from "@/lib/api";
+import { EDIT_TEXT_FIELDS } from "@/lib/person-fields";
 import type { FullPerson } from "@/types";
 
 type Suggestion = {
@@ -22,20 +25,19 @@ type Suggestion = {
   evidenceIds?: string[];
 };
 
-const textFields = [
+const PLACE_FIELDS = new Set(["location", "hometown"]);
+
+const textFields: [string, string][] = [
   ["name", "Name"],
   ["headline", "Headline"],
   ["job_title", "Job title"],
-  ["company", "Company"],
-  ["location", "Location"],
   ["linkedin_url", "LinkedIn profile"],
-  ["industry", "Industry"],
-  ["relationship", "Relationship"],
+  ...EDIT_TEXT_FIELDS.filter((field) => !PLACE_FIELDS.has(field.key)).map((field) => [
+    field.key,
+    field.kind === "list" ? `${field.label}, comma separated` : field.label,
+  ] as [string, string]),
   ["follow_up_date", "Follow-up date"],
-  ["interests", "Interests, comma separated"],
-  ["skills", "Skills, comma separated"],
-  ["institutions", "Institutions, comma separated"],
-] as const;
+];
 
 function displayValue(value: unknown) {
   return Array.isArray(value) ? value.join(", ") : String(value ?? "");
@@ -48,6 +50,7 @@ export function EditProfileDialog({
   saving,
   onSave,
   onClose,
+  hiddenFields,
 }: {
   person: FullPerson;
   form: Record<string, unknown>;
@@ -55,11 +58,15 @@ export function EditProfileDialog({
   saving: boolean;
   onSave: () => void | Promise<void>;
   onClose: () => void;
+  /** Fields Nett must never propose or display. */
+  hiddenFields?: ReadonlySet<string>;
 }) {
   const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [finding, setFinding] = useState(false);
+  const [suggestionNote, setSuggestionNote] = useState<string | null>(null);
   const [suggestionError, setSuggestionError] = useState<string | null>(null);
+  const findController = useRef<AbortController | null>(null);
   const [stagedSuggestionIds, setStagedSuggestionIds] = useState<string[]>([]);
   const [publicUrl, setPublicUrl] = useState(person.linkedin_url || "");
   const [publicText, setPublicText] = useState("");
@@ -88,21 +95,74 @@ export function EditProfileDialog({
   }, [person.company, person.location, person.name]);
 
   const findSuggestions = async () => {
+    findController.current?.abort();
+    const abort = new AbortController();
+    findController.current = abort;
     setFinding(true);
     setSuggestionError(null);
+    setSuggestionNote(null);
     try {
-      const result = await api.autofill(person.id);
-      const next = Array.isArray(result.suggestions) ? result.suggestions : [];
-      setSuggestions(next);
-      setSelected(new Set(next.map((suggestion) => suggestion.field)));
-    } catch (error) {
-      setSuggestionError(
-        error instanceof Error ? error.message : "Could not inspect profile evidence",
+      const quick = await api.autofill(person.id, abort.signal, { generate: false });
+      let next = (Array.isArray(quick.suggestions) ? quick.suggestions : []).filter(
+        (suggestion) => !hiddenFields?.has(suggestion.field),
       );
+      setSuggestions(next);
+      setSelected(
+        new Set(
+          next
+            .filter((suggestion) => !displayValue(form[suggestion.field]).trim())
+            .map((suggestion) => suggestion.field),
+        ),
+      );
+      setSuggestionNote(
+        quick.note
+          || (next.length
+            ? "Showing evidence-backed suggestions. Asking the local model for more…"
+            : "No direct evidence yet. Asking the local model…"),
+      );
+
+      try {
+        const result = await api.autofill(person.id, abort.signal, { generate: true });
+        next = (Array.isArray(result.suggestions) ? result.suggestions : []).filter(
+          (suggestion) => !hiddenFields?.has(suggestion.field),
+        );
+        setSuggestions(next);
+        setSelected(
+          new Set(
+            next
+              .filter((suggestion) => !displayValue(form[suggestion.field]).trim())
+              .map((suggestion) => suggestion.field),
+          ),
+        );
+        if (result.note) setSuggestionNote(result.note);
+        else if (!next.length) setSuggestionNote("No evidence-backed suggestion was found.");
+        else setSuggestionNote(null);
+      } catch (error) {
+        if (isAbortError(error)) {
+          if (!next.length) setSuggestionNote("Evidence check cancelled. Nothing was written.");
+          else setSuggestionNote(null);
+        } else if (next.length) {
+          setSuggestionNote(
+            "Local inference was unavailable, so only directly recorded evidence was considered.",
+          );
+        } else {
+          throw error;
+        }
+      }
+    } catch (error) {
+      if (isAbortError(error)) setSuggestionNote("Evidence check cancelled. Nothing was written.");
+      else {
+        setSuggestionError(
+          error instanceof Error ? error.message : "Could not inspect profile evidence",
+        );
+      }
     } finally {
+      if (findController.current === abort) findController.current = null;
       setFinding(false);
     }
   };
+
+  useEffect(() => () => findController.current?.abort(), []);
 
   const toggleSuggestion = (field: string) => {
     setSelected((current) => {
@@ -182,11 +242,25 @@ export function EditProfileDialog({
             <small>Compare proposed values one field at a time.</small>
           </span>
         </div>
-        <button onClick={() => void findSuggestions()} disabled={finding}>
-          {finding ? <SpinnerGap className="spin" /> : <Brain />}
-          {finding ? "Inspecting" : "Find evidence"}
-        </button>
+        <span className="evidence-check-bar">
+          <button onClick={() => void findSuggestions()} disabled={finding}>
+            {finding ? <SpinnerGap className="spin" /> : <Brain />}
+            {finding ? "Reading evidence" : "Find evidence"}
+          </button>
+          {finding && (
+            <button data-variant="cancel" onClick={() => findController.current?.abort()}>
+              <X size={15} aria-hidden="true" />
+              Cancel
+            </button>
+          )}
+        </span>
       </div>
+
+      <p className="evidence-status" role="status" aria-live="polite">
+        {finding
+          ? "Reading stored evidence. This can take a few seconds."
+          : suggestionNote || ""}
+      </p>
 
       {suggestionError && (
         <p className="inline-error" role="alert">
@@ -198,34 +272,45 @@ export function EditProfileDialog({
       {suggestions.length > 0 && (
         <div className="autofill-panel suggestion-review">
           <div>
-            {comparable.map((suggestion) => (
-              <label
-                className={selected.has(suggestion.field) ? "is-selected" : ""}
-                key={suggestion.id || `${suggestion.field}:${suggestion.proposed}`}
-              >
-                <input
-                  type="checkbox"
-                  checked={selected.has(suggestion.field)}
-                  onChange={() => toggleSuggestion(suggestion.field)}
-                />
-                <span className="suggestion-field">
-                  <strong>{suggestion.field.replace(/_/g, " ")}</strong>
-                  <small>{sourceLabel(suggestion.source)}</small>
-                </span>
-                <span className="suggestion-diff">
-                  <span>
-                    <small>Current</small>
-                    <b>{suggestion.current || "Not recorded"}</b>
+            {comparable.map((suggestion) => {
+              const conflicting =
+                Boolean(suggestion.current.trim()) && suggestion.current !== suggestion.proposed;
+              return (
+                <label
+                  className={selected.has(suggestion.field) ? "is-selected" : ""}
+                  key={suggestion.id || `${suggestion.field}:${suggestion.proposed}`}
+                >
+                  <input
+                    type="checkbox"
+                    checked={selected.has(suggestion.field)}
+                    onChange={() => toggleSuggestion(suggestion.field)}
+                  />
+                  <span className="suggestion-field">
+                    <strong>{suggestion.field.replace(/_/g, " ")}</strong>
+                    <small>{sourceLabel(suggestion.source)}</small>
                   </span>
-                  <span>
-                    <small>Suggested</small>
-                    <b>{suggestion.proposed || "No value"}</b>
+                  <span className="suggestion-diff">
+                    <span>
+                      <small>Current</small>
+                      <b>{suggestion.current || "Not recorded"}</b>
+                    </span>
+                    <span>
+                      <small>Suggested</small>
+                      <b>{suggestion.proposed || "No value"}</b>
+                    </span>
                   </span>
-                </span>
-                <i>{Math.round((suggestion.confidence || 0) * 100)}%</i>
-                <p>{suggestion.reason}</p>
-              </label>
-            ))}
+                  <i>{Math.round((suggestion.confidence || 0) * 100)}%</i>
+                  <p>
+                    {conflicting && (
+                      <strong className="suggestion-unresolved">
+                        Replaces a recorded value.{" "}
+                      </strong>
+                    )}
+                    {suggestion.reason}
+                  </p>
+                </label>
+              );
+            })}
           </div>
           <button onClick={() => void applySelected()} disabled={!selectedCount}>
             <Check size={15} />
@@ -318,14 +403,45 @@ export function EditProfileDialog({
       </section>
 
       <div className="edit-grid">
+        <label className="full-field">
+          <span>Location</span>
+          <PlacePicker
+            value={displayValue(form.location)}
+            showClear
+            onChange={(location) => setForm({ ...form, location })}
+          />
+        </label>
+        <div className="full-field hometown-field">
+          <span>Hometowns</span>
+          <HometownEditor
+            value={Array.isArray(form.hometown)
+              ? form.hometown.map((entry) => String(entry))
+              : displayValue(form.hometown)
+                  .split(/\n|,/)
+                  .map((entry) => entry.trim())
+                  .filter(Boolean)}
+            onChange={(hometown) => setForm({ ...form, hometown })}
+          />
+        </div>
         {textFields.map(([key, label]) => (
           <label key={key}>
             <span>{label}</span>
-            <input
-              type={key === "follow_up_date" ? "date" : "text"}
-              value={displayValue(form[key])}
-              onChange={(event) => setForm({ ...form, [key]: event.target.value })}
-            />
+            {key === "gender" ? (
+              <select
+                value={displayValue(form.gender)}
+                onChange={(event) => setForm({ ...form, gender: event.target.value })}
+              >
+                <option value="">Not recorded</option>
+                <option value="male">Male</option>
+                <option value="female">Female</option>
+              </select>
+            ) : (
+              <input
+                type={key === "follow_up_date" || key === "last_contact" ? "date" : "text"}
+                value={displayValue(form[key])}
+                onChange={(event) => setForm({ ...form, [key]: event.target.value })}
+              />
+            )}
           </label>
         ))}
         {[

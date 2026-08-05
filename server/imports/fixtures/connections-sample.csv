@@ -1,0 +1,11 @@
+Notes:
+"When exporting your connection data, you may notice that some of the email addresses are missing. You will only see email addresses for connections who have allowed their connections to see or download their email address using this setting."
+
+First Name,Last Name,URL,Email Address,Company,Position,Connected On
+Ada,Lovelace,https://www.linkedin.com/in/ada-lovelace-synthetic,ada.lovelace@example.test,Analytical Engines,Chief Mathematician,21 Mar 2024
+Zoë,Müller,https://www.linkedin.com/in/zoe-muller-synthetic,,"Müller, Braun & Co.",Head of Research,03/21/24
+陳,大文,https://www.linkedin.com/in/chan-tai-man-synthetic,chan.tai.man@example.test,理工研究所,講師,2 Feb 2023
+Priya,Raman,http://www.linkedin.com/in/priya-raman-synthetic/?trk=export,,Northwind Labs,"Engineer, Platform",not a date
+Sam,Okafor,,sam.okafor@example.test,Kite Studio,Designer,14 Jul 2022
+Jean-Luc,Picard 🚀,https://www.linkedin.com/in/jean-luc-picard-synthetic,,Starfleet,Captain,1 Jan 2020
+,,,,,,

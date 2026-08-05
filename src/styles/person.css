@@ -1,0 +1,448 @@
+/* Person workspace — profile route and quick drawer.
+   Tokens only; design.md is the source of truth. Loaded by ProfilePage and
+   PersonDrawer so the shared fact/edit primitives look identical in both. */
+
+.person-workspace {
+  --person-mono: "JetBrains Mono Variable", ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+/* Identity ------------------------------------------------------------- */
+
+.person-workspace .profile-hero {
+  min-height: 0;
+  align-items: flex-start;
+  padding: 0 0 var(--space-md);
+  border-bottom: 1px solid var(--line);
+}
+.person-workspace .profile-identity { align-items: flex-start; }
+.person-workspace .profile-identity h1 {
+  margin: 0;
+  font-size: clamp(26px, 2.4vw, 34px);
+  line-height: 1.1;
+  letter-spacing: -.035em;
+  font-weight: 620;
+}
+
+.person-names { display: flex; flex-direction: column; gap: var(--space-3xs); min-width: 0; }
+.person-alias { margin: 0; color: var(--muted); font-size: 14px; }
+.person-role { margin: 0; color: var(--text-soft); font-size: 16px; line-height: 1.45; }
+.person-sources { margin-top: var(--space-2xs); display: flex; gap: var(--space-3xs); flex-wrap: wrap; }
+
+/* Recorded brief — never generated, always attributed --------------------- */
+
+.person-brief {
+  margin: var(--space-md) 0 0;
+  padding-left: var(--space-sm);
+  border-left: 2px solid var(--accent-line);
+  max-width: 62ch;
+}
+.person-brief h2 {
+  margin: 0 0 var(--space-3xs);
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 0;
+}
+.person-brief p {
+  margin: 0;
+  color: var(--text);
+  font-size: 16px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+.person-brief-source {
+  margin-top: var(--space-2xs);
+  display: flex;
+  align-items: center;
+  gap: var(--space-2xs);
+  flex-wrap: wrap;
+  color: var(--muted);
+  font-size: 12px;
+}
+.person-brief-source time { font-family: var(--person-mono, ui-monospace), monospace; }
+
+/* Defensible next action -------------------------------------------------- */
+
+.person-next {
+  margin: var(--space-md) 0 0;
+  padding: var(--space-xs) var(--space-sm);
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-sm);
+  flex-wrap: wrap;
+  border: 1px solid var(--line);
+  border-radius: var(--control-radius);
+  background: var(--tint);
+}
+.person-next.is-due { border-color: var(--danger-line); background: var(--danger-wash); }
+.person-next > div { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.person-next strong { color: var(--text); font-size: 15px; font-weight: 600; }
+.person-next.is-due strong { color: var(--danger-ink); }
+.person-next span { color: var(--muted); font-size: 13px; line-height: 1.5; }
+
+/* Fact list --------------------------------------------------------------- */
+
+.person-facts { margin: var(--space-md) 0 0; display: grid; gap: 0; }
+.person-facts > div {
+  display: grid;
+  grid-template-columns: minmax(96px, 132px) minmax(0, 1fr);
+  align-items: baseline;
+  gap: var(--space-2xs) var(--space-sm);
+  padding: var(--space-2xs) 0;
+  border-top: 1px solid var(--line);
+}
+.person-facts > div:first-child { border-top: 0; }
+.person-facts dt, .person-facts .fact-label {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.person-facts dd { margin: 0; min-width: 0; display: flex; align-items: baseline; gap: var(--space-2xs); flex-wrap: wrap; }
+.fact-text {
+  color: var(--text);
+  font-size: 15px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.fact-text.is-mono { font-family: var(--person-mono, ui-monospace), monospace; font-size: 14px; font-variant-numeric: tabular-nums; }
+
+.fact-edit {
+  min-width: 0;
+  margin: 0 -6px;
+  padding: 2px 6px;
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--space-2xs);
+  text-align: left;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: none;
+  color: var(--text);
+  cursor: pointer;
+  transition: background var(--dur-micro) var(--ease-out), border-color var(--dur-micro) var(--ease-out);
+}
+.fact-edit:hover { background: var(--tint-2); border-color: var(--line); }
+.fact-edit .fact-pencil { opacity: 0; color: var(--muted); flex: none; transition: opacity var(--dur-micro) var(--ease-out); }
+.fact-edit:hover .fact-pencil, .fact-edit:focus-visible .fact-pencil { opacity: 1; }
+.fact-edit.is-empty { color: var(--accent-strong); font-size: 14px; }
+.fact-edit.is-empty .fact-pencil { opacity: 1; }
+
+.fact-form { flex: 1 1 100%; min-width: 0; display: grid; gap: var(--space-2xs); }
+.fact-form-row { display: flex; align-items: center; gap: var(--space-2xs); flex-wrap: wrap; }
+.fact-form input {
+  flex: 1 1 180px;
+  min-width: 0;
+  height: 36px;
+  padding: 0 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--control-radius);
+  background: var(--field);
+  color: var(--text);
+  font-size: 15px;
+}
+.fact-form button {
+  height: 36px;
+  padding: 0 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--control-radius);
+  background: var(--tint-2);
+  color: var(--text-soft);
+  font-size: 14px;
+  cursor: pointer;
+}
+.fact-form button[data-variant="commit"] { background: var(--text); border-color: var(--text); color: var(--bg); font-weight: 600; }
+.fact-form button:disabled { opacity: .45; cursor: not-allowed; }
+.fact-origin { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
+
+.fact-add {
+  margin-top: var(--space-xs);
+  display: flex;
+  gap: var(--space-2xs);
+  flex-wrap: wrap;
+}
+.fact-add button {
+  min-height: 32px;
+  padding: 0 10px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--control-radius);
+  background: none;
+  color: var(--muted);
+  font-size: 13px;
+  cursor: pointer;
+  transition: color var(--dur-micro) var(--ease-out), border-color var(--dur-micro) var(--ease-out);
+}
+.fact-add button:hover { color: var(--accent-strong); border-color: var(--accent-line); }
+
+/* Rail — dividers instead of stacked cards -------------------------------- */
+
+.person-rail { display: flex; flex-direction: column; gap: var(--space-lg); min-width: 0; }
+.person-block { min-width: 0; }
+.person-block > h2 {
+  margin: 0 0 var(--space-xs);
+  padding-bottom: var(--space-2xs);
+  border-bottom: 1px solid var(--line);
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -.01em;
+}
+.person-block > p { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.55; }
+
+.signal-facts { margin: 0; display: grid; gap: var(--space-2xs); }
+.signal-facts > div { display: flex; align-items: baseline; justify-content: space-between; gap: var(--space-sm); }
+.signal-facts dt { color: var(--muted); font-size: 13px; }
+.signal-facts dd {
+  margin: 0;
+  color: var(--text-soft);
+  font-size: 13px;
+  font-family: var(--person-mono, ui-monospace), monospace;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+.signal-note { margin: var(--space-2xs) 0 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
+
+.identity-row { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2xs); padding: var(--space-2xs) 0; border-top: 1px solid var(--line); }
+.identity-row:first-of-type { border-top: 0; }
+.identity-row > span { display: flex; align-items: center; gap: var(--space-2xs); flex-wrap: wrap; min-width: 0; }
+.identity-row small { color: var(--muted); font-size: 12px; font-family: var(--person-mono, ui-monospace), monospace; }
+.identity-row button { min-height: 32px; padding: 0 8px; border: 0; border-radius: 6px; background: none; color: var(--muted); font-size: 13px; cursor: pointer; }
+.identity-row button:hover { color: var(--danger-ink); background: var(--danger-wash); }
+
+/* Progressive disclosure --------------------------------------------------- */
+
+.person-more { margin-top: var(--space-md); border-top: 1px solid var(--line); }
+.person-more.is-flush { margin-top: 0; border-top: 0; }
+.person-more.is-flush > summary { min-height: 36px; font-size: 13px; color: var(--muted); }
+.person-more-body.provenance-list { display: grid; gap: var(--space-xs); }
+.person-rail .provenance-list > div > span { min-width: 0; }
+.person-more > summary {
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2xs);
+  color: var(--text-soft);
+  font-size: 14px;
+  cursor: pointer;
+  list-style: none;
+}
+.person-more > summary::-webkit-details-marker { display: none; }
+.person-more > summary::after {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-right: 1px solid currentColor;
+  border-bottom: 1px solid currentColor;
+  transform: rotate(45deg) translate(-1px, -1px);
+  transition: transform var(--dur-state) var(--ease-out);
+}
+.person-more[open] > summary::after { transform: rotate(-135deg) translate(-2px, -2px); }
+.person-more > summary:hover { color: var(--text); }
+.person-more-body { padding: var(--space-2xs) 0 var(--space-sm); }
+/* index.css renders .fact-group labels as uppercase eyebrows. A stack of them
+   is exactly the repetition design.md bans, so they read as plain labels here. */
+.person-more-body .fact-group small { text-transform: none; letter-spacing: 0; }
+.person-more-block { margin-top: var(--space-sm); padding-top: var(--space-xs); border-top: 1px solid var(--line); }
+.person-more-block > h3 { margin: 0 0 var(--space-2xs); font-size: 14px; font-weight: 600; }
+
+/* Evidence check (autofill) ------------------------------------------------ */
+
+.evidence-check { margin: 0; }
+.evidence-check-bar { display: flex; align-items: center; gap: var(--space-2xs); flex-wrap: wrap; }
+.evidence-check-bar button {
+  min-height: 36px;
+  padding: 0 11px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--control-radius);
+  background: var(--tint-2);
+  color: var(--text-soft);
+  font-size: 14px;
+  cursor: pointer;
+}
+.evidence-check-bar button:disabled { opacity: .45; cursor: not-allowed; }
+.evidence-check-bar button[data-variant="cancel"] { border-color: var(--danger-line); color: var(--danger-ink); background: var(--danger-wash); }
+.evidence-status { margin: var(--space-2xs) 0 0; display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 13px; line-height: 1.5; }
+.evidence-status[data-tone="degraded"] { color: var(--text-soft); }
+.evidence-status[data-tone="error"] { color: var(--danger-ink); }
+
+.suggestion-set { margin: var(--space-xs) 0 0; display: grid; gap: var(--space-2xs); }
+.suggestion-card {
+  padding: var(--space-2xs) var(--space-xs);
+  display: grid;
+  gap: var(--space-3xs);
+  border: 1px solid var(--line);
+  border-radius: var(--control-radius);
+  background: var(--tint);
+}
+.suggestion-card.is-conflict { border-color: var(--danger-line); background: var(--danger-wash); }
+.suggestion-head { display: flex; align-items: baseline; justify-content: space-between; gap: var(--space-2xs); flex-wrap: wrap; }
+.suggestion-head strong { font-size: 14px; font-weight: 600; text-transform: capitalize; }
+.suggestion-head span {
+  color: var(--muted);
+  font-size: 12px;
+  font-family: var(--person-mono, ui-monospace), monospace;
+  font-variant-numeric: tabular-nums;
+}
+.suggestion-reason { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
+.suggestion-choice { display: grid; gap: var(--space-3xs); }
+.suggestion-choice > label {
+  min-height: 36px;
+  padding: var(--space-3xs) var(--space-2xs);
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2xs);
+  border: 1px solid transparent;
+  border-radius: 6px;
+  font-size: 14px;
+  line-height: 1.5;
+  cursor: pointer;
+}
+.suggestion-choice > label:hover { background: var(--tint-2); }
+.suggestion-choice input { margin-top: 4px; flex: none; accent-color: var(--accent); }
+.suggestion-choice > label > span { min-width: 0; display: flex; flex-direction: column; gap: 1px; overflow-wrap: anywhere; }
+.suggestion-choice small { color: var(--muted); font-size: 12px; }
+.suggestion-unresolved { margin: 0; color: var(--danger-ink); font-size: 12px; }
+.suggestion-actions { display: flex; align-items: center; gap: var(--space-2xs); flex-wrap: wrap; }
+
+/* Capture ------------------------------------------------------------------ */
+
+.person-capture { margin: 0; display: grid; gap: var(--space-2xs); }
+.person-capture > label { color: var(--muted); font-size: 13px; }
+.person-capture-shell {
+  display: grid;
+  gap: var(--space-2xs);
+  justify-items: end;
+  padding: var(--space-2xs);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--control-radius);
+  background: var(--field);
+}
+.person-capture textarea {
+  width: 100%;
+  min-height: 68px;
+  padding: 4px 6px;
+  resize: vertical;
+  border: 0;
+  background: none;
+  color: var(--text);
+  font-size: 15px;
+  line-height: 1.55;
+}
+.person-capture textarea:focus-visible { outline-offset: 1px; }
+.person-capture-shell button {
+  min-height: 36px;
+  padding: 0 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 0;
+  border-radius: var(--control-radius);
+  background: var(--text);
+  color: var(--bg);
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.person-capture-shell button:disabled { opacity: .4; cursor: not-allowed; }
+.person-capture-note { margin: 0; color: var(--muted); font-size: 12px; }
+
+/* Timeline tweaks ---------------------------------------------------------- */
+
+.person-workspace .unified-timeline article { min-height: 0; padding: var(--space-xs) 0; }
+.person-workspace .unified-timeline p { font-size: 15px; overflow-wrap: anywhere; }
+.timeline-more { margin-top: var(--space-sm); }
+
+/* Drawer ------------------------------------------------------------------- */
+
+.person-drawer .drawer-body {
+  --person-mono: "JetBrains Mono Variable", ui-monospace, SFMono-Regular, Menlo, monospace;
+  padding: var(--space-md) var(--space-md) var(--space-xl);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+}
+.drawer-identity { display: flex; align-items: flex-start; gap: var(--space-sm); min-width: 0; }
+.drawer-identity h2 {
+  margin: 0;
+  font-size: 24px;
+  line-height: 1.15;
+  letter-spacing: -.03em;
+  font-weight: 620;
+  overflow-wrap: anywhere;
+}
+.drawer-body .person-brief,
+.drawer-body .person-next,
+.drawer-body .person-facts { margin-top: 0; }
+.drawer-body .person-brief p { font-size: 15px; }
+.drawer-section { display: grid; gap: var(--space-2xs); }
+.drawer-section > h3 {
+  margin: 0;
+  padding-bottom: var(--space-3xs);
+  border-bottom: 1px solid var(--line);
+  color: var(--text-soft);
+  font-size: 13px;
+  font-weight: 600;
+}
+.drawer-empty { margin: 0; color: var(--muted); font-size: 13px; }
+.drawer-evidence { display: grid; gap: var(--space-xs); }
+.drawer-evidence > div { display: grid; gap: 3px; min-width: 0; }
+.drawer-evidence p { margin: 0; color: var(--text-soft); font-size: 14px; line-height: 1.5; overflow-wrap: anywhere; }
+.drawer-evidence small {
+  color: var(--muted);
+  font-size: 12px;
+  font-family: var(--person-mono, ui-monospace), monospace;
+}
+.drawer-foot { display: flex; gap: var(--space-2xs); flex-wrap: wrap; }
+.drawer-foot > * { flex: 1 1 160px; }
+
+/* Motion: a short slide that never gates reading. ------------------------- */
+
+@media (prefers-reduced-motion: reduce) {
+  .person-more > summary::after { transition: none; }
+}
+
+/* Responsive --------------------------------------------------------------- */
+
+@media (max-width: 1120px) {
+  .person-rail { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-md) var(--space-lg); }
+}
+
+@media (max-width: 800px) {
+  .person-workspace .profile-hero { flex-direction: column; gap: var(--space-sm); }
+  .person-workspace .profile-actions { width: 100%; }
+  .person-rail { grid-template-columns: 1fr; }
+  .person-facts > div { grid-template-columns: 1fr; gap: 2px; padding: var(--space-2xs) 0; }
+  .person-facts dt, .person-facts .fact-label { font-size: 12px; }
+}
+
+@media (max-width: 480px) {
+  .person-drawer .drawer-body { padding: var(--space-sm) var(--space-sm) var(--space-xl); gap: var(--space-sm); }
+  .drawer-identity h2 { font-size: 21px; }
+  .person-workspace .profile-actions { flex-direction: column; align-items: stretch; }
+  .person-workspace .profile-actions button { width: 100%; }
+  .person-workspace .profile-identity { flex-direction: row; gap: var(--space-xs); }
+  .person-workspace .profile-identity h1 { font-size: 24px; }
+  .person-brief { padding-left: var(--space-xs); }
+  .person-capture-shell { justify-items: stretch; }
+}
+
+@media (pointer: coarse) {
+  .fact-edit,
+  .fact-add button,
+  .evidence-check-bar button,
+  .fact-form button,
+  .identity-row button,
+  .suggestion-choice > label,
+  .person-capture-shell button { min-height: 44px; }
+  .fact-edit { align-items: center; }
+  .fact-form input { height: 44px; }
+}

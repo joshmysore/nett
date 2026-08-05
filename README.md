@@ -89,16 +89,26 @@ Telegram uses a local MTProto client. API credentials and the serialized session
 
 Nett never sends messages or modifies Telegram records. Telegram may rate-limit large initial syncs. The UI reports actionable auth, flood-wait, and retry errors.
 
-## WhatsApp exports
+## WhatsApp Desktop (wacrawl)
 
-Nett does not automate or scrape WhatsApp. Use WhatsApp's official **Export chat** action and import the resulting `.txt` or `.zip` under Settings, Sources.
+Nett can import your full WhatsApp history from the local WhatsApp Desktop databases via [openclaw/wacrawl](https://github.com/openclaw/wacrawl). This is the primary path — no per-chat exports.
 
-- Choose the date order used by the export.
-- Enter your displayed name so incoming and outgoing messages can be distinguished.
-- Export without media for smaller files. Archive imports ignore non-text files.
-- Re-importing the same export is idempotent.
+1. Install WhatsApp Desktop and let it sync.
+2. Install wacrawl: `brew install openclaw/tap/wacrawl`  
+   Or download a release binary and set `NETT_WACRAWL_BIN`, or place it at `tools/bin/wacrawl`.
+3. Open **Settings → Sources → WhatsApp → Sync archive and import**.
 
-WhatsApp has no live account session in Nett. New messages require another export. This avoids private API automation and keeps ingestion explicit.
+Nett stores a private archive at `data/imports/wacrawl.db`, then batch-imports into communications/interactions with a rowid cursor (same shape as Messages). People link by phone JID against `contact_methods`.
+
+Pull new after Desktop has more history: **Pull new** re-runs wacrawl sync, then imports only unread archive rows.
+
+Optional overrides:
+
+- `NETT_WACRAWL_BIN` — path to the wacrawl binary
+- `NETT_WACRAWL_DB` — archive path (default `data/imports/wacrawl.db`)
+- `NETT_WHATSAPP_SOURCE` — WhatsApp Desktop group-container path
+
+A single-chat `.txt` / `.zip` export import remains available as a fallback.
 
 ## CSV import
 
@@ -121,10 +131,10 @@ Nett uses Ollama on the loopback interface. Remote Ollama hosts are rejected unl
 ```bash
 brew install ollama
 ollama serve
-ollama pull llama3.2:3b
+ollama pull qwen3:14b
 ```
 
-Nett detects installed models automatically and prefers `llama3.2:3b`. Override the choice with `NETT_OLLAMA_MODEL`. Open Settings and choose **Refresh index** to build:
+Nett detects installed models automatically and prefers `qwen3:14b` (then other Qwen 3 sizes, then `llama3.2:3b`). Override the choice with `NETT_OLLAMA_MODEL`. Open Settings and choose **Refresh index** to build:
 
 - an SQLite FTS5 evidence index over profiles, provenance, memories, and communications;
 - compact local embeddings for hybrid retrieval;

@@ -9,9 +9,13 @@ import { existsSync, mkdirSync, readFileSync, unlinkSync } from "node:fs";
 import {
   connectors,
   messagesDatabaseStatus,
-  prepareLocalMessagesCopy
+  prepareLocalMessagesCopy,
+  prepareWhatsAppArchive,
+  whatsappDesktopStatus
 } from "./connectors.js";
-import { addMemory, connectorStates, createPerson, db, findExactPerson, getPeople, getPeoplePage, getPerson, getPersonCommunications, listify, mergeReviewQueue, normalizeEmail, normalizePhone, overview, resolveMerge, unmergeIdentity, updatePerson } from "./db.js";
+import { addMemory, connectorStates, createPerson, db, findExactPerson, getPeople, getPeoplePage, getPerson, getPersonCommunications, listify, mergeReviewQueue, normalizeEmail, normalizePhone, overview, peopleFacets, resolveMerge, searchIndexRows, unmergeIdentity, updatePerson } from "./db.js";
+import type { PeopleFilters } from "./db.js";
+import { extractCapture } from "./capture/extract.js";
 import { getProvider } from "./agent.js";
 import {
   calculateRelationshipSignals,
@@ -19,12 +23,22 @@ import {
   intelligentAutofill,
   refreshEvidenceEmbeddings,
   refreshEvidenceIndex,
+  refreshPersonEvidenceIndex,
   reviewInferenceSuggestion
 } from "./intelligence/service.js";
+import { generateRelationshipInsights } from "./intelligence/insights.js";
+import { parsePersonPatch } from "../src/lib/contracts.js";
 import {
   applyLinkedInPublicProfile,
   previewLinkedInPublicProfile
 } from "./enrichment/linkedin.js";
+import { listCities, listCountries, listStates } from "./geo/catalog.js";
+import { normalizeHometownValue, normalizeLocationValue } from "./geo/normalize.js";
+import {
+  importLinkedInArchive,
+  LINKEDIN_ARCHIVE_CONTENTS,
+  previewLinkedInArchive
+} from "./imports/linkedin-archive.js";
 import {
   beginGmailAuthorization,
   beginTelegramAuthorization,
@@ -34,6 +48,7 @@ import {
   disconnectGmail,
   disconnectTelegram,
   finishGmailAuthorization,
+  gmailDefaults,
   importWhatsApp,
   mcpPlatformStatus,
   submitTelegramOtp,
@@ -69,8 +84,8 @@ const port = Number(process.env.PORT || 4174);
 const activeConnectorSyncs = new Set<string>();
 let peopleSearchCache: {
   revision: string;
-  people: ReturnType<typeof getPeople>;
-  fuse: Fuse<ReturnType<typeof getPeople>[number]>;
+  people: ReturnType<typeof searchIndexRows>;
+  fuse: Fuse<ReturnType<typeof searchIndexRows>[number]>;
 } | null = null;
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 const communicationUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 64 * 1024 * 1024 } });
@@ -135,17 +150,40 @@ app.patch("/api/setup/onboarding", (req, res) => {
   }
 });
 app.get("/api/people", (_req, res) => res.json(getPeople()));
+
+function peopleFiltersFromQuery(query: Record<string, unknown>): PeopleFilters {
+  const requestedFilter = String(query.filter || "all");
+  const recency = String(query.recency || "");
+  const missing = String(query.missing || "");
+  return {
+    query: String(query.q || ""),
+    filter: ["all", "strong", "due", "cold"].includes(requestedFilter)
+      ? requestedFilter as "all" | "strong" | "due" | "cold"
+      : "all",
+    country: String(query.country || ""),
+    industry: String(query.industry || ""),
+    language: String(query.language || ""),
+    relationship: String(query.relationship || ""),
+    tag: String(query.tag || ""),
+    recency: (["30d", "90d", "year", "never"].includes(recency) ? recency : "") as PeopleFilters["recency"],
+    missing: ([
+      "context", "hometown", "location", "industry", "company", "spike", "languages",
+      "skills", "interests", "foods", "gender", "culture", "personality", "online_personality",
+      "birthday", "relationship_strength", "relationship", "when_met", "where_met", "how_met",
+      "institutions", "mutuals", "last_contact",
+    ].includes(missing) ? missing : ""),
+  };
+}
+
 app.get("/api/people/page", (req, res) => {
-  const requestedFilter = String(req.query.filter || "all");
-  const filter = ["all", "strong", "due", "cold"].includes(requestedFilter)
-    ? requestedFilter as "all" | "strong" | "due" | "cold"
-    : "all";
   res.json(getPeoplePage({
-    query: String(req.query.q || ""),
-    filter,
+    ...peopleFiltersFromQuery(req.query as Record<string, unknown>),
     page: Number(req.query.page || 1),
     limit: Number(req.query.limit || 50)
   }));
+});
+app.get("/api/people/facets", (req, res) => {
+  res.json(peopleFacets(peopleFiltersFromQuery(req.query as Record<string, unknown>)));
 });
 app.get("/api/people/:id", (req, res) => {
   const person = getPerson(req.params.id);
@@ -158,16 +196,94 @@ app.get("/api/people/:id/communications", (req, res) => {
   const cursor = typeof req.query.cursor === "string" ? req.query.cursor : undefined;
   res.json(getPersonCommunications(req.params.id, { limit, cursor }));
 });
-app.patch("/api/people/:id", (req, res) => {
+app.get("/api/geo/countries", async (_req, res) => {
+  try { res.json(await listCountries()); }
+  catch (error) { res.status(500).json({ error: error instanceof Error ? error.message : "Could not list countries" }); }
+});
+app.get("/api/geo/states", async (req, res) => {
+  try { res.json(await listStates(String(req.query.country || ""))); }
+  catch (error) { res.status(500).json({ error: error instanceof Error ? error.message : "Could not list states" }); }
+});
+app.get("/api/geo/cities", async (req, res) => {
+  try {
+    res.json(await listCities(String(req.query.country || ""), typeof req.query.state === "string" ? req.query.state : undefined));
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : "Could not list cities" });
+  }
+});
+app.post("/api/geo/normalize", async (req, res) => {
+  try {
+    const label = await normalizeLocationValue(req.body?.text);
+    res.json({ label });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : "Could not normalize place" });
+  }
+});
+app.patch("/api/people/:id", async (req, res) => {
   const person = getPerson(req.params.id);
   if (!person) return res.status(404).json({ error: "Person not found" });
-  const updated = updatePerson(req.params.id, req.body);
-  refreshEvidenceIndex(req.params.id);
-  res.json(updated);
+  try {
+    const body = { ...parsePersonPatch(req.body) } as Record<string, unknown>;
+    if ("location" in body) body.location = await normalizeLocationValue(body.location);
+    if ("hometown" in body) body.hometown = await normalizeHometownValue(body.hometown);
+    const updated = updatePerson(req.params.id, body);
+    refreshEvidenceIndex(req.params.id);
+    res.json(updated);
+  } catch (error) {
+    res.status(400).json({ error: error instanceof Error ? error.message : "Could not update person" });
+  }
+});
+app.post("/api/people/:id/insights", async (req, res) => {
+  if (!getPerson(req.params.id)) return res.status(404).json({ error: "Person not found" });
+  const controller = new AbortController();
+  req.on("close", () => { if (!res.writableEnded) controller.abort(); });
+  try {
+    const result = await generateRelationshipInsights(req.params.id, controller.signal);
+    if (res.writableEnded) return;
+    res.json(result);
+  } catch (error) {
+    if (res.writableEnded) return;
+    if (error instanceof Error && error.name === "AbortError") return;
+    res.status(500).json({ error: error instanceof Error ? error.message : "Could not generate insights" });
+  }
 });
 app.post("/api/people/:id/autofill", async (req, res) => {
-  try { res.json({ suggestions: await intelligentAutofill(req.params.id) }); }
-  catch (error) { res.status(404).json({ error: error instanceof Error ? error.message : "Could not generate suggestions" }); }
+  // Two phases so the drawer can show evidence-backed suggestions immediately.
+  // `generate=false` skips the local model and answers in milliseconds; the
+  // model phase is a second request the client can abandon at any time.
+  // The result object already carries `suggestions` — do not wrap it again.
+  const generate = String(req.query.generate ?? "true") !== "false";
+  const reindex = String(req.query.reindex ?? "false") === "true";
+  const controller = new AbortController();
+  req.on("close", () => { if (!res.writableEnded) controller.abort(); });
+  try {
+    const result = await intelligentAutofill(req.params.id, {
+      generate,
+      reindex,
+      signal: controller.signal
+    });
+    if (res.writableEnded) return;
+    res.json(result);
+  } catch (error) {
+    if (res.writableEnded) return;
+    if (error instanceof Error && error.name === "AbortError") return;
+    const message = error instanceof Error ? error.message : "Could not generate suggestions";
+    res.status(message === "Person not found" ? 404 : 500).json({ error: message });
+  }
+});
+app.post("/api/people/:id/evidence/refresh", async (req, res) => {
+  if (!getPerson(req.params.id)) return res.status(404).json({ error: "Person not found" });
+  const controller = new AbortController();
+  req.on("close", () => { if (!res.writableEnded) controller.abort(); });
+  try {
+    const result = await refreshPersonEvidenceIndex(req.params.id, { signal: controller.signal });
+    if (res.writableEnded) return;
+    res.json(result);
+  } catch (error) {
+    if (res.writableEnded) return;
+    if (error instanceof Error && error.name === "AbortError") return;
+    res.status(500).json({ error: error instanceof Error ? error.message : "Could not refresh evidence index" });
+  }
 });
 app.post("/api/people/:id/enrichment/linkedin/preview", (req, res) => {
   const person = getPerson(req.params.id);
@@ -181,9 +297,9 @@ app.post("/api/people/:id/enrichment/linkedin/preview", (req, res) => {
     res.status(400).json({ error: error instanceof Error ? error.message : "Could not inspect public profile text" });
   }
 });
-app.post("/api/people/:id/enrichment/linkedin/apply", (req, res) => {
+app.post("/api/people/:id/enrichment/linkedin/apply", async (req, res) => {
   try {
-    res.json(applyLinkedInPublicProfile(req.params.id, {
+    res.json(await applyLinkedInPublicProfile(req.params.id, {
       profileUrl: String(req.body.profileUrl || ""),
       publicText: String(req.body.publicText || ""),
       acceptedFields: Array.isArray(req.body.acceptedFields)
@@ -232,7 +348,7 @@ app.get("/api/search", (req, res) => {
       (SELECT COUNT(*) FROM contact_tags) AS revision
   `).get() as { revision: string };
   if (!peopleSearchCache || peopleSearchCache.revision !== revisionRow.revision) {
-    const people = getPeople();
+    const people = searchIndexRows();
     peopleSearchCache = {
       revision: revisionRow.revision,
       people,
@@ -250,16 +366,41 @@ app.get("/api/search", (req, res) => {
   })));
 });
 
-function parseMemory(text: string, people = getPeople()) {
+function parseMemory(text: string, people = searchIndexRows()) {
+  const extraction = extractCapture(text);
+  // Match on the name mentioned in the text when there is one; fall back to the
+  // whole transcript. Matching on the transcript alone let unrelated words
+  // score people highly.
   const personFuse = new Fuse(people, { threshold: 0.28, includeScore: true, keys: ["name", "nickname"] });
-  const candidates = personFuse.search(text).slice(0, 4).map((r) => ({ id: (r.item as any).id, name: (r.item as any).name, company: (r.item as any).company, score: 1 - (r.score || 0) }));
-  const monthMap: Record<string, string> = { january: "01", february: "02", march: "03", april: "04", may: "05", june: "06", july: "07", august: "08", september: "09", october: "10", november: "11", december: "12" };
-  const month = Object.keys(monthMap).find((name) => text.toLowerCase().includes(name));
-  const currentYear = new Date().getFullYear();
-  const followUpDate = month ? `${currentYear + (Number(monthMap[month]) < new Date().getMonth() + 1 ? 1 : 0)}-${monthMap[month]}-01` : null;
-  const tags = [...new Set(["finance", "policy", "fundraising", "AI", "robotics", "health", "travel", "founder", "investor"].filter((tag) => new RegExp(`\\b${tag}\\b`, "i").test(text)))];
-  const relationship = /close friend|best friend/i.test(text) ? "Close friend" : /met at|introduced by/i.test(text) ? "New connection" : null;
-  return { candidates, extracted: { memory: text.replace(/^remember (?:that )?/i, "").trim(), tags, followUpDate, relationship, interests: tags.filter((t) => ["policy", "AI", "robotics", "health"].includes(t)) }, ambiguous: candidates.length > 1 && candidates[0].score - candidates[1].score < 0.08 };
+  const candidates = personFuse
+    .search(extraction.nameHint || text)
+    .slice(0, 4)
+    .map((r) => ({
+      id: (r.item as any).id,
+      name: (r.item as any).name,
+      company: (r.item as any).company,
+      score: 1 - (r.score || 0),
+    }));
+  const valueOf = (field: string) => extraction.proposals.find((proposal) => proposal.field === field);
+  const tagProposal = valueOf("tags");
+  const tags = tagProposal?.values?.length
+    ? tagProposal.values
+    : (tagProposal?.value ? tagProposal.value.split(",").map((part) => part.trim()).filter(Boolean) : []);
+  return {
+    // The transcript is kept verbatim and separately from the editable memory.
+    transcript: extraction.transcript,
+    nameHint: extraction.nameHint,
+    proposals: extraction.proposals,
+    candidates,
+    extracted: {
+      memory: text.replace(/^remember (?:that )?/i, "").trim(),
+      tags,
+      followUpDate: valueOf("follow_up_date")?.value ?? null,
+      relationship: valueOf("relationship")?.value ?? null,
+      interests: tags.filter((t) => ["policy", "AI", "robotics", "health", "climate"].includes(t)),
+    },
+    ambiguous: candidates.length > 1 && candidates[0].score - candidates[1].score < 0.08,
+  };
 }
 
 app.post("/api/memories/parse", (req, res) => {
@@ -298,12 +439,14 @@ app.post("/api/connectors/:id/sync", async (req, res) => {
     }
     const connector = connectors.get(connectorId);
     if (!connector) return res.status(404).json({ error: "Connector is not implemented yet" });
-    const maxBatches = connectorId === "messages"
+    const maxBatches = connectorId === "messages" || connectorId === "whatsapp"
       ? Math.min(Math.max(Number(req.body.maxBatches) || 10, 1), 100)
       : undefined;
     const result = await connector.sync({ maxBatches, signal: controller.signal });
-    // Messages imports are large; keep the API responsive and let Sources → Refresh index rebuild evidence.
-    if (result.done !== false && connectorId !== "messages") refreshEvidenceIndex();
+    // Large message imports stay responsive; rebuild evidence from Sources → Refresh index.
+    if (result.done !== false && connectorId !== "messages" && connectorId !== "whatsapp") {
+      refreshEvidenceIndex();
+    }
     return res.json(result);
   } catch (error) {
     return res.status(403).json({ error: error instanceof Error ? error.message : "Connector sync failed" });
@@ -366,9 +509,35 @@ app.post("/api/connectors/messages/import-db", messagesUpload.single("file"), as
     }
   }
 });
+app.get("/api/connectors/whatsapp/status", async (_req, res) => {
+  try { res.json(await whatsappDesktopStatus()); }
+  catch (error) { res.status(500).json({ error: error instanceof Error ? error.message : "Could not inspect WhatsApp Desktop" }); }
+});
+app.post("/api/connectors/whatsapp/prepare", async (req, res) => {
+  if (activeConnectorSyncs.has("whatsapp")) {
+    return res.status(409).json({ error: "WhatsApp is already preparing or syncing" });
+  }
+  activeConnectorSyncs.add("whatsapp");
+  const controller = new AbortController();
+  req.once("aborted", () => controller.abort());
+  try {
+    const prepared = await prepareWhatsAppArchive({
+      resetCursor: req.body?.resetCursor === true || req.body?.resetCursor === "true",
+      signal: controller.signal
+    });
+    res.json(prepared);
+  } catch (error) {
+    res.status(403).json({ error: error instanceof Error ? error.message : "Could not prepare the WhatsApp archive" });
+  } finally {
+    activeConnectorSyncs.delete("whatsapp");
+  }
+});
 app.get("/api/platform/status", async (_req, res) => {
   try { res.json({ accounts: connectorPlatformStatus(), mcp: await mcpPlatformStatus() }); }
   catch (error) { res.status(500).json({ error: error instanceof Error ? error.message : "Platform status failed" }); }
+});
+app.get("/api/platform/gmail/defaults", (_req, res) => {
+  res.json(gmailDefaults());
 });
 app.post("/api/platform/gmail/configure", async (req, res) => {
   try { res.json(await configureGmail(req.body)); }
@@ -443,8 +612,17 @@ app.post("/api/identities/:identityId/unmerge", (req, res) => {
   catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : "Could not separate identity" }); }
 });
 
-const schemaFields = ["name", "hometown", "location", "industry", "company", "spike", "languages", "skills", "interests", "gender", "culture", "personality", "birthday", "relationship_strength", "relationship", "when_met", "where_met", "how_met", "institutions", "mutuals", "last_contact", "tags", "notes", "quick_memories", "follow_up_date", "priority", "warmth", "intro_potential", "source_confidence", "linkedin_url", "headline", "job_title"];
-const importListFields = new Set(["languages", "skills", "interests", "institutions", "mutuals"]);
+const schemaFields = [
+  "name", "hometown", "location", "industry", "company", "spike", "languages", "skills",
+  "interests", "foods", "gender", "culture", "personality", "online_personality", "birthday",
+  "relationship_strength", "relationship", "when_met", "where_met", "how_met", "institutions",
+  "mutuals", "last_contact", "tags", "notes", "quick_memories", "follow_up_date", "priority",
+  "warmth", "intro_potential", "source_confidence", "linkedin_url", "headline", "job_title",
+];
+const importListFields = new Set([
+  "hometown", "languages", "skills", "interests", "foods", "institutions", "mutuals",
+  "online_personality",
+]);
 const importDateFields = new Set(["birthday", "follow_up_date", "last_contact"]);
 const importHeaderAliases: Record<string, string> = {
   e_mail: "email",
@@ -525,6 +703,35 @@ function insertImportedContactMethods(
     `).run(randomUUID(), personId, contact.kind, contact.value, contact.normalized, sourceIdentityId);
   }
 }
+
+app.get("/api/import/linkedin/contents", (_req, res) => {
+  res.json(LINKEDIN_ARCHIVE_CONTENTS);
+});
+
+app.post("/api/import/linkedin/preview", communicationUpload.single("file"), (req, res) => {
+  if (!req.file) return res.status(400).json({ error: "Choose a LinkedIn archive zip or Connections.csv" });
+  try {
+    res.json(previewLinkedInArchive({
+      filename: req.file.originalname,
+      bytes: new Uint8Array(req.file.buffer)
+    }));
+  } catch (error) {
+    res.status(400).json({ error: error instanceof Error ? error.message : "Could not read that LinkedIn archive" });
+  }
+});
+
+app.post("/api/import/linkedin", communicationUpload.single("file"), (req, res) => {
+  if (!req.file) return res.status(400).json({ error: "Choose a LinkedIn archive zip or Connections.csv" });
+  try {
+    const summary = importLinkedInArchive({
+      filename: req.file.originalname,
+      bytes: new Uint8Array(req.file.buffer)
+    });
+    res.json(summary);
+  } catch (error) {
+    res.status(400).json({ error: error instanceof Error ? error.message : "Could not import that LinkedIn archive" });
+  }
+});
 
 app.post("/api/import/csv", upload.single("file"), (req, res) => {
   if (!req.file) return res.status(400).json({ error: "Choose a CSV or Excel spreadsheet" });

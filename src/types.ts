@@ -1,3 +1,6 @@
+export type { CaptureField, CaptureProposal } from "@/lib/contracts";
+import type { CaptureProposal } from "@/lib/contracts";
+
 export type ContactMethod = { kind: "email" | "phone"; value: string; label?: string; is_primary: number };
 export type Person = {
   id: string;
@@ -6,7 +9,8 @@ export type Person = {
   first_name?: string;
   last_name?: string;
   nickname?: string;
-  hometown?: string;
+  /** One or more places — e.g. the specific town and its metro area. */
+  hometown: string[];
   location?: string;
   industry?: string;
   company?: string;
@@ -17,6 +21,12 @@ export type Person = {
   languages: string[];
   skills: string[];
   interests: string[];
+  foods: string[];
+  gender?: string;
+  culture?: string;
+  personality?: string;
+  /** Communication-style adjectives inferred from stored messages. */
+  online_personality: string[];
   birthday?: string;
   relationship_strength: number;
   relationship?: string;
@@ -80,6 +90,19 @@ export type SetupStatus = {
   nextAction: { step: string; label: string; route: string } | null;
 };
 export type Overview = { total: number; strongTies: number; cold: number; due: number; locations: [string, number][]; industries: [string, number][]; people: Person[]; coldPeople: Person[]; duePeople: Person[]; connectors: ConnectorState[]; setup: SetupStatus };
-export type ParsedMemory = { candidates: { id: string; name: string; company?: string; score: number }[]; extracted: { memory: string; tags: string[]; followUpDate?: string; relationship?: string; interests?: string[] }; ambiguous: boolean };
+export type ParsedMemory = {
+  transcript?: string;
+  nameHint?: string | null;
+  proposals?: CaptureProposal[];
+  candidates: { id: string; name: string; company?: string; score: number }[];
+  extracted: {
+    memory: string;
+    tags: string[];
+    followUpDate?: string | null;
+    relationship?: string | null;
+    interests?: string[];
+  };
+  ambiguous: boolean;
+};
 export type Citation = { personId: string; label: string; field: string; value: string; source: string };
 export type AgentAnswer = { answer: string; citations: Citation[]; provider: string };

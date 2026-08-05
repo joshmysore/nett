@@ -2,6 +2,8 @@ import Database from "better-sqlite3";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { normalizePhoneValue, openDatabase, storedPhoneValue } from "./migrations.js";
+import { normalizeCultureValue } from "./intelligence/culture.js";
+import { suggestCultureFromName, suggestGenderFromName } from "./intelligence/traits.js";
 
 export type SourceContact = {
   sourceId: string;
@@ -68,9 +70,12 @@ function hydratePerson(row: Record<string, any>) {
     tags,
     methods,
     sources: Array.from(new Set(["nett", ...sources])),
+    hometown: parse(row.hometown, listify(row.hometown)),
     languages: parse(row.languages, listify(row.languages)),
     skills: parse(row.skills, listify(row.skills)),
     interests: parse(row.interests, listify(row.interests)),
+    foods: parse(row.foods, listify(row.foods)),
+    online_personality: parse(row.online_personality, listify(row.online_personality)),
     institutions: parse(row.institutions, listify(row.institutions)),
     mutuals: parse(row.mutuals, listify(row.mutuals))
   };
@@ -108,9 +113,12 @@ function hydratePeople(rows: Record<string, any>[]): Record<string, any>[] {
     tags: tags.get(row.id) ?? [],
     methods: methods.get(row.id) ?? [],
     sources: Array.from(new Set(["nett", ...(sources.get(row.id) ?? [])])),
+    hometown: parse(row.hometown, listify(row.hometown)),
     languages: parse(row.languages, listify(row.languages)),
     skills: parse(row.skills, listify(row.skills)),
     interests: parse(row.interests, listify(row.interests)),
+    foods: parse(row.foods, listify(row.foods)),
+    online_personality: parse(row.online_personality, listify(row.online_personality)),
     institutions: parse(row.institutions, listify(row.institutions)),
     mutuals: parse(row.mutuals, listify(row.mutuals))
   }));
@@ -134,18 +142,87 @@ function getPeopleByIds(ids: string[]): Record<string, any>[] {
   });
 }
 
-export function getPeoplePage(options: {
+/** Country is derived from the trailing segment of the free-text location.
+ *  The rule is deliberately simple and is shown to the user in the UI. */
+const COUNTRY_ALIASES: Record<string, string> = {
+  us: "United States", usa: "United States", "u.s.": "United States", "u.s.a.": "United States",
+  america: "United States", "united states of america": "United States",
+  uk: "United Kingdom", "u.k.": "United Kingdom", "great britain": "United Kingdom",
+  england: "United Kingdom", scotland: "United Kingdom", wales: "United Kingdom",
+  schweiz: "Switzerland", suisse: "Switzerland", svizzera: "Switzerland",
+  deutschland: "Germany", españa: "Spain", espana: "Spain", brasil: "Brazil",
+  nederland: "Netherlands", "the netherlands": "Netherlands", holland: "Netherlands",
+  österreich: "Austria", osterreich: "Austria", sverige: "Sweden", norge: "Norway",
+  danmark: "Denmark", suomi: "Finland", italia: "Italy", portugal: "Portugal",
+  méxico: "Mexico", mexico: "Mexico", uae: "United Arab Emirates",
+};
+
+/** US state codes, so "Dallas, TX" resolves to the United States. */
+const US_STATES = new Set([
+  "al","ak","az","ar","ca","co","ct","de","fl","ga","hi","id","il","in","ia","ks","ky","la","me",
+  "md","ma","mi","mn","ms","mo","mt","ne","nv","nh","nj","nm","ny","nc","nd","oh","ok","or","pa",
+  "ri","sc","sd","tn","tx","ut","vt","va","wa","wv","wi","wy","dc",
+  "alabama","alaska","arizona","arkansas","california","colorado","connecticut","delaware",
+  "florida","georgia","hawaii","idaho","illinois","indiana","iowa","kansas","kentucky","louisiana",
+  "maine","maryland","massachusetts","michigan","minnesota","mississippi","missouri","montana",
+  "nebraska","nevada","new hampshire","new jersey","new mexico","new york","north carolina",
+  "north dakota","ohio","oklahoma","oregon","pennsylvania","rhode island","south carolina",
+  "south dakota","tennessee","texas","utah","vermont","virginia","washington","west virginia",
+  "wisconsin","wyoming",
+]);
+
+export function countryFromLocation(location: unknown): string {
+  const raw = String(location ?? "").trim();
+  if (!raw) return "";
+  const parts = raw.split(",").map((part) => part.trim()).filter(Boolean);
+  if (!parts.length) return "";
+  const tail = parts[parts.length - 1];
+  const key = tail.toLowerCase();
+  if (COUNTRY_ALIASES[key]) return COUNTRY_ALIASES[key];
+  if (US_STATES.has(key)) return "United States";
+  // A bare city with no qualifier tells us nothing reliable about the country.
+  if (parts.length === 1) return "";
+  return tail.replace(/\s+/g, " ");
+}
+
+export type PeopleFilters = {
   query?: string;
   filter?: "all" | "strong" | "due" | "cold";
-  page?: number;
-  limit?: number;
-} = {}) {
-  const query = String(options.query || "").trim();
-  const filter = options.filter || "all";
-  const limit = Math.min(Math.max(Number(options.limit || 50), 1), 100);
-  const page = Math.max(Number(options.page || 1), 1);
+  country?: string;
+  industry?: string;
+  language?: string;
+  relationship?: string;
+  tag?: string;
+  recency?: "" | "30d" | "90d" | "year" | "never";
+  missing?: string;
+};
+
+/** Scalar/list metadata columns that may be queried as `missing=<field>`. */
+const MISSING_SCALAR_FIELDS = new Set([
+  "location", "industry", "company", "spike", "gender", "culture",
+  "personality", "birthday", "relationship", "when_met", "where_met", "how_met",
+  "last_contact",
+]);
+const MISSING_LIST_FIELDS = new Set([
+  "hometown", "languages", "skills", "interests", "foods", "institutions", "mutuals",
+  "online_personality",
+]);
+const MISSING_NUMERIC_FIELDS = new Set(["relationship_strength"]);
+
+function emptyFieldPredicate(column: string) {
+  if (MISSING_LIST_FIELDS.has(column)) {
+    return `(NULLIF(TRIM(COALESCE(m.${column},'')),'') IS NULL OR TRIM(m.${column}) IN ('[]','null','""'))`;
+  }
+  if (MISSING_NUMERIC_FIELDS.has(column)) {
+    return `COALESCE(m.${column}, 0) = 0`;
+  }
+  return `NULLIF(TRIM(COALESCE(m.${column},'')),'') IS NULL`;
+}
+
+function buildPeoplePredicate(options: PeopleFilters) {
   const where: string[] = [];
   const values: unknown[] = [];
+  const query = String(options.query || "").trim();
   if (query) {
     const like = `%${query}%`;
     where.push(`(
@@ -162,10 +239,62 @@ export function getPeoplePage(options: {
     )`);
     values.push(...Array(13).fill(like));
   }
+  const filter = options.filter || "all";
   if (filter === "strong") where.push("COALESCE(m.relationship_strength, 0) >= 75");
   if (filter === "due") where.push("m.follow_up_date IS NOT NULL AND date(m.follow_up_date) <= date('now')");
   if (filter === "cold") where.push("m.last_contact IS NOT NULL AND julianday('now') - julianday(m.last_contact) > 90");
-  const predicate = where.length ? `WHERE ${where.join(" AND ")}` : "";
+
+  if (options.industry) { where.push("TRIM(LOWER(m.industry)) = ?"); values.push(options.industry.trim().toLowerCase()); }
+  if (options.relationship) { where.push("TRIM(LOWER(m.relationship)) = ?"); values.push(options.relationship.trim().toLowerCase()); }
+  if (options.language) { where.push("LOWER(COALESCE(m.languages,'')) LIKE ?"); values.push(`%${options.language.trim().toLowerCase()}%`); }
+  if (options.country) {
+    // Match any location whose text contains the country or, for the US, a state.
+    where.push("TRIM(COALESCE(m.location,'')) <> ''");
+  }
+  if (options.tag) {
+    where.push("EXISTS (SELECT 1 FROM contact_tags ct JOIN tags t ON t.id=ct.tag_id WHERE ct.person_id=p.id AND LOWER(t.name)=?)");
+    values.push(options.tag.trim().toLowerCase());
+  }
+  if (options.recency === "30d") where.push("m.last_contact IS NOT NULL AND julianday('now') - julianday(m.last_contact) <= 30");
+  if (options.recency === "90d") where.push("m.last_contact IS NOT NULL AND julianday('now') - julianday(m.last_contact) <= 90");
+  if (options.recency === "year") where.push("m.last_contact IS NOT NULL AND julianday('now') - julianday(m.last_contact) <= 365");
+  if (options.recency === "never") where.push("m.last_contact IS NULL");
+  if (options.missing === "context") {
+    where.push(`NULLIF(TRIM(COALESCE(m.relationship,'')),'') IS NULL
+      AND NULLIF(TRIM(COALESCE(m.notes,'')),'') IS NULL
+      AND NOT EXISTS (SELECT 1 FROM memories mm WHERE mm.person_id=p.id)`);
+  } else if (options.missing === "tags") {
+    where.push("NOT EXISTS (SELECT 1 FROM contact_tags ct WHERE ct.person_id=p.id)");
+  } else if (options.missing && (
+    MISSING_SCALAR_FIELDS.has(options.missing)
+    || MISSING_LIST_FIELDS.has(options.missing)
+    || MISSING_NUMERIC_FIELDS.has(options.missing)
+  )) {
+    where.push(emptyFieldPredicate(options.missing));
+  }
+  return { predicate: where.length ? `WHERE ${where.join(" AND ")}` : "", values };
+}
+
+export function getPeoplePage(options: PeopleFilters & { page?: number; limit?: number } = {}) {
+  const limit = Math.min(Math.max(Number(options.limit || 50), 1), 100);
+  const page = Math.max(Number(options.page || 1), 1);
+  const { predicate, values } = buildPeoplePredicate(options);
+  const country = String(options.country || "").trim();
+
+  // Country is a derived value, so it is applied after the indexed predicates.
+  // Only rows that already have a location reach this filter (23 of 1,616 today).
+  if (country) {
+    const candidates = db.prepare(`
+      SELECT p.*, m.*, p.id AS id
+      FROM people p LEFT JOIN nett_metadata m ON m.person_id=p.id
+      ${predicate}
+      ORDER BY m.priority DESC, m.relationship_strength DESC, p.preferred_name ASC
+    `).all(...values) as Record<string, any>[];
+    const matched = candidates.filter((row) => countryFromLocation(row.location) === country);
+    const slice = matched.slice((page - 1) * limit, (page - 1) * limit + limit);
+    return { people: hydratePeople(slice), total: matched.length, page, limit };
+  }
+
   const total = (db.prepare(`
     SELECT COUNT(*) AS count FROM people p
     LEFT JOIN nett_metadata m ON m.person_id=p.id
@@ -173,14 +302,117 @@ export function getPeoplePage(options: {
   `).get(...values) as { count: number }).count;
   const rows = db.prepare(`
     SELECT p.*, m.*, p.id AS id,
-      (SELECT COUNT(*) FROM memories mm WHERE mm.person_id=p.id) AS memory_count,
-      (SELECT COUNT(*) FROM interactions ii WHERE ii.person_id=p.id) AS interaction_count
+      (SELECT COUNT(*) FROM memories mm WHERE mm.person_id=p.id) AS memory_count
     FROM people p LEFT JOIN nett_metadata m ON m.person_id=p.id
     ${predicate}
     ORDER BY m.priority DESC, m.relationship_strength DESC, p.preferred_name ASC
     LIMIT ? OFFSET ?
   `).all(...values, limit, (page - 1) * limit) as Record<string, any>[];
   return { people: hydratePeople(rows), total, page, limit };
+}
+
+export type Facet = { value: string; count: number };
+
+/** Facet counts for the current result set. Values that do not occur are not
+ *  listed: an empty facet is a real answer, not an "Unknown" bucket. */
+export function peopleFacets(options: PeopleFilters = {}) {
+  const { predicate, values } = buildPeoplePredicate({ ...options, country: "" });
+  const scalar = (column: "industry" | "relationship") => db.prepare(`
+    SELECT TRIM(m.${column}) AS value, COUNT(*) AS count
+    FROM people p LEFT JOIN nett_metadata m ON m.person_id=p.id
+    ${predicate}${predicate ? " AND" : "WHERE"} NULLIF(TRIM(COALESCE(m.${column},'')),'') IS NOT NULL
+    GROUP BY LOWER(TRIM(m.${column}))
+    ORDER BY count DESC, value ASC LIMIT 24
+  `).all(...values) as Facet[];
+
+  const located = db.prepare(`
+    SELECT m.location AS location FROM people p LEFT JOIN nett_metadata m ON m.person_id=p.id
+    ${predicate}${predicate ? " AND" : "WHERE"} NULLIF(TRIM(COALESCE(m.location,'')),'') IS NOT NULL
+  `).all(...values) as { location: string }[];
+  const countryCounts = new Map<string, number>();
+  for (const row of located) {
+    const country = countryFromLocation(row.location);
+    if (country) countryCounts.set(country, (countryCounts.get(country) ?? 0) + 1);
+  }
+
+  const languageRows = db.prepare(`
+    SELECT m.languages AS languages FROM people p LEFT JOIN nett_metadata m ON m.person_id=p.id
+    ${predicate}${predicate ? " AND" : "WHERE"} NULLIF(TRIM(COALESCE(m.languages,'')),'') IS NOT NULL
+  `).all(...values) as { languages: string }[];
+  const languageCounts = new Map<string, number>();
+  for (const row of languageRows) {
+    for (const language of parse(row.languages, listify(row.languages))) {
+      const label = String(language).trim();
+      if (label) languageCounts.set(label, (languageCounts.get(label) ?? 0) + 1);
+    }
+  }
+
+  const tags = db.prepare(`
+    SELECT t.name AS value, COUNT(*) AS count
+    FROM people p LEFT JOIN nett_metadata m ON m.person_id=p.id
+    JOIN contact_tags ct ON ct.person_id=p.id JOIN tags t ON t.id=ct.tag_id
+    ${predicate}
+    GROUP BY LOWER(t.name) ORDER BY count DESC, value ASC LIMIT 24
+  `).all(...values) as Facet[];
+
+  const gapFields = [
+    "hometown", "location", "industry", "company", "spike", "languages", "skills",
+    "interests", "foods", "gender", "culture", "online_personality", "birthday",
+    "relationship", "when_met", "where_met", "how_met", "institutions", "mutuals",
+    "last_contact",
+  ] as const;
+  const gapSelect = gapFields
+    .map((field) => `SUM(CASE WHEN ${emptyFieldPredicate(field)} THEN 1 ELSE 0 END) AS no_${field}`)
+    .join(",\n      ");
+  const recencyRow = db.prepare(`
+    SELECT
+      SUM(CASE WHEN m.last_contact IS NOT NULL AND julianday('now')-julianday(m.last_contact) <= 30 THEN 1 ELSE 0 END) AS d30,
+      SUM(CASE WHEN m.last_contact IS NOT NULL AND julianday('now')-julianday(m.last_contact) <= 90 THEN 1 ELSE 0 END) AS d90,
+      SUM(CASE WHEN m.last_contact IS NOT NULL AND julianday('now')-julianday(m.last_contact) <= 365 THEN 1 ELSE 0 END) AS year,
+      SUM(CASE WHEN m.last_contact IS NULL THEN 1 ELSE 0 END) AS never,
+      SUM(CASE WHEN NULLIF(TRIM(COALESCE(m.relationship,'')),'') IS NULL
+        AND NULLIF(TRIM(COALESCE(m.notes,'')),'') IS NULL
+        AND NOT EXISTS (SELECT 1 FROM memories mm WHERE mm.person_id=p.id)
+        THEN 1 ELSE 0 END) AS no_context,
+      ${gapSelect}
+    FROM people p LEFT JOIN nett_metadata m ON m.person_id=p.id
+    ${predicate}
+  `).get(...values) as Record<string, number | null>;
+
+  const sorted = (map: Map<string, number>) => [...map.entries()]
+    .map(([value, count]) => ({ value, count }))
+    .sort((a, b) => b.count - a.count || a.value.localeCompare(b.value))
+    .slice(0, 24);
+
+  return {
+    countries: sorted(countryCounts),
+    industries: scalar("industry"),
+    languages: sorted(languageCounts),
+    relationships: scalar("relationship"),
+    tags,
+    recency: [
+      { value: "30d", count: recencyRow.d30 ?? 0 },
+      { value: "90d", count: recencyRow.d90 ?? 0 },
+      { value: "year", count: recencyRow.year ?? 0 },
+      { value: "never", count: recencyRow.never ?? 0 },
+    ].filter((entry) => entry.count > 0),
+    missing: [
+      { value: "context", count: recencyRow.no_context ?? 0 },
+      ...gapFields.map((field) => ({
+        value: field,
+        count: recencyRow[`no_${field}`] ?? 0,
+      })),
+      {
+        value: "tags",
+        count: (db.prepare(`
+          SELECT COUNT(*) AS count FROM people p
+          LEFT JOIN nett_metadata m ON m.person_id=p.id
+          ${predicate ? `${predicate} AND` : "WHERE"}
+          NOT EXISTS (SELECT 1 FROM contact_tags ct WHERE ct.person_id=p.id)
+        `).get(...values) as { count: number }).count,
+      },
+    ].filter((entry) => entry.count > 0),
+  };
 }
 
 export function getPerson(id: string) {
@@ -218,6 +450,21 @@ export function createPerson(name: string, source = "nett") {
   const timestamp = now();
   db.prepare("INSERT INTO people (id, preferred_name, first_name, last_name, avatar_seed, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)").run(id, name.trim(), parts[0] ?? "", parts.slice(1).join(" "), id, timestamp, timestamp);
   db.prepare("INSERT INTO nett_metadata (person_id, source_confidence, created_at, updated_at) VALUES (?, ?, ?, ?)").run(id, source === "nett" ? 1 : 0.7, timestamp, timestamp);
+  // Gender and culture auto-fill from name tables when unambiguous. Provenance
+  // records them as name inference so the source stays visible and editable.
+  const personName = { preferred_name: name.trim(), first_name: parts[0], last_name: parts.slice(1).join(" ") };
+  const inferredGender = suggestGenderFromName({ ...personName, gender: "" });
+  if (inferredGender) {
+    db.prepare("UPDATE nett_metadata SET gender=?, updated_at=? WHERE person_id=?").run(String(inferredGender.value), timestamp, id);
+    db.prepare("INSERT INTO field_provenance (id, person_id, field_name, field_value, connector_id, confidence, observed_at) VALUES (?, ?, 'gender', ?, 'name-inference', ?, ?)")
+      .run(randomUUID(), id, String(inferredGender.value), inferredGender.confidence, timestamp);
+  }
+  const inferredCulture = suggestCultureFromName({ ...personName, culture: "" });
+  if (inferredCulture) {
+    db.prepare("UPDATE nett_metadata SET culture=?, updated_at=? WHERE person_id=?").run(String(inferredCulture.value), timestamp, id);
+    db.prepare("INSERT INTO field_provenance (id, person_id, field_name, field_value, connector_id, confidence, observed_at) VALUES (?, ?, 'culture', ?, 'name-inference', ?, ?)")
+      .run(randomUUID(), id, String(inferredCulture.value), inferredCulture.confidence, timestamp);
+  }
   return id;
 }
 
@@ -274,10 +521,43 @@ export function addMemory(personId: string, rawText: string, structured: Record<
   return getPerson(personId);
 }
 
+/** Gender is a two-option field. Shorthand normalises to male/female; anything unrecognised clears to empty rather than storing free text. */
+export function normalizeGenderValue(value: unknown): string {
+  const raw = String(value ?? "").trim().toLowerCase();
+  if (!raw) return "";
+  if (["m", "male", "man", "boy", "he", "him"].includes(raw)) return "male";
+  if (["f", "female", "woman", "girl", "she", "her"].includes(raw)) return "female";
+  return "";
+}
+
 export function updatePerson(id: string, input: Record<string, unknown>, source = "nett") {
   const timestamp = now();
   if (input.name) db.prepare("UPDATE people SET preferred_name=?, updated_at=? WHERE id=?").run(String(input.name), timestamp, id);
-  const allowed = ["hometown", "location", "industry", "company", "spike", "languages", "skills", "interests", "gender", "culture", "personality", "birthday", "relationship_strength", "relationship", "when_met", "where_met", "how_met", "institutions", "mutuals", "last_contact", "notes", "quick_memories", "follow_up_date", "priority", "warmth", "intro_potential", "source_confidence", "linkedin_url", "headline", "job_title"];
+  if ("gender" in input) input = { ...input, gender: normalizeGenderValue(input.gender) };
+  if ("culture" in input) input = { ...input, culture: normalizeCultureValue(input.culture) };
+  if ("tags" in input) {
+    const tags = (Array.isArray(input.tags) ? input.tags : String(input.tags ?? "").split(","))
+      .map((tag) => String(tag).trim())
+      .filter(Boolean);
+    const tx = db.transaction(() => {
+      db.prepare("DELETE FROM contact_tags WHERE person_id=? AND source=?").run(id, source);
+      for (const tag of tags) {
+        const tagId = `tag-${tag.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`;
+        db.prepare("INSERT OR IGNORE INTO tags (id, name) VALUES (?, ?)").run(tagId, tag);
+        db.prepare("INSERT OR IGNORE INTO contact_tags (person_id, tag_id, source) VALUES (?, ?, ?)").run(id, tagId, source);
+      }
+      db.prepare("INSERT INTO field_provenance (id, person_id, field_name, field_value, connector_id, confidence, observed_at) VALUES (?, ?, ?, ?, ?, 1, ?)")
+        .run(randomUUID(), id, "tags", tags.join(", "), source, timestamp);
+    });
+    tx();
+  }
+  const allowed = [
+    "hometown", "location", "industry", "company", "spike", "languages", "skills", "interests",
+    "foods", "gender", "culture", "personality", "online_personality", "birthday",
+    "relationship_strength", "relationship", "when_met", "where_met", "how_met", "institutions",
+    "mutuals", "last_contact", "notes", "quick_memories", "follow_up_date", "priority", "warmth",
+    "intro_potential", "source_confidence", "linkedin_url", "headline", "job_title",
+  ];
   const entries = Object.entries(input).filter(([key]) => allowed.includes(key));
   if (entries.length) {
     const values = entries.map(([, value]) => Array.isArray(value) ? JSON.stringify(value) : value);
@@ -335,8 +615,17 @@ export function resolveMerge(sourceIdentityId: string, personId?: string, create
     `).run(resolvedPersonId, sourceIdentityId, identity.raw_json);
     const current = getPerson(resolvedPersonId!) as Record<string, any>;
     const update: Record<string, unknown> = {};
-    const listFields = new Set(["languages", "skills", "interests", "institutions", "mutuals"]);
-    ["hometown", "location", "industry", "company", "spike", "languages", "skills", "interests", "gender", "culture", "personality", "birthday", "relationship_strength", "relationship", "when_met", "where_met", "how_met", "institutions", "mutuals", "last_contact", "notes", "quick_memories", "follow_up_date", "priority", "warmth", "intro_potential", "source_confidence", "linkedin_url", "headline", "job_title"].forEach((field) => {
+    const listFields = new Set([
+      "hometown", "languages", "skills", "interests", "foods", "institutions", "mutuals",
+      "online_personality",
+    ]);
+    [
+      "hometown", "location", "industry", "company", "spike", "languages", "skills", "interests",
+      "foods", "gender", "culture", "personality", "online_personality", "birthday",
+      "relationship_strength", "relationship", "when_met", "where_met", "how_met", "institutions",
+      "mutuals", "last_contact", "notes", "quick_memories", "follow_up_date", "priority", "warmth",
+      "intro_potential", "source_confidence", "linkedin_url", "headline", "job_title",
+    ].forEach((field) => {
       if (raw[field] === undefined || raw[field] === "") return;
       if (listFields.has(field)) {
         const currentValues = listify(current[field]);
@@ -607,7 +896,7 @@ export function overview() {
     ORDER BY COALESCE(m.priority, 0) DESC, p.preferred_name ASC LIMIT 40
   `);
   const orderedIds = [...new Set([...topIds, ...dueIds, ...coldIds, ...birthdayIds, ...recentIds, ...gapIds])];
-  const people = getPeopleByIds(orderedIds);
+  const people = summarizePeople(orderedIds);
   const byId = new Map(people.map((person) => [person.id, person]));
   return {
     total: stats.total,
@@ -621,4 +910,46 @@ export function overview() {
     duePeople: dueIds.flatMap((id) => byId.get(id) ? [byId.get(id)] : []),
     connectors: connectorStates()
   };
+}
+
+/** Slim projection for the fuzzy search index. Selecting only searchable and
+ *  displayable columns keeps the in-memory index small and the response small;
+ *  hydrating full people for this cost 1.78 MB per rebuild. */
+export function searchIndexRows(): Record<string, any>[] {
+  const rows = db.prepare(`
+    SELECT p.id AS id, p.preferred_name AS name, p.nickname,
+      m.company, m.job_title, m.headline, m.industry, m.location, m.hometown,
+      m.relationship, m.last_contact, m.follow_up_date, m.institutions, m.mutuals,
+      m.interests, m.quick_memories, m.notes
+    FROM people p LEFT JOIN nett_metadata m ON m.person_id=p.id
+  `).all() as Record<string, any>[];
+  const tagRows = db.prepare(`
+    SELECT ct.person_id, group_concat(t.name, ' ') AS tags
+    FROM contact_tags ct JOIN tags t ON t.id=ct.tag_id GROUP BY ct.person_id
+  `).all() as { person_id: string; tags: string }[];
+  const tags = new Map(tagRows.map((row) => [row.person_id, row.tags]));
+  return rows.map((row) => ({ ...row, tags: tags.get(row.id) ?? "" }));
+}
+
+/** Summary rows for overview surfaces. Deliberately excludes tags, contact
+ *  methods, and source records: the dashboard renders none of them, and
+ *  hydrating them cost 1.4 MB on every application load. */
+export function summarizePeople(ids: string[]): Record<string, any>[] {
+  const uniqueIds = [...new Set(ids.filter(Boolean))];
+  if (!uniqueIds.length) return [];
+  const placeholders = uniqueIds.map(() => "?").join(",");
+  const rows = db.prepare(`
+    SELECT p.id AS id, p.preferred_name, p.nickname,
+      m.company, m.job_title, m.headline, m.location, m.industry, m.relationship,
+      m.last_contact, m.follow_up_date, m.relationship_strength, m.priority, m.birthday,
+      m.notes, m.quick_memories,
+      (SELECT COUNT(*) FROM memories mm WHERE mm.person_id=p.id) AS memory_count
+    FROM people p LEFT JOIN nett_metadata m ON m.person_id=p.id
+    WHERE p.id IN (${placeholders})
+  `).all(...uniqueIds) as Record<string, any>[];
+  const byId = new Map(rows.map((row) => [row.id, { ...row, name: row.preferred_name }]));
+  return uniqueIds.flatMap((id) => {
+    const person = byId.get(id);
+    return person ? [person] : [];
+  });
 }

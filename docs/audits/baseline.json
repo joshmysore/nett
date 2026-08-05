@@ -1,0 +1,157 @@
+{
+  "label": "baseline",
+  "base": "http://127.0.0.1:5173",
+  "startedAt": "2026-07-31T10:27:38.928Z",
+  "metrics": {
+    "app.cold-load-to-first-heading": {
+      "median": 833,
+      "samples": [
+        2379,
+        830,
+        833,
+        829,
+        840
+      ],
+      "unit": "ms"
+    },
+    "app.bootstrap-people-rows-transferred": {
+      "median": 249,
+      "samples": [
+        249,
+        249,
+        249,
+        249,
+        249
+      ],
+      "unit": "rows"
+    },
+    "route.dashboard-to-people-first-row": {
+      "median": 58,
+      "samples": [
+        119,
+        51,
+        55,
+        58,
+        65
+      ],
+      "unit": "ms"
+    },
+    "people.cold-load-to-first-row": {
+      "median": 1333,
+      "samples": [
+        1333,
+        1842,
+        846,
+        1332,
+        1336
+      ],
+      "unit": "ms"
+    },
+    "search.keystroke-to-visible-feedback": {
+      "median": 0.7,
+      "samples": [
+        4,
+        0,
+        1,
+        1,
+        1
+      ],
+      "unit": "ms"
+    },
+    "search.keystroke-to-settled-results": {
+      "median": 269.6,
+      "samples": [
+        15007,
+        270,
+        285,
+        215,
+        240
+      ],
+      "unit": "ms"
+    },
+    "drawer.open-to-first-useful-content": {
+      "median": 839,
+      "samples": [
+        138,
+        876,
+        320,
+        839,
+        840
+      ],
+      "unit": "ms"
+    },
+    "profile.cold-load-to-name-visible": {
+      "median": 1336,
+      "samples": [
+        1330,
+        1838,
+        1336,
+        1336,
+        1339
+      ],
+      "unit": "ms"
+    },
+    "people.cumulative-layout-shift": {
+      "median": 0,
+      "samples": [
+        0.00024715553566261576
+      ],
+      "unit": "score"
+    },
+    "people.long-tasks-over-50ms": {
+      "median": 1,
+      "samples": [
+        52
+      ],
+      "unit": "count"
+    }
+  },
+  "notes": [
+    "search results did not change for \"a\" within 15s"
+  ],
+  "horizontalOverflowPx": {
+    "dark/1440x1000/dashboard": 0,
+    "dark/1440x1000/people": 0,
+    "dark/1440x1000/connectors": 0,
+    "dark/1280x800/dashboard": 0,
+    "dark/1280x800/people": 0,
+    "dark/1280x800/connectors": 0,
+    "dark/1024x768/dashboard": 0,
+    "dark/1024x768/people": 0,
+    "dark/1024x768/connectors": 0,
+    "dark/768x1024/dashboard": 0,
+    "dark/768x1024/people": 0,
+    "dark/768x1024/connectors": 0,
+    "dark/414x896/dashboard": 0,
+    "dark/414x896/people": 0,
+    "dark/414x896/connectors": 0,
+    "dark/375x812/dashboard": 0,
+    "dark/375x812/people": 0,
+    "dark/375x812/connectors": 23,
+    "dark/320x700/dashboard": 0,
+    "dark/320x700/people": 0,
+    "dark/320x700/connectors": 78,
+    "light/1440x1000/dashboard": 0,
+    "light/1440x1000/people": 0,
+    "light/1440x1000/connectors": 0,
+    "light/1280x800/dashboard": 0,
+    "light/1280x800/people": 0,
+    "light/1280x800/connectors": 0,
+    "light/1024x768/dashboard": 0,
+    "light/1024x768/people": 0,
+    "light/1024x768/connectors": 0,
+    "light/768x1024/dashboard": 0,
+    "light/768x1024/people": 0,
+    "light/768x1024/connectors": 0,
+    "light/414x896/dashboard": 0,
+    "light/414x896/people": 0,
+    "light/414x896/connectors": 0,
+    "light/375x812/dashboard": 0,
+    "light/375x812/people": 0,
+    "light/375x812/connectors": 23,
+    "light/320x700/dashboard": 0,
+    "light/320x700/people": 0,
+    "light/320x700/connectors": 78
+  },
+  "finishedAt": "2026-07-31T10:29:39.508Z"
+}

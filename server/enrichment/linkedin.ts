@@ -95,7 +95,7 @@ export function previewLinkedInPublicProfile(
   return { profileUrl, suggestions };
 }
 
-export function applyLinkedInPublicProfile(
+export async function applyLinkedInPublicProfile(
   personId: string,
   input: LinkedInPublicInput & { acceptedFields: string[] }
 ) {
@@ -121,6 +121,11 @@ export function applyLinkedInPublicProfile(
     capturedBy: "user-paste",
     suggestions: selected
   };
+  const patch = Object.fromEntries(selected.map((suggestion) => [suggestion.field, suggestion.value]));
+  if ("location" in patch) {
+    const { normalizeLocationValue } = await import("../geo/normalize.js");
+    patch.location = await normalizeLocationValue(patch.location);
+  }
   db.transaction(() => {
     db.prepare(`
       INSERT INTO source_identities
@@ -146,11 +151,7 @@ export function applyLinkedInPublicProfile(
         source_identity_id=excluded.source_identity_id, person_id=excluded.person_id,
         raw_json=excluded.raw_json, captured_at=excluded.captured_at
     `).run(recordId, preview.profileUrl, storedIdentity.id, personId, JSON.stringify(snapshot), timestamp);
-    updatePerson(
-      personId,
-      Object.fromEntries(selected.map((suggestion) => [suggestion.field, suggestion.value])),
-      "linkedin-public"
-    );
+    updatePerson(personId, patch, "linkedin-public");
     db.prepare(
       "UPDATE connector_states SET permission_state='user-assisted', status='idle', last_sync_at=?, last_error=NULL, records_seen=records_seen+1, records_linked=records_linked+1 WHERE connector_id='linkedin-public'"
     ).run(timestamp);

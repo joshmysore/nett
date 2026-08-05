@@ -19,7 +19,13 @@ import {
   useState,
 } from "react";
 import { Avatar, asList, Modal } from "@/components/Primitives";
-import { api } from "@/lib/api";
+import { api, isAbortError } from "@/lib/api";
+import {
+  createDictationSession,
+  detectDictationCapability,
+  type DictationSession,
+  type DictationState,
+} from "@/lib/dictation";
 import type { ParsedMemory, Person } from "@/types";
 
 export function CommandPalette({
@@ -53,26 +59,30 @@ export function CommandPalette({
       return;
     }
     const current = ++requestId.current;
+    const controller = new AbortController();
     setSearching(true);
     setError(null);
     const timeout = window.setTimeout(() => {
       api
-        .search(query.trim())
+        .search(query.trim(), controller.signal)
         .then((next) => {
           if (current !== requestId.current) return;
           setResults(asList(next).slice(0, 30));
           setActiveIndex(0);
         })
         .catch((reason) => {
-          if (current !== requestId.current) return;
+          if (isAbortError(reason) || current !== requestId.current) return;
           setResults([]);
           setError(reason instanceof Error ? reason.message : "Search unavailable");
         })
         .finally(() => {
           if (current === requestId.current) setSearching(false);
         });
-    }, 120);
-    return () => window.clearTimeout(timeout);
+    }, 90);
+    return () => {
+      window.clearTimeout(timeout);
+      controller.abort();
+    };
     // Initial results intentionally update when the source list changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [people, query]);
@@ -199,6 +209,8 @@ export function CommandPalette({
   );
 }
 
+type ProposalDecision = "accept" | "reject";
+
 export function CaptureDialog({
   onClose,
   onSaved,
@@ -207,89 +219,157 @@ export function CaptureDialog({
   onClose: () => void;
   onSaved: () => void;
 }) {
+  const capability = detectDictationCapability();
   const [text, setText] = useState("");
   const [parsed, setParsed] = useState<ParsedMemory | null>(null);
   const [personId, setPersonId] = useState("");
   const [stage, setStage] = useState<"write" | "review">("write");
   const [working, setWorking] = useState(false);
-  const [listening, setListening] = useState(false);
+  const [dictationState, setDictationState] = useState<DictationState>("idle");
   const [error, setError] = useState<string | null>(null);
-  const recognition = useRef<any>(null);
+  const [usedVoice, setUsedVoice] = useState(false);
+  const [proposalEdits, setProposalEdits] = useState<Record<string, string>>({});
+  const [proposalDecisions, setProposalDecisions] = useState<Record<string, ProposalDecision>>({});
+  const session = useRef<DictationSession | null>(null);
   const composer = useRef<HTMLTextAreaElement>(null);
+  const abortRef = useRef<AbortController | null>(null);
+  const requestId = useRef(0);
+  const listening = dictationState === "listening" || dictationState === "requesting-permission";
+  const dirty = Boolean(text.trim() || stage === "review");
 
   useEffect(
     () => () => {
-      recognition.current?.stop();
+      session.current?.cancel();
+      abortRef.current?.abort();
     },
     [],
   );
 
+  const requestClose = () => {
+    if (dirty && working) return;
+    if (dirty && !window.confirm("Discard this memory? Nothing has been saved yet.")) return;
+    abortRef.current?.abort();
+    onClose();
+  };
+
   const parse = async () => {
-    if (!text.trim()) return;
+    if (!text.trim() || working) return;
+    session.current?.stop();
+    abortRef.current?.abort();
+    const abort = new AbortController();
+    abortRef.current = abort;
+    const id = ++requestId.current;
     setWorking(true);
     setError(null);
     try {
-      const result = await api.parseMemory(text);
+      const result = await api.parseMemory(text, abort.signal);
+      if (id !== requestId.current || abort.signal.aborted) return;
       setParsed(result);
       setPersonId(result.ambiguous ? "" : result.candidates?.[0]?.id || "");
+      const decisions: Record<string, ProposalDecision> = {};
+      const edits: Record<string, string> = {};
+      for (const proposal of asList(result.proposals)) {
+        const key = `${proposal.field}-${proposal.evidenceStart}`;
+        decisions[key] = "accept";
+        edits[key] = proposal.values?.join(", ") || proposal.value;
+      }
+      setProposalDecisions(decisions);
+      setProposalEdits(edits);
       setStage("review");
     } catch (reason) {
+      if (isAbortError(reason) || abort.signal.aborted) return;
       setError(
         reason instanceof Error ? reason.message : "The memory could not be structured",
       );
     } finally {
-      setWorking(false);
+      if (abortRef.current === abort) abortRef.current = null;
+      if (id === requestId.current) setWorking(false);
     }
   };
 
   const toggleVoice = () => {
     if (listening) {
-      recognition.current?.stop();
-      setListening(false);
+      session.current?.stop();
       return;
     }
-    const SpeechRecognition =
-      (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-    if (!SpeechRecognition) {
-      setError("Speech recognition is unavailable in this browser. You can still type.");
+    if (!capability.available) {
+      setError(capability.disclosure);
       return;
     }
-    const instance = new SpeechRecognition();
-    recognition.current = instance;
-    instance.continuous = true;
-    instance.interimResults = true;
-    instance.onresult = (event: any) => {
-      let transcript = "";
-      for (let index = event.resultIndex; index < event.results.length; index += 1) {
-        transcript += event.results[index][0].transcript;
-      }
-      setText((current) => `${current}${current ? " " : ""}${transcript}`);
-    };
-    instance.onerror = () => {
-      setError("Voice transcription stopped. Review the text captured so far.");
-      setListening(false);
-    };
-    instance.onend = () => setListening(false);
-    instance.start();
-    setListening(true);
+    setError(null);
+    const next = createDictationSession({
+      onState: setDictationState,
+      onTranscript: (chunk, isFinal) => {
+        if (!isFinal) return;
+        setUsedVoice(true);
+        setText((current) => `${current}${current ? " " : ""}${chunk.trim()}`);
+      },
+      onError: (message) => setError(message),
+    });
+    session.current = next;
+    next.start();
   };
 
   const save = async () => {
-    if (!parsed || !personId) return;
+    if (!parsed || !personId || working) return;
+    abortRef.current?.abort();
+    const abort = new AbortController();
+    abortRef.current = abort;
+    const id = ++requestId.current;
     setWorking(true);
     setError(null);
     try {
+      const accepted = asList(parsed.proposals).filter((proposal) => {
+        const key = `${proposal.field}-${proposal.evidenceStart}`;
+        return proposalDecisions[key] !== "reject";
+      });
+      const proposals = Object.fromEntries(
+        accepted.map((proposal) => {
+          const key = `${proposal.field}-${proposal.evidenceStart}`;
+          const edited = proposalEdits[key] ?? (proposal.values?.join(", ") || proposal.value);
+          if (proposal.values || proposal.field === "tags" || proposal.field === "languages"
+            || proposal.field === "interests" || proposal.field === "mutuals") {
+            return [proposal.field, edited.split(",").map((part) => part.trim()).filter(Boolean)];
+          }
+          return [proposal.field, edited];
+        }),
+      );
+      const tags = Array.isArray(proposals.tags)
+        ? proposals.tags as string[]
+        : asList(parsed.extracted.tags).filter((tag) =>
+          accepted.some((proposal) => proposal.field === "tags" && (
+            proposal.values?.includes(tag) || proposal.value.includes(tag)
+          )));
+      const followUp = typeof proposals.follow_up_date === "string"
+        ? proposals.follow_up_date
+        : parsed.extracted.followUpDate;
       await api.saveMemory(
         personId,
         parsed.extracted.memory,
-        parsed.extracted,
-        listening ? "voice" : "manual",
+        {
+          memory: parsed.extracted.memory,
+          tags,
+          followUpDate: followUp || null,
+          relationship: typeof proposals.relationship === "string"
+            ? proposals.relationship
+            : parsed.extracted.relationship,
+          interests: Array.isArray(proposals.interests)
+            ? proposals.interests
+            : parsed.extracted.interests,
+          ...proposals,
+          transcript: parsed.transcript || text,
+        },
+        usedVoice ? "voice" : "manual",
+        abort.signal,
       );
+      if (id !== requestId.current || abort.signal.aborted) return;
       onSaved();
     } catch (reason) {
+      if (isAbortError(reason) || abort.signal.aborted) return;
       setError(reason instanceof Error ? reason.message : "The memory could not be saved");
     } finally {
-      setWorking(false);
+      if (abortRef.current === abort) abortRef.current = null;
+      if (id === requestId.current) setWorking(false);
     }
   };
 
@@ -299,9 +379,9 @@ export function CaptureDialog({
       subtitle={
         stage === "write"
           ? "Capture the thought naturally. Nett will structure it before saving."
-          : "Confirm the person and extracted fields. Nothing is saved until you approve."
+          : "Accept, edit, or reject each proposed fact. Nothing is saved until you approve."
       }
-      onClose={onClose}
+      onClose={requestClose}
       wide
       initialFocusRef={stage === "write" ? composer : undefined}
     >
@@ -319,6 +399,8 @@ export function CaptureDialog({
               onClick={toggleVoice}
               aria-label={listening ? "Stop voice capture" : "Start voice capture"}
               aria-pressed={listening}
+              title={capability.disclosure}
+              disabled={!capability.available && dictationState === "idle"}
             >
               {listening ? <MicrophoneSlash size={20} /> : <Microphone size={20} />}
             </button>
@@ -327,10 +409,20 @@ export function CaptureDialog({
                 <i />
                 <i />
                 <i />
-                Listening
+                {dictationState === "requesting-permission" ? "Requesting mic" : "Listening"}
               </span>
             )}
           </div>
+          {capability.mayUseRemoteService && (
+            <p className="capture-privacy" role="note">
+              {capability.disclosure}
+            </p>
+          )}
+          {!capability.available && (
+            <p className="capture-privacy" role="note">
+              {capability.disclosure}
+            </p>
+          )}
           <div className="capture-hints" aria-label="Memory fields Nett can detect">
             <span>
               <Brain size={15} />
@@ -350,7 +442,7 @@ export function CaptureDialog({
             </span>
           </div>
           <div className="modal-actions">
-            <button className="secondary-button" onClick={onClose}>
+            <button className="secondary-button" onClick={requestClose}>
               Cancel
             </button>
             <button
@@ -428,24 +520,78 @@ export function CaptureDialog({
                   }
                 />
               </label>
-              <div>
-                <span>Extracted tags</span>
-                <div className="tag-field">
-                  {asList(parsed.extracted.tags).length ? (
-                    parsed.extracted.tags.map((tag) => (
-                      <span key={tag}>
-                        <Tag size={12} />
-                        {tag}
-                      </span>
-                    ))
-                  ) : (
-                    <small>No tags extracted</small>
-                  )}
+              {asList(parsed.proposals).length > 0 && (
+                <div className="capture-proposals">
+                  <span>Proposed facts — accept, edit, or reject each one</span>
+                  <ul>
+                    {parsed.proposals!.map((proposal) => {
+                      const key = `${proposal.field}-${proposal.evidenceStart}`;
+                      const accepted = proposalDecisions[key] !== "reject";
+                      return (
+                        <li
+                          key={key}
+                          className={accepted ? "is-accepted" : "is-rejected"}
+                        >
+                          <div className="capture-proposal-head">
+                            <strong>{proposal.field.replace(/_/g, " ")}</strong>
+                            <span className="capture-proposal-actions">
+                              <button
+                                type="button"
+                                className={accepted ? "is-active" : ""}
+                                aria-pressed={accepted}
+                                onClick={() =>
+                                  setProposalDecisions((current) => ({
+                                    ...current,
+                                    [key]: "accept",
+                                  }))
+                                }
+                              >
+                                Accept
+                              </button>
+                              <button
+                                type="button"
+                                className={!accepted ? "is-active" : ""}
+                                aria-pressed={!accepted}
+                                onClick={() =>
+                                  setProposalDecisions((current) => ({
+                                    ...current,
+                                    [key]: "reject",
+                                  }))
+                                }
+                              >
+                                Reject
+                              </button>
+                            </span>
+                          </div>
+                          <input
+                            value={proposalEdits[key] ?? ""}
+                            disabled={!accepted}
+                            onChange={(event) =>
+                              setProposalEdits((current) => ({
+                                ...current,
+                                [key]: event.target.value,
+                              }))
+                            }
+                            aria-label={`Edit ${proposal.field.replace(/_/g, " ")}`}
+                          />
+                          <small title={proposal.evidence}>
+                            {Math.round(proposal.confidence * 100)}% · {proposal.evidence}
+                          </small>
+                        </li>
+                      );
+                    })}
+                  </ul>
                 </div>
-              </div>
+              )}
             </div>
             <div className="modal-actions">
-              <button className="secondary-button" onClick={() => setStage("write")}>
+              <button
+                className="secondary-button"
+                onClick={() => {
+                  abortRef.current?.abort();
+                  setStage("write");
+                }}
+              >
                 Back
               </button>
               <button
@@ -477,6 +623,7 @@ export function ImportDialog({
   onClose: () => void;
   onImported: () => void;
 }) {
+  const [mode, setMode] = useState<"spreadsheet" | "linkedin">("spreadsheet");
   const [file, setFile] = useState<File | null>(null);
   const [result, setResult] = useState<{
     rows: number;
@@ -486,6 +633,7 @@ export function ImportDialog({
     invalid: number;
     conflicts: number;
     duplicate: boolean;
+    source?: "spreadsheet" | "linkedin";
   } | null>(null);
   const [working, setWorking] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -495,8 +643,13 @@ export function ImportDialog({
     setWorking(true);
     setError(null);
     try {
-      const data = await api.importCsv(file);
-      setResult(data);
+      if (mode === "linkedin") {
+        const data = await api.importLinkedInArchive(file);
+        setResult({ ...data, source: "linkedin" });
+      } else {
+        const data = await api.importCsv(file);
+        setResult({ ...data, source: "spreadsheet" });
+      }
       onImported();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Import failed");
@@ -507,25 +660,69 @@ export function ImportDialog({
 
   return (
     <Modal
-      title="Import Nett metadata"
-      subtitle="Exact email, phone, or one unique identical name merges automatically. Ambiguous or similar names stay in review."
+      title={mode === "linkedin" ? "Import LinkedIn archive" : "Import Nett metadata"}
+      subtitle={
+        mode === "linkedin"
+          ? "Use your official LinkedIn “Download your data” archive or Connections.csv. Nett never scrapes LinkedIn or reuses cookies."
+          : "Exact email, phone, or one unique identical name merges automatically. Ambiguous or similar names stay in review."
+      }
       onClose={onClose}
       wide
     >
       {!result ? (
         <>
+          <div className="import-mode" role="tablist" aria-label="Import source">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={mode === "spreadsheet"}
+              className={mode === "spreadsheet" ? "is-selected" : ""}
+              onClick={() => {
+                setMode("spreadsheet");
+                setFile(null);
+                setError(null);
+              }}
+            >
+              Spreadsheet
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={mode === "linkedin"}
+              className={mode === "linkedin" ? "is-selected" : ""}
+              onClick={() => {
+                setMode("linkedin");
+                setFile(null);
+                setError(null);
+              }}
+            >
+              LinkedIn archive
+            </button>
+          </div>
           <label className="file-drop">
             <input
               type="file"
-              accept=".csv,.xlsx,.xls,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"
+              accept={
+                mode === "linkedin"
+                  ? ".zip,.csv,application/zip,text/csv"
+                  : ".csv,.xlsx,.xls,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"
+              }
               onChange={(event) => setFile(event.target.files?.[0] || null)}
             />
             <FileCsv size={32} weight="duotone" />
-            <strong>{file ? file.name : "Choose a CSV or Excel file"}</strong>
+            <strong>
+              {file
+                ? file.name
+                : mode === "linkedin"
+                  ? "Choose a LinkedIn zip or Connections.csv"
+                  : "Choose a CSV or Excel file"}
+            </strong>
             <span>
               {file
                 ? `${Math.ceil(file.size / 1024)} KB ready to import`
-                : "Headers are matched by name. Raw rows remain auditable."}
+                : mode === "linkedin"
+                  ? "Only Connections fields are imported. Location, languages, and interests are never invented."
+                  : "Headers are matched by name. Raw rows remain auditable."}
             </span>
           </label>
           <div className="import-rules">
@@ -533,21 +730,23 @@ export function ImportDialog({
               <Check size={16} />
               <span>
                 <strong>Exact match</strong>
-                Exact email, phone, or a unique identical name merges automatically
+                {mode === "linkedin"
+                  ? "Exact email or normalized profile URL links automatically"
+                  : "Exact email, phone, or a unique identical name merges automatically"}
               </span>
             </div>
             <div>
               <WarningCircle size={16} />
               <span>
                 <strong>Review match</strong>
-                Similar names require confirmation
+                Uncertain or conflicting rows stay in the merge queue
               </span>
             </div>
             <div>
               <Database size={16} />
               <span>
                 <strong>Preserved</strong>
-                Every source row remains auditable
+                Every source row remains auditable; re-importing the same file is a no-op
               </span>
             </div>
           </div>
@@ -567,7 +766,7 @@ export function ImportDialog({
               disabled={!file || working}
             >
               {working ? <SpinnerGap className="spin" /> : <FileCsv />}
-              Import spreadsheet
+              {mode === "linkedin" ? "Import archive" : "Import spreadsheet"}
             </button>
           </div>
         </>
