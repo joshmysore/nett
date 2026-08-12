@@ -135,10 +135,11 @@ function institutionAcronym(value: string): string | null {
     .split(/\s+/)
     .filter((word) =>
       word.length
-      && !/^(of|the|and|at|for|in|high|school|university|college|institute|academy|prep|senior)$/i.test(word));
+      && !/^(of|the|and|at|for|in|high|school|prep|senior|academy)$/i.test(word));
   if (words.length < 2) return null;
   const acronym = words.map((word) => word[0]!.toLocaleLowerCase()).join("");
-  return acronym.length >= 2 && acronym.length <= 6 ? acronym : null;
+  // Two-letter acronyms collide too easily (e.g. "Southern Methodist" → "sm").
+  return acronym.length >= 3 && acronym.length <= 6 ? acronym : null;
 }
 
 function institutionTokens(values: string[]): Set<string> {
