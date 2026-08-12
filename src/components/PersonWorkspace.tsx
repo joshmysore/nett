@@ -348,6 +348,7 @@ type Suggestion = {
   confidence: number;
   reason: string;
   source: string;
+  evidence?: { sourceType?: string; excerpt?: string; quote?: string }[];
 };
 
 type Decision = "accept" | "keep";
@@ -529,6 +530,9 @@ export function EvidenceCheck({
                     </span>
                   </div>
                   <p className="suggestion-reason">{suggestion.reason}</p>
+                  {suggestion.evidence?.[0]?.excerpt && (
+                    <small className="person-capture-note">{suggestion.evidence[0].excerpt}</small>
+                  )}
                   <div className="suggestion-choice">
                     {conflicting && (
                       <label>
