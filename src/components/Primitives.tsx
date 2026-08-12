@@ -46,6 +46,8 @@ export function calendarDate(value?: string, fallback = "Not recorded") {
 }
 
 export function sourceLabel(source = "") {
+  if (/shared-context/i.test(source)) return "Shared context";
+
   return (
     {
       nett: "Nett",

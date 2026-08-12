@@ -1,0 +1,167 @@
+import assert from "node:assert/strict";
+import test, { after } from "node:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+
+const temporaryDirectory = mkdtempSync(path.join(tmpdir(), "nett-shared-context-"));
+process.env.NETT_DB_PATH = path.join(temporaryDirectory, "nett.db");
+process.env.NETT_MESSAGES_DB = path.join(temporaryDirectory, "chat.db");
+delete process.env.NETT_OLLAMA_MODEL;
+
+globalThis.fetch = (async () => {
+  throw new Error("connect ECONNREFUSED 127.0.0.1:11434");
+}) as typeof fetch;
+
+const { createPerson, db, getPerson, updatePerson } = await import("../../db.js");
+const { collectSharedContextSuggestions } = await import("../shared-context.js");
+const { intelligentAutofill, reviewInferenceSuggestion } = await import("../service.js");
+
+after(() => {
+  db.close();
+  rmSync(temporaryDirectory, { recursive: true, force: true });
+});
+
+function seed(name: string, metadata: Record<string, unknown>): string {
+  const id = createPerson(name);
+  updatePerson(id, metadata);
+  return id;
+}
+
+test("shared context proposes mutuals from Dallas + same school overlap", () => {
+  seed("Maya Chen", {
+    hometown: ["Dallas, Texas"],
+    location: "Dallas, TX",
+    institutions: ["Southern Methodist University"],
+    mutuals: ["Jordan Lee", "Sam Ortiz"],
+  });
+  seed("Jordan Lee", {
+    hometown: ["Dallas"],
+    institutions: ["Southern Methodist University"],
+    mutuals: ["Maya Chen"],
+  });
+  seed("Sam Ortiz", {
+    hometown: ["Dallas, Texas"],
+    institutions: ["SMU"],
+    company: "Stripe",
+    mutuals: ["Maya Chen"],
+  });
+  // Unrelated person — should not appear.
+  seed("Priya Nair", {
+    hometown: ["Lisbon"],
+    institutions: ["University of Lisbon"],
+    mutuals: [],
+  });
+
+  const targetId = seed("Alex Rivera", {
+    hometown: ["Dallas, Texas"],
+    institutions: ["Southern Methodist University"],
+    mutuals: [],
+  });
+  const person = getPerson(targetId) as Record<string, unknown>;
+  const suggestions = collectSharedContextSuggestions(person);
+  const mutuals = suggestions.find((item) => item.field === "mutuals");
+  assert.ok(mutuals, "expected a mutuals suggestion");
+  const names = (mutuals!.value as string[]).map((name) => name.toLocaleLowerCase());
+  assert.equal(names.includes("maya chen"), true);
+  assert.equal(names.includes("jordan lee"), true);
+  assert.equal(names.includes("sam ortiz"), true);
+  assert.equal(names.includes("priya nair"), false);
+  assert.equal(mutuals!.evidence.length > 0, true);
+  assert.equal(mutuals!.evidence[0]?.sourceType, "shared-context");
+  assert.match(mutuals!.reason, /shared context|mutual/i);
+});
+
+test("reciprocal mutuals are proposed even without place overlap", () => {
+  seed("Ben Cole", {
+    hometown: ["Seattle"],
+    mutuals: ["Casey Quinn"],
+  });
+  const targetId = seed("Casey Quinn", {
+    hometown: ["Austin"],
+    mutuals: [],
+  });
+  const suggestions = collectSharedContextSuggestions(getPerson(targetId) as Record<string, unknown>);
+  const mutuals = suggestions.find((item) => item.field === "mutuals");
+  assert.ok(mutuals);
+  assert.equal(
+    (mutuals!.value as string[]).some((name) => name.toLocaleLowerCase() === "ben cole"),
+    true,
+  );
+  assert.ok(mutuals!.confidence >= 0.85);
+});
+
+test("empty institution can be filled from high-overlap peer consensus", () => {
+  seed("Dana Wu", {
+    hometown: ["Dallas, Texas"],
+    location: "Dallas",
+    institutions: ["Greenhill School"],
+    company: "Notion",
+  });
+  seed("Eli Park", {
+    hometown: ["Dallas"],
+    location: "Dallas, TX",
+    institutions: ["Greenhill School"],
+    company: "Notion",
+  });
+  const targetId = seed("Fran Okonkwo", {
+    hometown: ["Dallas, Texas"],
+    location: "Dallas",
+    company: "Notion",
+    institutions: [],
+  });
+  const suggestions = collectSharedContextSuggestions(getPerson(targetId) as Record<string, unknown>);
+  const institutions = suggestions.find((item) => item.field === "institutions");
+  assert.ok(institutions, "expected institutions consensus");
+  assert.deepEqual(institutions!.value, ["Greenhill School"]);
+});
+
+test("intelligentAutofill surfaces shared-context mutuals without the local model", async () => {
+  seed("Harper Diaz", {
+    hometown: ["Dallas, Texas"],
+    institutions: ["Booker T. Washington High School, Dallas"],
+    mutuals: ["Ian Brooks"],
+  });
+  seed("Ian Brooks", {
+    hometown: ["Dallas"],
+    institutions: ["Booker T. Washington High School"],
+    mutuals: ["Harper Diaz"],
+  });
+  const targetId = seed("Jules Nguyen", {
+    hometown: ["Dallas, Texas"],
+    institutions: ["Booker T. Washington High School, Dallas"],
+    mutuals: [],
+  });
+
+  const result = await intelligentAutofill(targetId, { generate: false });
+  const mutuals = result.suggestions.find((item) => item.field === "mutuals");
+  assert.ok(mutuals, "autofill should include shared-context mutuals");
+  assert.equal(mutuals!.sourceType, "derived-signal");
+  assert.match(mutuals!.source, /shared-context/);
+  assert.equal(
+    Array.isArray(mutuals!.value)
+      && (mutuals!.value as string[]).some((name) => /harper|ian/i.test(name)),
+    true,
+  );
+
+  // Rejection fingerprint suppresses an identical re-proposal.
+  reviewInferenceSuggestion(mutuals!.id, "rejected", false);
+  const again = await intelligentAutofill(targetId, { generate: false });
+  assert.equal(
+    again.suggestions.some((item) => item.field === "mutuals"),
+    false,
+    "rejected mutuals suggestion must not return without new evidence",
+  );
+});
+
+test("does not invent mutuals from a single weak signal", () => {
+  seed("Only Texas A", { hometown: ["Texas"], mutuals: [] });
+  seed("Only Texas B", { hometown: ["Texas"], mutuals: [] });
+  const targetId = seed("Only Texas C", { hometown: ["Texas"], mutuals: [] });
+  const suggestions = collectSharedContextSuggestions(getPerson(targetId) as Record<string, unknown>);
+  assert.equal(
+    suggestions.some((item) => item.field === "mutuals"),
+    false,
+    "state-only overlap must not propose mutuals",
+  );
+});

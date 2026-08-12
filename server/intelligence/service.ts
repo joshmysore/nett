@@ -16,6 +16,7 @@ import {
   type EvidenceIndexState
 } from "./evidence-index.js";
 import { OllamaProvider } from "./ollama.js";
+import { collectSharedContextSuggestions } from "./shared-context.js";
 import { collectTraitSuggestions } from "./traits.js";
 
 export { refreshEvidenceIndex, refreshPersonEvidenceIndex, personEvidenceIndexState };
@@ -926,6 +927,23 @@ export async function intelligentAutofill(
       evidence,
       provider: null
     });
+  }
+  assertActive(signal);
+
+  // Shared place / school / company / reciprocal mutuals — local graph only.
+  const claimedFields = new Set(candidates.map((candidate) => candidate.field));
+  for (const item of collectSharedContextSuggestions(person)) {
+    if (claimedFields.has(item.field) || !isProposable(item.field)) continue;
+    if (!item.evidence.length) continue;
+    candidates.push({
+      field: item.field,
+      value: item.value,
+      confidence: item.confidence,
+      reason: item.reason,
+      evidence: item.evidence,
+      provider: null
+    });
+    claimedFields.add(item.field);
   }
   assertActive(signal);
 
