@@ -255,13 +255,14 @@ export function ProfilePage({
       intro_potential: person.intro_potential || 0,
       follow_up_date: person.follow_up_date || "",
       notes: person.notes || "",
-      languages: asList(person.languages).join(", "),
-      interests: asList(person.interests).join(", "),
-      foods: asList(person.foods).join(", "),
-      skills: asList(person.skills).join(", "),
-      online_personality: asList(person.online_personality).join(", "),
-      institutions: asList(person.institutions).join(", "),
-      mutuals: asList(person.mutuals).join(", "),
+      languages: asList(person.languages),
+      interests: asList(person.interests),
+      foods: asList(person.foods),
+      skills: asList(person.skills),
+      online_personality: asList(person.online_personality),
+      institutions: asList(person.institutions),
+      mutuals: asList(person.mutuals),
+      tags: asList(person.tags),
     });
     setEdit(true);
   };
@@ -270,13 +271,13 @@ export function ProfilePage({
     setSaving(true);
     try {
       const list = (value: unknown) =>
-        String(value || "")
-          .split(",")
-          .map((entry) => entry.trim())
-          .filter(Boolean);
-      const hometown = Array.isArray(form.hometown)
-        ? form.hometown.map((entry) => String(entry).trim()).filter(Boolean)
-        : list(form.hometown);
+        Array.isArray(value)
+          ? value.map((entry) => String(entry).trim()).filter(Boolean)
+          : String(value || "")
+              .split(",")
+              .map((entry) => entry.trim())
+              .filter(Boolean);
+      const hometown = list(form.hometown);
       accept(
         await api.updatePerson(id, {
           ...form,
@@ -288,6 +289,7 @@ export function ProfilePage({
           online_personality: list(form.online_personality),
           institutions: list(form.institutions),
           mutuals: list(form.mutuals),
+          tags: list(form.tags),
         }),
       );
       setEdit(false);
@@ -368,11 +370,11 @@ export function ProfilePage({
         <div className="profile-actions">
           <button className="secondary-button" onClick={startEdit}>
             <SlidersHorizontal size={17} aria-hidden="true" />
-            All fields
+            Edit profile
           </button>
           <button className="primary-button" onClick={() => captureRef.current?.focus()}>
             <Plus size={17} aria-hidden="true" />
-            Record something
+            Add memory
           </button>
         </div>
       </section>
@@ -404,7 +406,7 @@ export function ProfilePage({
                 ))
               ) : hometownEntries(person.hometown).length === 0 ? (
                 <p className="person-capture-note">
-                  Nothing beyond the fields above has been recorded. Use All fields for the
+                  Nothing beyond the fields above has been recorded. Use Edit profile for the
                   full set — hometown, spike, languages, skills, interests, gender, culture,
                   personality, how you met, and the rest — or Fill gaps on People to work
                   through one category across many people.
@@ -431,8 +433,8 @@ export function ProfilePage({
           <section className="profile-section">
             <div className="section-heading">
               <div>
-                <h2>Record</h2>
-                <p>Memories, messages, and interactions in one evidence stream.</p>
+                <h2>Recent</h2>
+                <p>Messages, notes, and moments connected by their source.</p>
               </div>
             </div>
             {timeline.length ? (
@@ -516,7 +518,7 @@ export function ProfilePage({
 
           {facts.length > 0 && (
             <section className="person-block">
-              <h2>Communication record</h2>
+              <h2>Evidence</h2>
               <dl className="signal-facts">
                 {facts.map((fact) => (
                   <div key={fact.label}>
@@ -530,7 +532,7 @@ export function ProfilePage({
           )}
 
           <section className="person-block">
-            <h2>Provenance</h2>
+            <h2>Field sources</h2>
             {provenance.length ? (
               <details className="person-more is-flush">
                 <summary>

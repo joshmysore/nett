@@ -1,0 +1,157 @@
+{
+  "label": "held-thread-unify",
+  "base": "http://127.0.0.1:5173",
+  "startedAt": "2026-08-10T18:27:47.121Z",
+  "metrics": {
+    "app.cold-load-to-first-heading": {
+      "median": 234,
+      "samples": [
+        854,
+        228,
+        226,
+        237,
+        234
+      ],
+      "unit": "ms"
+    },
+    "app.bootstrap-people-rows-transferred": {
+      "median": 250,
+      "samples": [
+        250,
+        250,
+        250,
+        250,
+        250
+      ],
+      "unit": "rows"
+    },
+    "route.dashboard-to-people-first-row": {
+      "median": 49,
+      "samples": [
+        125,
+        49,
+        59,
+        39,
+        45
+      ],
+      "unit": "ms"
+    },
+    "people.cold-load-to-first-row": {
+      "median": 224,
+      "samples": [
+        228,
+        225,
+        224,
+        219,
+        222
+      ],
+      "unit": "ms"
+    },
+    "search.keystroke-to-visible-feedback": {
+      "median": 8.9,
+      "samples": [
+        10,
+        10,
+        9,
+        7,
+        6
+      ],
+      "unit": "ms"
+    },
+    "search.keystroke-to-settled-results": {
+      "median": 121.1,
+      "samples": [
+        15015,
+        120,
+        142,
+        104,
+        121
+      ],
+      "unit": "ms"
+    },
+    "drawer.open-to-first-useful-content": {
+      "median": 61,
+      "samples": [
+        117,
+        46,
+        64,
+        56,
+        61
+      ],
+      "unit": "ms"
+    },
+    "profile.cold-load-to-name-visible": {
+      "median": 334,
+      "samples": [
+        1849,
+        226,
+        856,
+        334,
+        223
+      ],
+      "unit": "ms"
+    },
+    "people.cumulative-layout-shift": {
+      "median": 0,
+      "samples": [
+        0
+      ],
+      "unit": "score"
+    },
+    "people.long-tasks-over-50ms": {
+      "median": 1,
+      "samples": [
+        52
+      ],
+      "unit": "count"
+    }
+  },
+  "notes": [
+    "search results did not change for \"a\" within 15s"
+  ],
+  "horizontalOverflowPx": {
+    "dark/1440x1000/dashboard": 0,
+    "dark/1440x1000/people": 0,
+    "dark/1440x1000/connectors": 0,
+    "dark/1280x800/dashboard": 0,
+    "dark/1280x800/people": 0,
+    "dark/1280x800/connectors": 0,
+    "dark/1024x768/dashboard": 0,
+    "dark/1024x768/people": 0,
+    "dark/1024x768/connectors": 0,
+    "dark/768x1024/dashboard": 0,
+    "dark/768x1024/people": 0,
+    "dark/768x1024/connectors": 0,
+    "dark/414x896/dashboard": 0,
+    "dark/414x896/people": 0,
+    "dark/414x896/connectors": 0,
+    "dark/375x812/dashboard": 0,
+    "dark/375x812/people": 0,
+    "dark/375x812/connectors": 0,
+    "dark/320x700/dashboard": 0,
+    "dark/320x700/people": 0,
+    "dark/320x700/connectors": 0,
+    "light/1440x1000/dashboard": 0,
+    "light/1440x1000/people": 0,
+    "light/1440x1000/connectors": 0,
+    "light/1280x800/dashboard": 0,
+    "light/1280x800/people": 0,
+    "light/1280x800/connectors": 0,
+    "light/1024x768/dashboard": 0,
+    "light/1024x768/people": 0,
+    "light/1024x768/connectors": 0,
+    "light/768x1024/dashboard": 0,
+    "light/768x1024/people": 0,
+    "light/768x1024/connectors": 0,
+    "light/414x896/dashboard": 0,
+    "light/414x896/people": 0,
+    "light/414x896/connectors": 0,
+    "light/375x812/dashboard": 0,
+    "light/375x812/people": 0,
+    "light/375x812/connectors": 0,
+    "light/320x700/dashboard": 0,
+    "light/320x700/people": 0,
+    "light/320x700/connectors": 0
+  },
+  "finishedAt": "2026-08-10T18:28:53.770Z"
+}

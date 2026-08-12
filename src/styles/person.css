@@ -17,10 +17,10 @@
 .person-workspace .profile-identity { align-items: flex-start; }
 .person-workspace .profile-identity h1 {
   margin: 0;
-  font-size: clamp(26px, 2.4vw, 34px);
-  line-height: 1.1;
+  font-size: clamp(36px, 4vw, 42px);
+  line-height: 1.04;
   letter-spacing: -.035em;
-  font-weight: 620;
+  font-weight: 600;
 }
 
 .person-names { display: flex; flex-direction: column; gap: var(--space-3xs); min-width: 0; }
@@ -357,7 +357,33 @@
 
 /* Timeline tweaks ---------------------------------------------------------- */
 
-.person-workspace .unified-timeline article { min-height: 0; padding: var(--space-xs) 0; }
+.person-workspace .unified-timeline article {
+  position: relative;
+  min-height: 0;
+  padding: var(--space-xs) 0;
+  grid-template-columns: 14px 100px minmax(0, 1fr);
+}
+.person-workspace .unified-timeline article::before {
+  content: "";
+  position: absolute;
+  left: 6px;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--line-strong);
+}
+.person-workspace .timeline-kind {
+  position: relative;
+  z-index: 1;
+  width: 13px;
+  height: 13px;
+  margin-top: 5px;
+  border: 1px solid var(--accent);
+  border-radius: 50%;
+  background: var(--bg);
+  color: transparent;
+}
+.person-workspace .timeline-kind svg { display: none; }
 .person-workspace .unified-timeline p { font-size: 15px; overflow-wrap: anywhere; }
 .timeline-more { margin-top: var(--space-sm); }
 
@@ -422,6 +448,17 @@
   .person-rail { grid-template-columns: 1fr; }
   .person-facts > div { grid-template-columns: 1fr; gap: 2px; padding: var(--space-2xs) 0; }
   .person-facts dt, .person-facts .fact-label { font-size: 12px; }
+  .person-workspace .unified-timeline article {
+    grid-template-columns: 14px minmax(0, 1fr);
+    gap: var(--space-2xs);
+  }
+  .person-workspace .unified-timeline time {
+    grid-column: 2;
+    grid-row: 1;
+  }
+  .person-workspace .unified-timeline article > div {
+    grid-column: 2;
+  }
 }
 
 @media (max-width: 480px) {
@@ -430,7 +467,7 @@
   .person-workspace .profile-actions { flex-direction: column; align-items: stretch; }
   .person-workspace .profile-actions button { width: 100%; }
   .person-workspace .profile-identity { flex-direction: row; gap: var(--space-xs); }
-  .person-workspace .profile-identity h1 { font-size: 24px; }
+  .person-workspace .profile-identity h1 { font-size: 34px; overflow-wrap: anywhere; }
   .person-brief { padding-left: var(--space-xs); }
   .person-capture-shell { justify-items: stretch; }
 }

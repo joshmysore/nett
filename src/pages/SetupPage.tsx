@@ -147,12 +147,16 @@ export function SetupPage({
 
       <section className="setup-content" aria-live="polite">
         {status.phase === "welcome" && (
-          <div className="setup-stage">
-            <p className="setup-eyebrow">Private relationship workspace</p>
-            <h1>Build your network from records you already own.</h1>
+          <div className="setup-stage setup-welcome">
+            <div className="setup-brand-hero glass-chip" aria-hidden="true">
+              <span className="setup-brand-wordmark">Nett</span>
+              <img className="setup-brand-crystal" src="/brand/nett-crystal-n.png" alt="" />
+            </div>
+            <p className="setup-eyebrow">Private. Local. Yours.</p>
+            <h1>Remember everyone from records you already own.</h1>
             <p className="setup-lede">
-              Nett brings contacts, conversations, and notes into one local, evidence-backed workspace.
-              There is no account to create and nothing is uploaded by default.
+              Nett turns contacts, conversations, and notes on this Mac into a relationship memory
+              you can search and trust. There is no account, and nothing leaves by default.
             </p>
             <label className="setup-field">
               <span>What should Nett call you? <small>Optional</small></span>

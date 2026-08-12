@@ -140,7 +140,7 @@ export type { EditableField, NextAction, RecordedBrief } from "@/lib/person-brie
 export function RecordedBriefBlock({ brief }: { brief: RecordedBrief }) {
   return (
     <section className="person-brief">
-      <h2>Why this person matters</h2>
+      <h2>What matters</h2>
       <p>{brief.text}</p>
       <p className="person-brief-source">
         <SourceBadge source={brief.source} />

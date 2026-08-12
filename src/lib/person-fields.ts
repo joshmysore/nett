@@ -29,10 +29,10 @@ export const PERSON_FIELDS: PersonField[] = [
   { key: "industry", label: "Industry", kind: "text", editable: true, infer: true, massFill: true, display: true },
   { key: "company", label: "Company", kind: "text", editable: true, infer: true, massFill: true, display: true },
   { key: "spike", label: "Spike", kind: "text", hint: "what makes them distinctive", editable: true, infer: true, massFill: true, display: true },
-  { key: "languages", label: "Languages", kind: "list", hint: "comma separated", editable: true, infer: true, massFill: true, display: true },
-  { key: "skills", label: "Skills", kind: "list", hint: "comma separated", editable: true, infer: true, massFill: true, display: true },
-  { key: "interests", label: "Interests", kind: "list", hint: "comma separated", editable: true, infer: true, massFill: true, display: true },
-  { key: "foods", label: "Foods", kind: "list", hint: "comma separated — dishes, drinks, diets", editable: true, infer: true, massFill: true, display: true },
+  { key: "languages", label: "Languages", kind: "list", hint: "add one at a time", editable: true, infer: true, massFill: true, display: true },
+  { key: "skills", label: "Skills", kind: "list", hint: "add one at a time", editable: true, infer: true, massFill: true, display: true },
+  { key: "interests", label: "Interests", kind: "list", hint: "add one at a time", editable: true, infer: true, massFill: true, display: true },
+  { key: "foods", label: "Foods", kind: "list", hint: "dishes, drinks, diets — add one at a time", editable: true, infer: true, massFill: true, display: true },
   { key: "gender", label: "Gender", kind: "text", hint: "male or female — auto-filled from name when the name is unambiguous", editable: true, infer: true, massFill: true, display: true },
   { key: "culture", label: "Culture", kind: "text", hint: "multi-label OK when mixed — auto-filled from surnames via local model; edit if wrong", editable: true, infer: true, massFill: true, display: true },
   { key: "personality", label: "Personality", kind: "text", hint: "how they are in person — typed by you only", editable: true, infer: false, massFill: false, display: true },
@@ -40,7 +40,7 @@ export const PERSON_FIELDS: PersonField[] = [
     key: "online_personality",
     label: "Online personality",
     kind: "list",
-    hint: "comma separated adjectives from how they write in messages",
+    hint: "adjectives from how they write — add one at a time",
     editable: true,
     infer: true,
     massFill: true,
@@ -52,11 +52,15 @@ export const PERSON_FIELDS: PersonField[] = [
   { key: "when_met", label: "When you met", kind: "text", editable: true, infer: true, massFill: true, display: true },
   { key: "where_met", label: "Where you met", kind: "text", editable: true, infer: true, massFill: true, display: true },
   { key: "how_met", label: "How you met", kind: "text", editable: true, infer: true, massFill: true, display: true },
-  { key: "institutions", label: "Institutions", kind: "list", hint: "comma separated", editable: true, infer: true, massFill: true, display: true },
-  { key: "mutuals", label: "Mutual connections", kind: "list", hint: "comma separated", editable: true, infer: true, massFill: true, display: true },
+  { key: "institutions", label: "Institutions", kind: "list", hint: "add one at a time", editable: true, infer: true, massFill: true, display: true },
+  { key: "mutuals", label: "Mutual connections", kind: "list", hint: "add one at a time", editable: true, infer: true, massFill: true, display: true },
   { key: "last_contact", label: "Last contact", kind: "date", editable: true, infer: false, massFill: false, display: true },
-  { key: "tags", label: "Categories", kind: "list", hint: "comma separated — topics and relationship categories", editable: true, infer: true, massFill: true, display: true },
+  { key: "tags", label: "Categories", kind: "list", hint: "topics and relationship categories — add one at a time", editable: true, infer: true, massFill: true, display: true },
 ];
+
+export const LIST_FIELD_KEYS = PERSON_FIELDS.filter((field) => field.kind === "list").map(
+  (field) => field.key,
+);
 
 /** Never inferred — user may still type them. */
 export const NEVER_INFER_FIELDS = new Set(

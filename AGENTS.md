@@ -31,16 +31,16 @@ Information priority, in order. Do not give every field equal weight.
   credentials, must disclose exactly what leaves the machine, and must record
   provider, timestamp, inputs, confidence, and evidence.
 
-### LinkedIn
+### LinkedIn and enrichment
 
-Only user-authorised paths are permitted:
-
-- the user's own official "Download your data" archive, and
-- public profile text the user pastes themselves.
-
-Never scrape, never automate the site or login, never reuse browser cookies,
-never bypass access controls, never use third-party bulk-profile datasets, and
-never infer a fact from a profile URL alone beyond canonicalising the URL.
+- Prefer the user's LinkedIn “Download your data” archive and human-in-the-loop
+  public profile capture (user opens the profile, pastes or drops page text).
+- Hometown and similar facts may be suggested from education / institutions in
+  owned evidence (e.g. high school → likely hometown) as reviewable suggestions.
+- Optional open place/school lookup for a school name only is allowed when
+  disclosed and recorded with provenance.
+- Never automate LinkedIn login, reuse browser cookies, bypass access controls,
+  or run stealth mass profile scraping.
 
 ### Data and provenance
 
@@ -57,6 +57,8 @@ never infer a fact from a profile URL alone beyond canonicalising the URL.
   ranking (`inference_feedback`).
 - Never infer sensitive or protected traits: health, sexuality, religion,
   political belief, ethnicity, or similar. Absence of evidence is not evidence.
+  Hometown from a named school or city in owned evidence is allowed as a
+  suggestion, not an automatic write.
 
 ### Files and data that must not be destroyed
 
@@ -105,22 +107,32 @@ node scripts/measure.mjs <label>   # browser latency, CLS, overflow, screenshots
 - One containment layer. No card inside a card. Prefer dividers and whitespace
   over borders, and alignment over containers.
 - Accent is a signal — focus, selection, links, small status marks — never a
-  surface fill or a decorative wash.
-- Banned by `design.md` and enforced here: purple/lavender gradients, glow
-  halos, `backdrop-filter` glass panels, gradient text, animated backgrounds,
-  uppercase eyebrows on every section, equal three-card feature rows, invented
-  metrics, and uncited model output.
+  surface fill or a decorative wash. The landing uses neutral slate geometry;
+  the workbench stays token-led (`design.md`).
+- Restrained glass is allowed only for elevated contextual layers named in
+  `design.md` (search, Ask Nett, quick-look, provenance overlays, transient
+  controls, landing/setup chrome). The crystal N (static or intro video) is
+  ceremonial for landing/setup only; everyday chrome uses the continuous-line
+  monogram. Landing may keep Digital Serenity word-roll and held-thread path
+  drift. Still banned on workbench routes: generic AI-SaaS gradient kits,
+  glow-everything chrome, full-page animated backgrounds, invented metrics,
+  and uncited model output.
 - Add new styles by extending the token and primitive layer. Do **not** append
   another override block to the bottom of `src/index.css`; the file has been
   corrupted that way before.
 
 ## Component and route conventions
 
-- Routes: `/` dashboard, `/people`, `/people/:id`, `/settings/connectors`,
-  `/setup`. `/connectors` and `/settings` redirect. **These are deep links —
-  preserve them and their query parameters.**
+- Routes: `/` landing, `/about`, `/today` desk, `/people`, `/people/:id`,
+  `/review`, `/settings/connectors` (Sources), `/setup`. `/connectors` and
+  `/settings` redirect. **These are deep links — preserve them and their query
+  parameters.**
+- Primary nav: Home · People · Review · Sources. `/today` remains the Home
+  route for deep-link compatibility.
 - People list state (`q`, `filter`, `page`, `view`, facet params) lives in the
   URL, not in component state. Deep links must survive reload and back/forward.
+  Cards is the default People surface; dense list uses `view=list`, and
+  spreadsheet editing uses `view=sheet`.
 - Pages are lazy-loaded in `src/App.tsx`. Keep secondary features out of the
   initial chunk.
 - Shared UI lives in `src/components/Primitives.tsx`. Use it rather than

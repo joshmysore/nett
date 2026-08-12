@@ -13,7 +13,7 @@ import {
   prepareWhatsAppArchive,
   whatsappDesktopStatus
 } from "./connectors.js";
-import { addMemory, connectorStates, createPerson, db, findExactPerson, getPeople, getPeoplePage, getPerson, getPersonCommunications, listify, mergeReviewQueue, normalizeEmail, normalizePhone, overview, peopleFacets, resolveMerge, searchIndexRows, unmergeIdentity, updatePerson } from "./db.js";
+import { addMemory, connectorStates, createPerson, db, findExactPerson, getPeople, getPeoplePage, getPerson, getPersonCommunications, listify, mergeReviewQueue, mergeReviewQueuePage, normalizeEmail, normalizePhone, overview, pendingInferenceSuggestions, peopleFacets, resolveMerge, reviewCounts, searchIndexRows, unmergeIdentity, updatePerson } from "./db.js";
 import type { PeopleFilters } from "./db.js";
 import { extractCapture } from "./capture/extract.js";
 import { getProvider } from "./agent.js";
@@ -57,6 +57,12 @@ import {
   syncTelegram
 } from "./platform/service.js";
 import { setupStatus, updateOnboarding } from "./setup.js";
+import {
+  freshnessStatus,
+  queueFreshnessNow,
+  startFreshnessAgent,
+  type FreshnessConnectorId
+} from "./platform/freshness.js";
 
 function loadEnvFile() {
   const envPath = path.resolve(process.cwd(), ".env");
@@ -81,6 +87,12 @@ loadEnvFile();
 
 const app = express();
 const port = Number(process.env.PORT || 4174);
+/** In production Express serves the SPA; in dev Vite owns the UI on :5173. */
+function webAppUrl(pathname: string): string {
+  const origin = (process.env.NETT_WEB_ORIGIN || "").replace(/\/$/, "")
+    || (process.env.NODE_ENV === "production" ? "" : "http://127.0.0.1:5173");
+  return origin ? `${origin}${pathname}` : pathname;
+}
 const activeConnectorSyncs = new Set<string>();
 let peopleSearchCache: {
   revision: string;
@@ -417,6 +429,28 @@ app.post("/api/people/:id/memories", (req, res) => {
   res.json(updated);
 });
 
+async function performConnectorSync(
+  connectorId: string,
+  options: { accountId?: string; maxBatches?: number; signal?: AbortSignal } = {},
+) {
+  if (connectorId === "gmail") {
+    return syncGmail(String(options.accountId || "primary"));
+  }
+  if (connectorId === "telegram") {
+    return syncTelegram(String(options.accountId || "primary"));
+  }
+  const connector = connectors.get(connectorId);
+  if (!connector) throw new Error("Connector is not implemented yet");
+  const maxBatches = connectorId === "messages" || connectorId === "whatsapp"
+    ? Math.min(Math.max(Number(options.maxBatches) || 10, 1), 100)
+    : undefined;
+  const result = await connector.sync({ maxBatches, signal: options.signal });
+  if (result.done !== false && connectorId !== "messages" && connectorId !== "whatsapp") {
+    refreshEvidenceIndex();
+  }
+  return result;
+}
+
 app.get("/api/connectors", (_req, res) => res.json(connectorStates()));
 app.post("/api/connectors/:id/sync", async (req, res) => {
   const connectorId = req.params.id;
@@ -427,33 +461,44 @@ app.post("/api/connectors/:id/sync", async (req, res) => {
   const controller = new AbortController();
   req.once("aborted", () => controller.abort());
   try {
-    if (connectorId === "gmail") {
-      const result = await syncGmail(String(req.body.accountId || "primary"));
-      refreshEvidenceIndex();
-      return res.json(result);
-    }
-    if (connectorId === "telegram") {
-      const result = await syncTelegram(String(req.body.accountId || "primary"));
-      refreshEvidenceIndex();
-      return res.json(result);
-    }
-    const connector = connectors.get(connectorId);
-    if (!connector) return res.status(404).json({ error: "Connector is not implemented yet" });
-    const maxBatches = connectorId === "messages" || connectorId === "whatsapp"
-      ? Math.min(Math.max(Number(req.body.maxBatches) || 10, 1), 100)
-      : undefined;
-    const result = await connector.sync({ maxBatches, signal: controller.signal });
-    // Large message imports stay responsive; rebuild evidence from Sources → Refresh index.
-    if (result.done !== false && connectorId !== "messages" && connectorId !== "whatsapp") {
-      refreshEvidenceIndex();
-    }
+    const result = await performConnectorSync(connectorId, {
+      accountId: String(req.body.accountId || "primary"),
+      maxBatches: req.body.maxBatches,
+      signal: controller.signal,
+    });
     return res.json(result);
   } catch (error) {
-    return res.status(403).json({ error: error instanceof Error ? error.message : "Connector sync failed" });
+    const message = error instanceof Error ? error.message : "Connector sync failed";
+    const status = message.includes("not implemented") ? 404 : 403;
+    return res.status(status).json({ error: message });
   } finally {
     activeConnectorSyncs.delete(connectorId);
   }
 });
+app.get("/api/freshness", (_req, res) => res.json(freshnessStatus()));
+app.post("/api/freshness/sync", (req, res) => {
+  try {
+    const connectorId = req.body?.connectorId
+      ? String(req.body.connectorId) as FreshnessConnectorId
+      : undefined;
+    // Return immediately — never block HTTP on connector SQLite work.
+    res.json(queueFreshnessNow(connectorId));
+  } catch (error) {
+    res.status(400).json({ error: error instanceof Error ? error.message : "Freshness sync failed" });
+  }
+});
+app.get("/api/review", (req, res) => {
+  const limit = Math.min(Math.max(Number(req.query.limit) || 40, 1), 100);
+  const offset = Math.max(Number(req.query.offset) || 0, 0);
+  const merges = mergeReviewQueuePage(limit, offset);
+  res.json({
+    counts: reviewCounts(),
+    merges: merges.items,
+    mergesTotal: merges.total,
+    suggestions: pendingInferenceSuggestions(80),
+  });
+});
+app.get("/api/review/counts", (_req, res) => res.json(reviewCounts()));
 app.get("/api/connectors/messages/status", (_req, res) => {
   try { res.json(messagesDatabaseStatus()); }
   catch (error) { res.status(500).json({ error: error instanceof Error ? error.message : "Could not inspect Messages database" }); }
@@ -553,7 +598,7 @@ app.get("/api/platform/gmail/callback", async (req, res) => {
   if (!code || !state) return res.status(400).send("Gmail authorization did not return a code and state.");
   try {
     await finishGmailAuthorization(code, state);
-    res.redirect("/settings/connectors?gmail=connected");
+    res.redirect(webAppUrl("/settings/connectors?gmail=connected"));
   } catch (error) {
     res.status(400).send(`Gmail authorization failed: ${error instanceof Error ? error.message : "Unknown error"}`);
   }
@@ -978,4 +1023,47 @@ app.use((error: unknown, _req: express.Request, res: express.Response, _next: ex
   res.status(500).json({ error: error instanceof Error ? error.message : "Unexpected local server error" });
 });
 
-app.listen(port, "127.0.0.1", () => console.log(`Nett local server running at http://127.0.0.1:${port}`));
+app.listen(port, "127.0.0.1", () => {
+  console.log(`Nett local server running at http://127.0.0.1:${port}`);
+  startFreshnessAgent({
+    isBusy: (id) => activeConnectorSyncs.has(id),
+    ready: async (id) => {
+      if (id === "messages") {
+        try {
+          const status = messagesDatabaseStatus();
+          return Boolean(status.readable || status.usingLocalCopy);
+        } catch {
+          return false;
+        }
+      }
+      if (id === "whatsapp") {
+        try {
+          const status = await whatsappDesktopStatus();
+          return Boolean(status.readable || status.archiveReadable);
+        } catch {
+          return false;
+        }
+      }
+      if (id === "gmail") {
+        const accounts = connectorPlatformStatus();
+        return accounts.some((account) => account.connectorId === "gmail" && account.authState === "authenticated");
+      }
+      return true;
+    },
+    sync: async (connectorId, signal) => {
+      if (activeConnectorSyncs.has(connectorId)) {
+        throw new Error(`${connectorId} is already syncing`);
+      }
+      activeConnectorSyncs.add(connectorId);
+      try {
+        // One small batch per idle tick — large syncs block the Express event loop
+        // (better-sqlite3 is synchronous) and freeze the UI on /api/bootstrap.
+        const maxBatches = connectorId === "messages" || connectorId === "whatsapp" ? 1 : undefined;
+        const result = await performConnectorSync(connectorId, { maxBatches, signal });
+        return { message: typeof result?.message === "string" ? result.message : "Synced" };
+      } finally {
+        activeConnectorSyncs.delete(connectorId);
+      }
+    },
+  });
+});

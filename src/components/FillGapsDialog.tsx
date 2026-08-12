@@ -6,6 +6,7 @@ import {
   X,
 } from "@phosphor-icons/react";
 import { useEffect, useId, useRef, useState } from "react";
+import { asChipValues, ChipInput } from "@/components/ChipInput";
 import { HometownEditor, PlacePicker } from "@/components/PlacePicker";
 import { Avatar, Modal } from "@/components/Primitives";
 import { api, isAbortError } from "@/lib/api";
@@ -43,9 +44,6 @@ function toWriteValue(field: string, raw: string) {
       .map(formatHometownEntry)
       .filter(Boolean);
   }
-  if (isListField(field)) {
-    return raw.split(",").map((entry) => entry.trim()).filter(Boolean);
-  }
   return raw.trim();
 }
 
@@ -72,6 +70,7 @@ export function FillGapsDialog({
   const [index, setIndex] = useState(0);
   const [draft, setDraft] = useState("");
   const [hometownDraft, setHometownDraft] = useState<string[]>([]);
+  const [listDraft, setListDraft] = useState<string[]>([]);
   const [loadingList, setLoadingList] = useState(false);
   const [saving, setSaving] = useState(false);
   const [listError, setListError] = useState<string | null>(null);
@@ -168,6 +167,7 @@ export function FillGapsDialog({
     if (!current) {
       setDraft("");
       setHometownDraft([]);
+      setListDraft([]);
       return;
     }
     if (field === "hometown") {
@@ -175,10 +175,18 @@ export function FillGapsDialog({
         ? hometownEntries(current.suggestion.value).map(formatHometownEntry)
         : [];
       setHometownDraft(suggested);
+      setListDraft([]);
+      setDraft("");
+      return;
+    }
+    if (isListField(field)) {
+      setHometownDraft([]);
+      setListDraft(current.suggestion ? asChipValues(current.suggestion.value) : []);
       setDraft("");
       return;
     }
     setHometownDraft([]);
+    setListDraft([]);
     setDraft(current.suggestion ? displayValue(current.suggestion.value) : "");
   }, [draftKey, current, field]);
 
@@ -192,6 +200,8 @@ export function FillGapsDialog({
     if (!current || saving) return;
     const value = field === "hometown"
       ? hometownDraft.map((entry) => entry.trim()).filter(Boolean)
+      : isListField(field)
+        ? listDraft.map((entry) => entry.trim()).filter(Boolean)
       : toWriteValue(field, draft);
     if (Array.isArray(value) ? !value.length : !String(value)) return;
     setSaving(true);
@@ -360,6 +370,13 @@ export function FillGapsDialog({
                   onChange={setHometownDraft}
                   disabled={saving || current.status === "loading"}
                 />
+              ) : isListField(field) ? (
+                <ChipInput
+                  values={listDraft}
+                  onChange={setListDraft}
+                  placeholder="Type and press Enter"
+                  disabled={saving || current.status === "loading"}
+                />
               ) : (
                 <input
                   value={draft}
@@ -370,7 +387,7 @@ export function FillGapsDialog({
                       void accept();
                     }
                   }}
-                  placeholder={isListField(field) ? "comma separated values" : "Type or edit the value"}
+                  placeholder="Type or edit the value"
                   disabled={saving || current.status === "loading"}
                   // eslint-disable-next-line jsx-a11y/no-autofocus
                   autoFocus
@@ -392,7 +409,9 @@ export function FillGapsDialog({
                   || current.status === "loading"
                   || (field === "hometown"
                     ? !hometownDraft.some((entry) => entry.trim())
-                    : !draft.trim())
+                    : isListField(field)
+                      ? !listDraft.some((entry) => entry.trim())
+                      : !draft.trim())
                 }
               >
                 {saving ? <SpinnerGap className="spin" size={15} /> : <Check size={15} />}

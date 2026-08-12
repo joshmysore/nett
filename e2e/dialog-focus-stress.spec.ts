@@ -8,12 +8,12 @@ test.beforeEach(async ({ request }) => {
 
 test("capture modal traps focus and Escape closes only the modal", async ({ page }) => {
   page.on("dialog", (dialog) => dialog.accept());
-  await page.goto("/");
+  await page.goto("/today");
   await openCapture(page);
   await expectFocusTrapped(page, /Remember this|Review the memory/);
   await page.keyboard.press("Escape");
   await expect(page.getByRole("dialog")).toHaveCount(0, { timeout: 5_000 });
-  await expect(page.getByRole("heading", { name: "Today" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Home" })).toBeVisible();
 });
 
 test("fill gaps modal opens and traps focus", async ({ page }) => {

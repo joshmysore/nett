@@ -16,8 +16,9 @@ import {
   type ToastKind,
 } from "@/components/Primitives";
 import { api } from "@/lib/api";
+import { AboutPage } from "@/pages/AboutPage";
+import { LandingPage } from "@/pages/LandingPage";
 import type { Overview } from "@/types";
-
 const DashboardPage = lazy(() =>
   import("@/pages/DashboardPage").then((module) => ({
     default: module.DashboardPage,
@@ -41,6 +42,11 @@ const ConnectorsPage = lazy(() =>
 const SetupPage = lazy(() =>
   import("@/pages/SetupPage").then((module) => ({
     default: module.SetupPage,
+  })),
+);
+const ReviewPage = lazy(() =>
+  import("@/pages/ReviewPage").then((module) => ({
+    default: module.ReviewPage,
   })),
 );
 const PersonDrawer = lazy(() =>
@@ -145,6 +151,25 @@ function NettApp() {
     return () => window.clearTimeout(timeout);
   }, [toast]);
 
+  // Public marketing routes stay available while imports or connector work run.
+  // Never hold them behind API bootstrap.
+  if (location.pathname === "/" || location.pathname === "") {
+    return (
+      <>
+        <LandingPage />
+        <AnimatePresence>{toast && <ToastMessage toast={toast} />}</AnimatePresence>
+      </>
+    );
+  }
+  if (location.pathname === "/about") {
+    return (
+      <>
+        <AboutPage />
+        <AnimatePresence>{toast && <ToastMessage toast={toast} />}</AnimatePresence>
+      </>
+    );
+  }
+
   if (loading) return <AppSkeleton />;
   if (error && overview.total === 0) {
     return <ServerError message={error} onRetry={() => void refresh()} />;
@@ -168,12 +193,11 @@ function NettApp() {
       <AppShell
         onSearch={() => setCommandOpen(true)}
         onCapture={() => setDialog("capture")}
-        onImport={() => setDialog("import")}
       >
         <Suspense fallback={<AppSkeleton />}>
           <Routes>
               <Route
-                path="/"
+                path="/today"
                 element={
                   <DashboardPage
                     overview={overview}
@@ -191,6 +215,10 @@ function NettApp() {
                 element={<ProfilePage onChanged={refresh} notify={notify} />}
               />
               <Route
+                path="/review"
+                element={<ReviewPage refresh={refresh} notify={notify} />}
+              />
+              <Route
                 path="/settings/connectors"
                 element={
                   <ConnectorsPage
@@ -203,7 +231,9 @@ function NettApp() {
               />
               <Route path="/connectors" element={<Navigate to="/settings/connectors" replace />} />
               <Route path="/settings" element={<Navigate to="/settings/connectors" replace />} />
-              <Route path="*" element={<Navigate to="/" replace />} />
+              <Route path="/sources" element={<Navigate to="/settings/connectors" replace />} />
+              <Route path="/" element={<Navigate to="/today" replace />} />
+              <Route path="*" element={<Navigate to="/today" replace />} />
           </Routes>
         </Suspense>
       </AppShell>

@@ -6,7 +6,7 @@ test.beforeEach(async ({ request }) => {
   await waitForHealth(request);
 });
 
-for (const path of ["/", "/people"] as const) {
+for (const path of ["/", "/today", "/people"] as const) {
   test(`no overflow on ${path}`, async ({ page }) => {
     await page.goto(path);
     await expectNoOverflow(page);
@@ -14,7 +14,7 @@ for (const path of ["/", "/people"] as const) {
 }
 
 test("no overflow with capture open", async ({ page }) => {
-  await page.goto("/");
+  await page.goto("/today");
   await openCapture(page);
   await expectNoOverflow(page);
 });

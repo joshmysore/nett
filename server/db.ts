@@ -2,6 +2,7 @@ import Database from "better-sqlite3";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { normalizePhoneValue, openDatabase, storedPhoneValue } from "./migrations.js";
+import { hometownSuggestionsFromInstitutions } from "./enrichment/hometown.js";
 import { normalizeCultureValue } from "./intelligence/culture.js";
 import { suggestCultureFromName, suggestGenderFromName } from "./intelligence/traits.js";
 
@@ -753,8 +754,122 @@ export function autofillSuggestions(personId: string) {
     const locationFact = person.provenance.find((fact: any) => fact.field_name === "location");
     if (locationFact) add("location", locationFact.field_value, locationFact.confidence || 0.9, "Available from an underlying source record", locationFact.connector_id);
   }
+  if (!person.hometown?.length) {
+    const hometownGuess = hometownSuggestionsFromInstitutions(person.institutions, person.hometown)[0];
+    if (hometownGuess) {
+      add("hometown", [hometownGuess.value], hometownGuess.confidence, hometownGuess.reason, "Education inference");
+    }
+  }
   if (!person.quick_memories && person.memories[0]) add("quick_memories", person.memories[0].raw_text, 1, "Most recent relationship memory", person.memories[0].source);
   return suggestions;
+}
+
+export function pendingInferenceSuggestions(limit = 80) {
+  const rows = db.prepare(`
+    SELECT s.id, s.person_id, s.field_name, s.proposed_value_json, s.current_value_json,
+           s.rationale, s.confidence, s.created_at, p.preferred_name AS person_name
+    FROM inference_suggestions s
+    JOIN people p ON p.id = s.person_id
+    WHERE s.status = 'pending'
+    ORDER BY s.created_at DESC
+    LIMIT ?
+  `).all(Math.max(1, Math.min(limit, 200))) as Record<string, any>[];
+  return rows.map((row) => ({
+    id: String(row.id),
+    personId: String(row.person_id),
+    personName: String(row.person_name || ""),
+    fieldName: String(row.field_name),
+    proposedValue: parse(row.proposed_value_json, null),
+    currentValue: parse(row.current_value_json, null),
+    rationale: String(row.rationale || ""),
+    confidence: typeof row.confidence === "number" ? row.confidence : Number(row.confidence) || null,
+    createdAt: String(row.created_at || ""),
+  }));
+}
+
+export function reviewCounts() {
+  const merges = (db.prepare(`
+    SELECT COUNT(*) AS n FROM (
+      SELECT si.id
+      FROM source_identities si
+      LEFT JOIN merge_suggestions ms ON ms.source_identity_id = si.id AND ms.status = 'pending'
+      WHERE ms.status = 'pending'
+        OR (
+          si.person_id IS NULL
+          AND COALESCE(json_extract(si.raw_json, '$.isSelf'), 0) = 0
+        )
+      GROUP BY si.id
+    )
+  `).get() as { n: number }).n;
+  const suggestions = (db.prepare(
+    "SELECT COUNT(*) AS n FROM inference_suggestions WHERE status='pending'",
+  ).get() as { n: number }).n;
+  return { merges, suggestions, total: merges + suggestions };
+}
+
+export function mergeReviewQueuePage(limit = 40, offset = 0) {
+  const start = Math.max(0, offset);
+  const size = Math.max(1, Math.min(limit, 100));
+  const total = reviewCounts().merges;
+  const identityIds = (db.prepare(`
+    SELECT si.id AS id
+    FROM source_identities si
+    LEFT JOIN merge_suggestions ms ON ms.source_identity_id = si.id AND ms.status = 'pending'
+    WHERE ms.status = 'pending'
+      OR (
+        si.person_id IS NULL
+        AND COALESCE(json_extract(si.raw_json, '$.isSelf'), 0) = 0
+      )
+    GROUP BY si.id
+    ORDER BY MAX(si.created_at) DESC
+    LIMIT ? OFFSET ?
+  `).all(size, start) as { id: string }[]).map((row) => row.id);
+  if (!identityIds.length) {
+    return { items: [] as ReturnType<typeof mergeReviewQueue>, total, limit: size, offset: start };
+  }
+  const placeholders = identityIds.map(() => "?").join(",");
+  const rows = db.prepare(`
+    SELECT ms.id AS suggestion_id, si.id AS source_identity_id, ms.candidate_person_id,
+      ms.reason, ms.confidence, ms.status, si.display_name, si.connector_id,
+      si.raw_json, p.preferred_name AS candidate_name, m.company AS candidate_company
+    FROM source_identities si
+    LEFT JOIN merge_suggestions ms ON ms.source_identity_id = si.id AND ms.status = 'pending'
+    LEFT JOIN people p ON p.id = ms.candidate_person_id
+    LEFT JOIN nett_metadata m ON m.person_id = p.id
+    WHERE si.id IN (${placeholders})
+    ORDER BY si.created_at DESC, ms.confidence DESC
+  `).all(...identityIds) as Record<string, any>[];
+  const groups = new Map<string, any>();
+  for (const id of identityIds) {
+    groups.set(id, null);
+  }
+  rows.forEach((row) => {
+    if (!groups.get(row.source_identity_id)) {
+      groups.set(row.source_identity_id, {
+        sourceIdentityId: row.source_identity_id,
+        displayName: row.display_name,
+        connectorId: row.connector_id,
+        raw: parse(row.raw_json, {}),
+        candidates: [],
+      });
+    }
+    if (row.suggestion_id) {
+      groups.get(row.source_identity_id).candidates.push({
+        suggestionId: row.suggestion_id,
+        personId: row.candidate_person_id,
+        name: row.candidate_name,
+        company: row.candidate_company,
+        confidence: row.confidence,
+        reason: row.reason,
+      });
+    }
+  });
+  return {
+    items: identityIds.map((id) => groups.get(id)).filter(Boolean),
+    total,
+    limit: size,
+    offset: start,
+  };
 }
 
 function sourceLabelForInference(source: string) { return source === "manual" ? "Nett" : source; }

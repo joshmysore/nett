@@ -1,0 +1,67 @@
+[
+  {
+    "label": "landing",
+    "path": "/",
+    "scheme": "light",
+    "viewport": {
+      "width": 1440,
+      "height": 900
+    },
+    "cls": 0,
+    "maxCovering": 0,
+    "maxOx": 0,
+    "errors": []
+  },
+  {
+    "label": "landing-m",
+    "path": "/",
+    "scheme": "light",
+    "viewport": {
+      "width": 375,
+      "height": 812
+    },
+    "cls": 0,
+    "maxCovering": 0,
+    "maxOx": 0,
+    "errors": []
+  },
+  {
+    "label": "today",
+    "path": "/today",
+    "scheme": "light",
+    "viewport": {
+      "width": 1440,
+      "height": 900
+    },
+    "cls": 0,
+    "maxCovering": 1,
+    "maxOx": 0,
+    "errors": []
+  },
+  {
+    "label": "today-m",
+    "path": "/today",
+    "scheme": "light",
+    "viewport": {
+      "width": 375,
+      "height": 812
+    },
+    "cls": 0.001,
+    "maxCovering": 0,
+    "maxOx": 0,
+    "errors": []
+  },
+  {
+    "label": "today-d",
+    "path": "/today",
+    "scheme": "dark",
+    "viewport": {
+      "width": 1440,
+      "height": 900
+    },
+    "cls": 0,
+    "maxCovering": 1,
+    "maxOx": 0,
+    "errors": []
+  }
+]

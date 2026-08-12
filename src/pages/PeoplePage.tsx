@@ -3,9 +3,12 @@ import {
   ArrowLeft,
   ArrowRight,
   FunnelSimple,
+  List,
   ListChecks,
   MagnifyingGlass,
+  SquaresFour,
   SpinnerGap,
+  Table,
   WarningCircle,
   X,
 } from "@phosphor-icons/react";
@@ -27,6 +30,8 @@ import {
   PeopleFilters,
 } from "@/components/PeopleFilters";
 import { FillGapsDialog } from "@/components/FillGapsDialog";
+import { PeopleCards } from "@/components/PeopleCards";
+import { PeopleSheet } from "@/components/PeopleSheet";
 import {
   asList,
   Avatar,
@@ -54,17 +59,17 @@ type Filter = (typeof filters)[number];
  *  so the accessible name always matches what is on screen. */
 const filterTabs: { value: Filter; short: string; long: string }[] = [
   { value: "all", short: "All", long: "All people" },
-  { value: "strong", short: "Strong", long: "Strong ties" },
-  { value: "due", short: "Due", long: "Follow-up due" },
-  { value: "cold", short: "Cold", long: "Going cold" },
+  { value: "strong", short: "Close", long: "Close ties" },
+  { value: "due", short: "Saved", long: "Saved for later" },
+  { value: "cold", short: "Quiet", long: "Quiet lately" },
 ];
 
 const emptyFilterCopy: Record<Filter, string> = {
   all: "Nothing matches this combination. Remove a filter to widen the search.",
   strong:
-    "No relationship strength has been recorded yet, so nobody qualifies as a strong tie.",
-  due: "Nobody has a follow-up date in the past. People appear here once a follow-up comes due.",
-  cold: "Nobody in this view has gone quiet.",
+    "No relationship strength has been recorded yet, so nobody qualifies as a close tie.",
+  due: "Nobody is marked to revisit. People appear here once you save them for later.",
+  cold: "Nobody in this view has been quiet lately.",
 };
 
 function isFilter(value: string | null): value is Filter {
@@ -136,6 +141,9 @@ export function PeoplePage({ onOpen }: { onOpen: (id: string) => void }) {
   const tag = params.get("tag") || "";
   const recency = params.get("recency") || "";
   const missing = params.get("missing") || "";
+  const viewParam = params.get("view");
+  const view =
+    viewParam === "sheet" ? "sheet" : viewParam === "list" ? "list" : "cards";
   const facetValues: FacetValues = {
     recency,
     relationship,
@@ -160,7 +168,7 @@ export function PeoplePage({ onOpen }: { onOpen: (id: string) => void }) {
   const [fillGapsOpen, setFillGapsOpen] = useState(false);
   const [activeIndex, setActiveIndex] = useState(0);
   const searchRef = useRef<HTMLInputElement>(null);
-  const rowRefs = useRef<Array<HTMLButtonElement | null>>([]);
+  const rowRefs = useRef<Array<HTMLElement | null>>([]);
   const facetsId = useId();
   const hintId = useId();
   const searchId = useId();
@@ -188,12 +196,6 @@ export function PeoplePage({ onOpen }: { onOpen: (id: string) => void }) {
     },
     [setParams],
   );
-
-  // The relationship map answered no question, so the view parameter is gone.
-  // Old links still resolve: the parameter is dropped and the list renders.
-  useEffect(() => {
-    if (params.has("view")) commit({ view: null });
-  }, [params, commit]);
 
   // The input is never driven by the URL, so typing can never wait on a route
   // update. The URL catches up once typing pauses.
@@ -324,7 +326,7 @@ export function PeoplePage({ onOpen }: { onOpen: (id: string) => void }) {
     row?.scrollIntoView({ block: "nearest" });
   };
 
-  const onRowKeyDown = (event: ReactKeyboardEvent<HTMLButtonElement>, index: number) => {
+  const onRowKeyDown = (event: ReactKeyboardEvent<HTMLElement>, index: number) => {
     if (event.key === "ArrowDown") {
       event.preventDefault();
       focusRow(index + 1);
@@ -386,16 +388,8 @@ export function PeoplePage({ onOpen }: { onOpen: (id: string) => void }) {
       <section className="page-heading">
         <div>
           <h1>People</h1>
-          <p>Search names, companies, memories, and messages indexed on this Mac.</p>
+          <p>Find the person. Recover the context.</p>
         </div>
-        <button
-          type="button"
-          className="secondary-button"
-          onClick={() => setFillGapsOpen(true)}
-        >
-          <ListChecks size={17} aria-hidden="true" />
-          Fill gaps
-        </button>
       </section>
 
       {fillGapsOpen && (
@@ -437,12 +431,12 @@ export function PeoplePage({ onOpen }: { onOpen: (id: string) => void }) {
       <div className="people-toolbar">
         <div className="filter-search">
           {slow ? (
-            <SpinnerGap size={17} className="spin" aria-hidden="true" />
+            <SpinnerGap size={20} className="spin" aria-hidden="true" />
           ) : (
-            <MagnifyingGlass size={17} aria-hidden="true" />
+            <MagnifyingGlass size={20} aria-hidden="true" />
           )}
           <label className="sr-only" htmlFor={searchId}>
-            Search people
+            Search people, places, memories, and messages
           </label>
           <input
             id={searchId}
@@ -453,7 +447,7 @@ export function PeoplePage({ onOpen }: { onOpen: (id: string) => void }) {
               setDraft(event.target.value);
             }}
             onKeyDown={onSearchKeyDown}
-            placeholder="Name, company, memory, place..."
+            placeholder="Who are you looking for?"
             type="search"
             autoComplete="off"
             aria-describedby={hintId}
@@ -474,6 +468,43 @@ export function PeoplePage({ onOpen }: { onOpen: (id: string) => void }) {
             Press slash to return here. Press the down arrow to step into the
             results, and Enter to open a person.
           </span>
+        </div>
+        <div className="people-view-actions" aria-label="People view">
+          <button
+            type="button"
+            className="quiet-action"
+            aria-pressed={view === "cards"}
+            onClick={() => commit({ view: null, page: null })}
+          >
+            <SquaresFour size={17} aria-hidden="true" />
+            Cards
+          </button>
+          <button
+            type="button"
+            className="quiet-action"
+            aria-pressed={view === "list"}
+            onClick={() => commit({ view: "list", page: null })}
+          >
+            <List size={17} aria-hidden="true" />
+            List
+          </button>
+          <button
+            type="button"
+            className="quiet-action"
+            aria-pressed={view === "sheet"}
+            onClick={() => commit({ view: "sheet", page: null })}
+          >
+            <Table size={17} aria-hidden="true" />
+            Sheet
+          </button>
+          <button
+            type="button"
+            className="quiet-action"
+            onClick={() => setFillGapsOpen(true)}
+          >
+            <ListChecks size={17} aria-hidden="true" />
+            Fill gaps
+          </button>
         </div>
         <div className="filter-tabs" role="group" aria-label="Filter people">
           {filterTabs.map((tab) => (
@@ -539,67 +570,88 @@ export function PeoplePage({ onOpen }: { onOpen: (id: string) => void }) {
         </div>
       ) : rows.length ? (
         <>
-          <div className="people-index">
-            <div className="people-table-head" aria-hidden="true">
-              <span>Person</span>
-              <span>Email or phone</span>
-              <span>Last contact</span>
-              <span />
-            </div>
-            <ul className="people-list">
-              {rows.map((person, index) => {
-                const detail = personDetail(person);
-                const reach = personReach(person);
-                const age = person.last_contact ? compactAge(person.last_contact) : "";
-                return (
-                  <li key={person.id}>
-                    <button
-                      type="button"
-                      className="person-row"
-                      ref={(element) => {
-                        rowRefs.current[index] = element;
-                      }}
-                      tabIndex={index === activeIndex ? 0 : -1}
-                      onFocus={() => setActiveIndex(index)}
-                      onKeyDown={(event) => onRowKeyDown(event, index)}
-                      onClick={() => onOpen(person.id)}
-                    >
-                      <span className="person-cell">
-                        <Avatar person={person} size="sm" />
-                        <span>
-                          <strong>
-                            <Highlight text={person.name} term={term} />
-                          </strong>
-                          {detail && (
-                            <small>
-                              <Highlight text={detail} term={term} />
-                            </small>
+          {view === "sheet" ? (
+            <PeopleSheet
+              people={rows}
+              onPatched={(updated) => {
+                setRows((current) =>
+                  current.map((row) => (row.id === updated.id ? { ...row, ...updated } : row)),
+                );
+              }}
+            />
+          ) : view === "cards" ? (
+            <PeopleCards
+              people={rows}
+              onOpen={onOpen}
+              activeIndex={activeIndex}
+              onActiveIndex={setActiveIndex}
+              rowRefs={rowRefs}
+              onRowKeyDown={onRowKeyDown}
+              term={term}
+            />
+          ) : (
+            <div className="people-index">
+              <div className="people-table-head" aria-hidden="true">
+                <span>Person</span>
+                <span>Email or phone</span>
+                <span>Last contact</span>
+                <span />
+              </div>
+              <ul className="people-list">
+                {rows.map((person, index) => {
+                  const detail = personDetail(person);
+                  const reach = personReach(person);
+                  const age = person.last_contact ? compactAge(person.last_contact) : "";
+                  return (
+                    <li key={person.id}>
+                      <button
+                        type="button"
+                        className="person-row"
+                        ref={(element) => {
+                          rowRefs.current[index] = element;
+                        }}
+                        tabIndex={index === activeIndex ? 0 : -1}
+                        onFocus={() => setActiveIndex(index)}
+                        onKeyDown={(event) => onRowKeyDown(event, index)}
+                        onClick={() => onOpen(person.id)}
+                      >
+                        <span className="person-cell">
+                          <Avatar person={person} size="sm" />
+                          <span>
+                            <strong>
+                              <Highlight text={person.name} term={term} />
+                            </strong>
+                            {detail && (
+                              <small>
+                                <Highlight text={detail} term={term} />
+                              </small>
+                            )}
+                          </span>
+                        </span>
+                        <span className="person-reach">
+                          <Highlight text={reach} term={term} />
+                        </span>
+                        <span className="person-last">
+                          {age && person.last_contact && (
+                            <time
+                              dateTime={person.last_contact}
+                              title={calendarDate(person.last_contact)}
+                            >
+                              <span aria-hidden="true">{age}</span>
+                              <span className="sr-only">
+                                Last contact {friendlyDate(person.last_contact)}
+                              </span>
+                            </time>
                           )}
                         </span>
-                      </span>
-                      <span className="person-reach">
-                        <Highlight text={reach} term={term} />
-                      </span>
-                      <span className="person-last">
-                        {age && person.last_contact && (
-                          <time
-                            dateTime={person.last_contact}
-                            title={calendarDate(person.last_contact)}
-                          >
-                            <span aria-hidden="true">{age}</span>
-                            <span className="sr-only">
-                              Last contact {friendlyDate(person.last_contact)}
-                            </span>
-                          </time>
-                        )}
-                      </span>
-                      <ArrowRight size={16} className="row-arrow" aria-hidden="true" />
-                    </button>
-                  </li>
-                );
-              })}
-            </ul>
-          </div>
+                        <ArrowRight size={16} className="row-arrow" aria-hidden="true" />
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
+          )}
           {totalPages > 1 && (
             <nav className="people-pagination" aria-label="People pages">
               <button

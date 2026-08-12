@@ -1,0 +1,102 @@
+{
+  "label": "people-cards-view",
+  "base": "http://127.0.0.1:5173",
+  "startedAt": "2026-08-11T10:41:40.703Z",
+  "metrics": {
+    "app.cold-load-to-first-heading": {
+      "median": 237,
+      "samples": [
+        600,
+        238,
+        237,
+        225,
+        227
+      ],
+      "unit": "ms"
+    },
+    "app.bootstrap-people-rows-transferred": {
+      "median": 251,
+      "samples": [
+        251,
+        251,
+        251,
+        251,
+        251
+      ],
+      "unit": "rows"
+    },
+    "route.dashboard-to-people-first-row": {
+      "median": 45,
+      "samples": [
+        217,
+        53,
+        44,
+        42,
+        45
+      ],
+      "unit": "ms"
+    },
+    "profile.cold-load-to-name-visible": {
+      "median": 320,
+      "samples": [
+        1841,
+        823,
+        214,
+        320,
+        320
+      ],
+      "unit": "ms"
+    }
+  },
+  "notes": [
+    "section \"people-load\" failed: page.waitForSelector: Timeout 30000ms exceeded.\nCall log:\n  - waiting for locator('.person-row, .people-row') to be visible\n",
+    "section \"search\" failed: page.waitForSelector: Timeout 30000ms exceeded.\nCall log:\n  - waiting for locator('.person-row, .people-row') to be visible\n",
+    "section \"drawer\" failed: page.waitForSelector: Timeout 30000ms exceeded.\nCall log:\n  - waiting for locator('.person-row, .people-row') to be visible\n",
+    "section \"cls-longtasks\" failed: page.waitForSelector: Timeout 30000ms exceeded.\nCall log:\n  - waiting for locator('.person-row, .people-row') to be visible\n"
+  ],
+  "horizontalOverflowPx": {
+    "dark/1440x1000/dashboard": 0,
+    "dark/1440x1000/people": 0,
+    "dark/1440x1000/connectors": 0,
+    "dark/1280x800/dashboard": 0,
+    "dark/1280x800/people": 0,
+    "dark/1280x800/connectors": 0,
+    "dark/1024x768/dashboard": 0,
+    "dark/1024x768/people": 0,
+    "dark/1024x768/connectors": 0,
+    "dark/768x1024/dashboard": 0,
+    "dark/768x1024/people": 0,
+    "dark/768x1024/connectors": 0,
+    "dark/414x896/dashboard": 0,
+    "dark/414x896/people": 0,
+    "dark/414x896/connectors": 0,
+    "dark/375x812/dashboard": 0,
+    "dark/375x812/people": 0,
+    "dark/375x812/connectors": 0,
+    "dark/320x700/dashboard": 0,
+    "dark/320x700/people": 0,
+    "dark/320x700/connectors": 0,
+    "light/1440x1000/dashboard": 0,
+    "light/1440x1000/people": 0,
+    "light/1440x1000/connectors": 0,
+    "light/1280x800/dashboard": 0,
+    "light/1280x800/people": 0,
+    "light/1280x800/connectors": 0,
+    "light/1024x768/dashboard": 0,
+    "light/1024x768/people": 0,
+    "light/1024x768/connectors": 0,
+    "light/768x1024/dashboard": 0,
+    "light/768x1024/people": 0,
+    "light/768x1024/connectors": 0,
+    "light/414x896/dashboard": 0,
+    "light/414x896/people": 0,
+    "light/414x896/connectors": 0,
+    "light/375x812/dashboard": 0,
+    "light/375x812/people": 0,
+    "light/375x812/connectors": 0,
+    "light/320x700/dashboard": 0,
+    "light/320x700/people": 0,
+    "light/320x700/connectors": 0
+  },
+  "finishedAt": "2026-08-11T10:44:28.033Z"
+}

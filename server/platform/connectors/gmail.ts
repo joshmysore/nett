@@ -178,13 +178,82 @@ function normalizeMessage(
   };
 }
 
-function classifyHttpError(status: number, retryAfterMs: number | undefined, operation: string): ConnectorError {
-  if (status === 401) return new ConnectorError({ code: "AUTH_REQUIRED", message: "Gmail authorization expired", retryable: false, operation });
-  if (status === 403) return new ConnectorError({ code: "PERMISSION_DENIED", message: "Gmail denied the requested operation", retryable: false, operation });
-  if (status === 404 && operation === "history") return new ConnectorError({ code: "CURSOR_EXPIRED", message: "Gmail history cursor expired; a new bounded sync is required", retryable: false, operation });
-  if (status === 429) return new ConnectorError({ code: "RATE_LIMITED", message: "Gmail rate limit reached", retryable: true, retryAfterMs, operation });
-  if (status >= 500) return new ConnectorError({ code: "SOURCE_UNAVAILABLE", message: "Gmail is temporarily unavailable", retryable: true, retryAfterMs, operation });
-  return new ConnectorError({ code: "INVALID_RESPONSE", message: `Gmail request failed with status ${status}`, retryable: false, operation });
+function classifyHttpError(
+  status: number,
+  retryAfterMs: number | undefined,
+  operation: string,
+  bodyText?: string
+): ConnectorError {
+  const googleMessage = parseGoogleApiMessage(bodyText);
+  if (status === 401) {
+    return new ConnectorError({
+      code: "AUTH_REQUIRED",
+      message: googleMessage || "Gmail authorization expired",
+      retryable: false,
+      operation
+    });
+  }
+  if (status === 403) {
+    const disabled = /has not been used|is disabled|SERVICE_DISABLED|accessNotConfigured/i.test(
+      `${googleMessage || ""}\n${bodyText || ""}`
+    );
+    return new ConnectorError({
+      code: "PERMISSION_DENIED",
+      message: disabled
+        ? "Gmail API is disabled in this Google Cloud project. Enable Gmail API, wait a minute, then Sync again."
+        : googleMessage || "Gmail denied the requested operation",
+      retryable: false,
+      operation
+    });
+  }
+  if (status === 404 && operation === "history") {
+    return new ConnectorError({
+      code: "CURSOR_EXPIRED",
+      message: "Gmail history cursor expired; a new bounded sync is required",
+      retryable: false,
+      operation
+    });
+  }
+  if (status === 429) {
+    return new ConnectorError({
+      code: "RATE_LIMITED",
+      message: googleMessage || "Gmail rate limit reached",
+      retryable: true,
+      retryAfterMs,
+      operation
+    });
+  }
+  if (status >= 500) {
+    return new ConnectorError({
+      code: "SOURCE_UNAVAILABLE",
+      message: googleMessage || "Gmail is temporarily unavailable",
+      retryable: true,
+      retryAfterMs,
+      operation
+    });
+  }
+  return new ConnectorError({
+    code: "INVALID_RESPONSE",
+    message: googleMessage || `Gmail request failed with status ${status}`,
+    retryable: false,
+    operation
+  });
+}
+
+function parseGoogleApiMessage(bodyText: string | undefined): string | undefined {
+  if (!bodyText) return undefined;
+  try {
+    const payload = JSON.parse(bodyText) as {
+      error?: { message?: string; status?: string; details?: Array<{ reason?: string }> };
+    };
+    const message = payload.error?.message?.trim();
+    if (!message) return undefined;
+    // Keep the first sentence for UI; full Google text can be very long.
+    const first = message.split(/(?<=\.)\s+/)[0] || message;
+    return first.length > 280 ? `${first.slice(0, 277)}…` : first;
+  } catch {
+    return undefined;
+  }
 }
 
 function retryAfter(response: Response): number | undefined {
@@ -507,7 +576,8 @@ export class GmailConnector implements ConnectorAdapter {
         continue;
       }
       if (!response.ok) {
-        const error = classifyHttpError(response.status, retryAfter(response), operation);
+        const bodyText = await response.text().catch(() => "");
+        const error = classifyHttpError(response.status, retryAfter(response), operation, bodyText);
         if (error.retryable && attempt < maxRetries) {
           await delay(error.retryAfterMs ?? Math.min(30_000, 500 * 2 ** attempt + Math.random() * 250), signal);
           continue;

@@ -228,11 +228,10 @@ export function ConnectorsPage({
       </nav>
       <section className="page-heading">
         <div>
-          <p className="section-kicker">Source settings</p>
-          <h1>Control what Nett can read.</h1>
+          <h1>Sources</h1>
           <p>
-            Live connectors, one-time imports, and planned integrations are separated
-            so their behavior is always clear.
+            See what Nett can read, when it last indexed, and where to add or import
+            evidence.
           </p>
         </div>
         <div className="local-seal">

@@ -19,12 +19,14 @@ async function expectNoSeriousAccessibilityViolations(
 
 test("dashboard, command search, and accessibility", async ({ page }, testInfo) => {
   await page.goto("/");
-  await expect(page.getByRole("heading", { name: "Today" })).toBeVisible();
-  await expect(page.getByRole("complementary", { name: "Ask Nett" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: /Remember\s+everyone/i })).toBeVisible();
+  await page.getByRole("link", { name: /Open Nett/i }).first().click();
+  await expect(page.getByRole("heading", { name: "Home" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: /Ask or find anything/i })).toBeVisible();
   await expectNoSeriousAccessibilityViolations(page);
 
-  await page.getByRole("button", { name: /Search people, places, and memories/ }).click();
-  const search = page.getByRole("combobox", { name: "Search your network" });
+  await page.getByRole("button", { name: /Ask or find anything/ }).click();
+  const search = page.getByRole("combobox", { name: /Ask or find anything/i });
   await expect(search).toBeVisible();
   await search.fill("Alex");
   await expect(page.locator(".command-results > button").first()).toBeVisible();
@@ -41,6 +43,9 @@ test("server-paginated people and evidence profile", async ({ page, request }, t
 
   await page.goto("/people");
   await expect(page.getByRole("heading", { name: "People" })).toBeVisible();
+  await expect(page.locator(".person-glow-card")).toHaveCount(50);
+  await page.getByRole("button", { name: "List" }).click();
+  await expect(page).toHaveURL(/view=list/);
   await expect(page.locator(".person-row:not(.is-placeholder)")).toHaveCount(50);
   await page.getByRole("button", { name: "Next" }).click();
   await expect(page).toHaveURL(/page=2/);
@@ -53,11 +58,12 @@ test("server-paginated people and evidence profile", async ({ page, request }, t
   await expect(page.getByRole("heading", { name: person.name, level: 1 })).toBeVisible({
     timeout: 30_000,
   });
-  await expect(page.getByRole("heading", { name: /Record|Communication|Provenance/i }).first()).toBeVisible();
+  await expect(page.getByRole("heading", { name: /Recent|Contact|Field sources/i }).first()).toBeVisible();
   await expectNoSeriousAccessibilityViolations(page);
-  await page.getByRole("button", { name: "All fields" }).click();
+  await page.getByRole("button", { name: "Edit profile" }).click();
   await expect(page.getByRole("heading", { name: "Edit Nett metadata" })).toBeVisible();
-  await expect(page.getByText("Public profile assist", { exact: true })).toBeVisible();
+  await expect(page.locator(".chip-input").first()).toBeVisible();
+  await expect(page.getByText("Capture LinkedIn", { exact: true })).toBeVisible();
   await page.getByLabel("Public profile URL").fill(`https://www.linkedin.com/in/nett-e2e-${Date.now()}`);
   await page.getByLabel("Visible public profile text").fill(
     `${person.name}\nResearch Director at Example Institute\nGreater New York City Area`
@@ -70,7 +76,7 @@ test("server-paginated people and evidence profile", async ({ page, request }, t
 
 test("connector setup states are explicit and local", async ({ page }, testInfo) => {
   await page.goto("/settings/connectors");
-  await expect(page.getByRole("heading", { name: "Control what Nett can read." })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Sources" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Local relationship intelligence" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Gmail", exact: true })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Telegram", exact: true })).toBeVisible();
@@ -85,7 +91,9 @@ test("connector setup states are explicit and local", async ({ page }, testInfo)
 test("mobile navigation and primary actions fit the viewport", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "mobile", "Mobile-only viewport check");
   await page.goto("/");
-  await expect(page.getByRole("heading", { name: "Today" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: /Remember\s+everyone/i })).toBeVisible();
+  await page.getByRole("link", { name: /Open Nett/i }).first().click();
+  await expect(page.getByRole("heading", { name: "Home" })).toBeVisible();
   await expect(page.getByRole("navigation", { name: "Mobile navigation" })).toBeVisible();
   await page.getByRole("button", { name: "Open navigation" }).click();
   await expect(page.getByRole("complementary", { name: "Primary navigation" })).toBeVisible();

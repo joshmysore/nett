@@ -111,8 +111,16 @@ export const FacetSchema = z.object({
 export type Facet = z.infer<typeof FacetSchema>;
 
 export const PublicProfileSuggestionSchema = z.object({
-  field: z.enum(["linkedin_url", "headline", "job_title", "company", "location"]),
-  value: z.string(),
+  field: z.enum([
+    "linkedin_url",
+    "headline",
+    "job_title",
+    "company",
+    "location",
+    "institutions",
+    "hometown",
+  ]),
+  value: z.union([z.string(), z.array(z.string())]),
   confidence: z.number(),
   reason: z.string(),
   evidence: z.string(),

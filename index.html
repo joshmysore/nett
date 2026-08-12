@@ -6,6 +6,28 @@
     <meta name="theme-color" content="#08090d" />
     <meta name="description" content="Nett is a local-first relationship intelligence system for your personal network." />
     <title>Nett · Private relationship intelligence</title>
+    <!-- Paint the public shell black before JS/CSS arrive — prevents light-theme flash on /. -->
+    <style>
+      html, body, #root {
+        background: #08090d;
+        margin: 0;
+        min-height: 100%;
+      }
+      html.on-landing, body.on-landing, html.on-landing #root {
+        background: #08090d !important;
+      }
+    </style>
+    <link rel="preload" as="image" href="/brand/nett-crystal-n-wide.png" />
+    <link rel="preload" as="image" href="/brand/nett-crystal-n.png" />
+    <script>
+      (function () {
+        var p = location.pathname;
+        if (p === "/" || p === "" || p === "/about") {
+          document.documentElement.classList.add("on-landing");
+          document.documentElement.style.background = "#08090d";
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

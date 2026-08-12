@@ -1,9 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { db, getPerson, updatePerson } from "../db.js";
 
+import { hometownSuggestionsFromInstitutions } from "./hometown.js";
+
 export type PublicProfileSuggestion = {
-  field: "linkedin_url" | "headline" | "job_title" | "company" | "location";
-  value: string;
+  field: "linkedin_url" | "headline" | "job_title" | "company" | "location" | "institutions" | "hometown";
+  value: string | string[];
   confidence: number;
   reason: string;
   evidence: string;
@@ -92,6 +94,50 @@ export function previewLinkedInPublicProfile(
   add("job_title", roleMatch?.[1]?.trim(), 0.86, "Parsed from a “role at company” headline.", headline || "");
   add("company", roleMatch?.[2]?.trim(), 0.84, "Parsed from a “role at company” headline.", headline || "");
   add("location", location, 0.8, "Detected from a public profile line with geographic wording.", location || "");
+
+  const educationIndex = lines.findIndex((line) => /^education$/i.test(line));
+  const educationBlock = educationIndex >= 0
+    ? lines.slice(educationIndex + 1, educationIndex + 12)
+    : usable.filter((line) =>
+      /\b(high school|university|college|academy|school|institute)\b/i.test(line)
+      && line.length < 120
+    );
+  const institutions = educationBlock
+    .filter((line) =>
+      /\b(high school|university|college|academy|school|institute|gymnasium|lyc[eé]e)\b/i.test(line)
+    )
+    .slice(0, 6);
+  const existingInstitutions = Array.isArray(person.institutions)
+    ? person.institutions.map((value) => String(value).toLocaleLowerCase())
+    : [];
+  const newInstitutions = institutions.filter(
+    (value) => !existingInstitutions.includes(value.toLocaleLowerCase()),
+  );
+  if (newInstitutions.length) {
+    const merged = [...(Array.isArray(person.institutions) ? person.institutions.map(String) : []), ...newInstitutions];
+    suggestions.push({
+      field: "institutions",
+      value: merged,
+      confidence: 0.78,
+      reason: "Detected education lines in the pasted public profile text.",
+      evidence: newInstitutions.join(" · "),
+      source: "linkedin-public",
+    });
+  }
+  const hometownGuess = hometownSuggestionsFromInstitutions(
+    [...(Array.isArray(person.institutions) ? person.institutions : []), ...institutions],
+    person.hometown,
+  )[0];
+  if (hometownGuess) {
+    suggestions.push({
+      field: "hometown",
+      value: [hometownGuess.value],
+      confidence: hometownGuess.confidence,
+      reason: hometownGuess.reason,
+      evidence: hometownGuess.institution,
+      source: "linkedin-public",
+    });
+  }
   return { profileUrl, suggestions };
 }
 

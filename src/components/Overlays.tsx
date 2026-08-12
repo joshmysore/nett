@@ -125,8 +125,8 @@ export function CommandPalette({
           value={query}
           onChange={(event) => setQuery(event.target.value)}
           onKeyDown={onKeyDown}
-          placeholder="Name, company, city, memory, mutual..."
-          aria-label="Search your network"
+          placeholder="Who are you looking for?"
+          aria-label="Ask or find anything"
           role="combobox"
           aria-expanded="true"
           aria-haspopup="listbox"
@@ -160,9 +160,15 @@ export function CommandPalette({
             id={`command-result-${person.id}`}
             role="option"
             aria-selected={index === activeIndex}
-            className={index === activeIndex ? "is-active" : ""}
+            className={`spotlight-row${index === activeIndex ? " is-active" : ""}`}
             key={person.id}
-            onMouseMove={() => setActiveIndex(index)}
+            onMouseMove={(event) => {
+              setActiveIndex(index);
+              const target = event.currentTarget;
+              const bounds = target.getBoundingClientRect();
+              target.style.setProperty("--spot-x", `${event.clientX - bounds.left}px`);
+              target.style.setProperty("--spot-y", `${event.clientY - bounds.top}px`);
+            }}
             onClick={() => onOpen(person.id)}
           >
             <Avatar person={person} size="sm" />

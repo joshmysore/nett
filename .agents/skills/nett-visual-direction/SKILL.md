@@ -53,13 +53,18 @@ into `docs/audits/<label>-screens/` if you need the whole set.
 
 ## Step 3 — Banned by default
 
-Purple and lavender gradients · AI-panel violet treatments · glow halos ·
-blur halos · `backdrop-filter` glass panels · nested cards · pill controls used
-as general-purpose containers · giant marketing headings on app routes ·
-repetitive uppercase section kickers · fake dashboard metrics · decorative
-network diagrams · charts that answer no question · celebratory effects ·
-animation that delays access to content · every field rendered at equal
-prominence.
+Generic AI-SaaS purple-on-white gradient kits · glow-everything chrome ·
+gradient text · full-page animated backgrounds on workbench routes · nested
+cards used as decoration · pill controls as general-purpose containers ·
+giant marketing headings on workbench routes · repetitive uppercase section
+kickers · fake dashboard metrics · charts that answer no question ·
+celebratory effects · animation that delays access to content · every field
+rendered at equal prominence.
+
+Allowed when `design.md` says so: restrained glass on elevated contextual
+layers such as search, Ask Nett, quick-look, provenance overlays, transient
+controls, landing, and setup. The supplied crystal N is ceremonial; everyday
+chrome uses the continuous-line monogram. Brand purple remains rare.
 
 If you believe an exception is warranted, it must be added to `design.md` first,
 with a reason.

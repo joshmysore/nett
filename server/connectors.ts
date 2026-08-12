@@ -562,6 +562,8 @@ export const messagesConnector: NettConnector = {
           done = false;
           break;
         }
+        // Yield so Express can serve /api/bootstrap while a long import runs.
+        await new Promise<void>((resolve) => setImmediate(resolve));
       }
       setConnectorState(this.id, {
         permission: "granted",

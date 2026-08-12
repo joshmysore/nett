@@ -9,6 +9,7 @@ import {
   X,
 } from "@phosphor-icons/react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { asChipValues, ChipInput } from "@/components/ChipInput";
 import { HometownEditor, PlacePicker } from "@/components/PlacePicker";
 import { Modal, sourceLabel } from "@/components/Primitives";
 import { api, isAbortError, type PublicProfileSuggestion } from "@/lib/api";
@@ -26,18 +27,24 @@ type Suggestion = {
 };
 
 const PLACE_FIELDS = new Set(["location", "hometown"]);
+const CHIP_FIELDS = new Set(
+  EDIT_TEXT_FIELDS.filter((field) => field.kind === "list" && !PLACE_FIELDS.has(field.key)).map(
+    (field) => field.key,
+  ),
+);
 
 const textFields: [string, string][] = [
   ["name", "Name"],
   ["headline", "Headline"],
   ["job_title", "Job title"],
   ["linkedin_url", "LinkedIn profile"],
-  ...EDIT_TEXT_FIELDS.filter((field) => !PLACE_FIELDS.has(field.key)).map((field) => [
-    field.key,
-    field.kind === "list" ? `${field.label}, comma separated` : field.label,
-  ] as [string, string]),
+  ...EDIT_TEXT_FIELDS.filter(
+    (field) => !PLACE_FIELDS.has(field.key) && !CHIP_FIELDS.has(field.key),
+  ).map((field) => [field.key, field.label] as [string, string]),
   ["follow_up_date", "Follow-up date"],
 ];
+
+const chipFields = EDIT_TEXT_FIELDS.filter((field) => CHIP_FIELDS.has(field.key));
 
 function displayValue(value: unknown) {
   return Array.isArray(value) ? value.join(", ") : String(value ?? "");
@@ -334,12 +341,12 @@ export function EditProfileDialog({
           <span>
             <LinkSimple size={17} />
             <span>
-              <strong>Public profile assist</strong>
-              <small>Paste visible profile text. Nett parses it locally and waits for your approval.</small>
+              <strong>Capture LinkedIn</strong>
+              <small>Open their profile, copy the page text, paste here. Education can suggest hometown for review.</small>
             </span>
           </span>
-          <a href={linkedInSearchUrl} target="_blank" rel="noreferrer">
-            Find on LinkedIn <ArrowSquareOut size={14} />
+          <a href={publicUrl.trim() || linkedInSearchUrl} target="_blank" rel="noreferrer">
+            Open LinkedIn <ArrowSquareOut size={14} />
           </a>
         </div>
         <div className="public-profile-inputs">
@@ -357,12 +364,12 @@ export function EditProfileDialog({
             <textarea
               value={publicText}
               onChange={(event) => setPublicText(event.target.value)}
-              placeholder={`Paste the visible name, headline, and location for ${person.name}`}
+              placeholder={`Paste name, headline, location, and Education for ${person.name}`}
             />
           </label>
         </div>
         <div className="public-profile-actions">
-          <small>No background scraping, cookies, or automatic overwrites.</small>
+          <small>You capture the page; Nett never logs in or scrapes LinkedIn for you.</small>
           <button onClick={() => void previewPublicProfile()} disabled={publicFinding || !publicUrl.trim()}>
             {publicFinding ? <SpinnerGap className="spin" /> : <Sparkle />}
             {publicFinding ? "Inspecting" : "Preview facts"}
@@ -443,6 +450,16 @@ export function EditProfileDialog({
               />
             )}
           </label>
+        ))}
+        {chipFields.map((field) => (
+          <div className="full-field" key={field.key}>
+            <ChipInput
+              label={field.label}
+              values={asChipValues(form[field.key])}
+              placeholder={field.hint || "Type and press Enter"}
+              onChange={(next) => setForm({ ...form, [field.key]: next })}
+            />
+          </div>
         ))}
         {[
           ["relationship_strength", "Relationship strength"],

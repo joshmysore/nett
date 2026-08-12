@@ -55,5 +55,5 @@ test("stale search response cannot win", async ({ page }) => {
   await search.fill("alexander");
   releaseSlow?.();
   await page.waitForTimeout(400);
-  await expect(page.locator(".person-row").filter({ hasText: "Stale Result" })).toHaveCount(0);
+  await expect(page.locator(".person-glow-card").filter({ hasText: "Stale Result" })).toHaveCount(0);
 });

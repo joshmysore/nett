@@ -112,7 +112,7 @@ const joinedEvidenceColumns = "d.id, d.person_id, d.kind, d.source, d.source_rec
 export async function searchEvidence(
   query: string,
   limit = 12,
-  options: { signal?: AbortSignal } = {}
+  options: { signal?: AbortSignal; skipVector?: boolean } = {}
 ): Promise<Array<EvidenceDocument & { score: number }>> {
   const match = ftsQuery(query);
   const lexical = match
@@ -131,36 +131,41 @@ export async function searchEvidence(
     scores.set(row.id, Math.max(scores.get(row.id) ?? 0, 1 - index / Math.max(lexical.length, 1)));
   });
 
-  try {
-    assertActive(options.signal);
-    const model = await selectedModel(options.signal);
-    const [queryEmbedding] = await ollama.embed(model, [query], options.signal);
-    if (queryEmbedding?.length) {
-      const compactQuery = queryEmbedding.slice(0, EMBEDDING_DIMENSIONS);
-      // Rank on identifiers and vectors only. Loading whole documents here is
-      // what made retrieval allocate tens of megabytes per request.
-      const candidates = db.prepare(`
-        SELECT id, embedding_json FROM evidence_documents
-        WHERE embedding_json IS NOT NULL
-        ORDER BY updated_at DESC LIMIT ?
-      `).all(VECTOR_CANDIDATE_LIMIT) as { id: string; embedding_json: string }[];
-      const ranked = candidates
-        .map((row) => ({ id: row.id, score: cosine(compactQuery, parse<number[]>(row.embedding_json, [])) }))
-        .filter((item) => item.score > 0)
-        .sort((a, b) => b.score - a.score)
-        .slice(0, limit * 2);
-      const hydrated = new Map(
-        evidenceDocumentsByIds(ranked.map((item) => item.id)).map((row) => [row.id, row])
-      );
-      for (const item of ranked) {
-        const row = hydrated.get(item.id);
-        if (!row) continue;
-        documents.set(row.id, row);
-        scores.set(row.id, (scores.get(row.id) ?? 0) * 0.6 + item.score * 0.4);
+  // Strong FTS hits are enough for Ask — skip embedding the question with a 14b chat model.
+  const skipVector = options.skipVector || lexical.length >= Math.min(limit, 6);
+  if (!skipVector) {
+    try {
+      assertActive(options.signal);
+      const models = await resolveModels(options.signal);
+      const embedModel = models.embed;
+      if (embedModel) {
+        const [queryEmbedding] = await ollama.embed(embedModel, [query], options.signal);
+        if (queryEmbedding?.length) {
+          const compactQuery = queryEmbedding.slice(0, EMBEDDING_DIMENSIONS);
+          const candidates = db.prepare(`
+            SELECT id, embedding_json FROM evidence_documents
+            WHERE embedding_json IS NOT NULL
+            ORDER BY updated_at DESC LIMIT ?
+          `).all(Math.min(VECTOR_CANDIDATE_LIMIT, 200)) as { id: string; embedding_json: string }[];
+          const ranked = candidates
+            .map((row) => ({ id: row.id, score: cosine(compactQuery, parse<number[]>(row.embedding_json, [])) }))
+            .filter((item) => item.score > 0)
+            .sort((a, b) => b.score - a.score)
+            .slice(0, limit * 2);
+          const hydrated = new Map(
+            evidenceDocumentsByIds(ranked.map((item) => item.id)).map((row) => [row.id, row])
+          );
+          for (const item of ranked) {
+            const row = hydrated.get(item.id);
+            if (!row) continue;
+            documents.set(row.id, row);
+            scores.set(row.id, (scores.get(row.id) ?? 0) * 0.6 + item.score * 0.4);
+          }
+        }
       }
+    } catch {
+      // Lexical retrieval remains fully functional when Ollama is unavailable.
     }
-  } catch {
-    // Lexical retrieval remains fully functional when Ollama is unavailable.
   }
 
   if (!documents.size) {
@@ -179,26 +184,103 @@ export async function searchEvidence(
     .slice(0, limit);
 }
 
-/** Prefer stronger local chat models when installed; fall back to whatever is available. */
+/** Instant answers for “who do I know in X” without calling Ollama. */
+function answerPeopleInPlace(question: string): {
+  answer: string;
+  citations: IntelligenceCitation[];
+  provider: string;
+} | null {
+  const match = question.match(
+    /\b(?:who\s+do\s+i\s+know|who\s+know|people|anyone)\s+(?:in|from|around|near)\s+([A-Za-zÀ-ÿ][\wÀ-ÿ.'\-\s]{1,48})\??$/i,
+  ) || question.match(/\b(?:in|from)\s+([A-Za-zÀ-ÿ][\wÀ-ÿ.'\-]{2,40})\??$/i);
+  if (!match) return null;
+  const place = match[1].replace(/[?.!]+$/, "").trim();
+  if (place.length < 2) return null;
+  const needle = `%${place.toLocaleLowerCase()}%`;
+  const rows = db.prepare(`
+    SELECT p.id, p.preferred_name AS name, m.location, m.hometown, m.company, m.job_title
+    FROM people p
+    JOIN nett_metadata m ON m.person_id = p.id
+    WHERE lower(COALESCE(m.location, '')) LIKE ?
+       OR lower(COALESCE(m.hometown, '')) LIKE ?
+    ORDER BY p.preferred_name COLLATE NOCASE
+    LIMIT 40
+  `).all(needle, needle) as {
+    id: string;
+    name: string;
+    location: string | null;
+    hometown: string | null;
+    company: string | null;
+    job_title: string | null;
+  }[];
+  // Empty people-index hit → fall through to FTS / model for messages & notes.
+  if (!rows.length) return null;
+  const lines = rows.map((row) => {
+    const where = [row.location, row.hometown].filter(Boolean).join(" · ");
+    const role = [row.job_title, row.company].filter(Boolean).join(" at ");
+    return `• ${row.name}${where ? ` — ${where}` : ""}${role ? ` (${role})` : ""}`;
+  });
+  return {
+    answer: `People with ${place} in location or hometown (${rows.length}):\n\n${lines.join("\n")}`,
+    citations: rows.slice(0, 12).map((row) => ({
+      personId: row.id,
+      label: row.name,
+      field: "location",
+      value: row.location || row.hometown || place,
+      source: "nett",
+    })),
+    provider: "local-people-index",
+  };
+}
+
+/** Prefer small/fast chat models for Ask Nett. Override with NETT_OLLAMA_MODEL. */
 const PREFERRED_CHAT_MODELS = [
-  "qwen3:14b",
-  "qwen3.5:9b",
-  "qwen3:8b",
   "llama3.2:3b",
   "llama3.2:1b",
+  "qwen2.5:3b",
+  "qwen3:8b",
+  "qwen3.5:9b",
+  "qwen3:14b",
 ];
+
+const PREFERRED_EMBED_MODELS = [
+  "nomic-embed-text",
+  "nomic-embed-text:latest",
+  "mxbai-embed-large",
+  "all-minilm",
+];
+
+let cachedModelPick: { at: number; chat: string; embed: string | null } | null = null;
+const MODEL_CACHE_MS = 60_000;
 
 async function selectedModel(signal?: AbortSignal): Promise<string> {
   const models = await ollama.listModels(signal);
   const requested = process.env.NETT_OLLAMA_MODEL;
   if (requested && models.some((model) => model.name === requested)) return requested;
   for (const preferred of PREFERRED_CHAT_MODELS) {
-    const hit = models.find((model) => model.name === preferred);
+    const hit = models.find((model) => model.name === preferred || model.name.startsWith(`${preferred}:`));
     if (hit) return hit.name;
   }
-  return models.find((model) => !model.name.includes("embed"))?.name
+  return models.find((model) => !model.name.toLocaleLowerCase().includes("embed"))?.name
     ?? models[0]?.name
     ?? (() => { throw new Error("No Ollama model is installed"); })();
+}
+
+async function selectedEmbedModel(signal?: AbortSignal): Promise<string | null> {
+  const models = await ollama.listModels(signal);
+  for (const preferred of PREFERRED_EMBED_MODELS) {
+    const hit = models.find((model) => model.name === preferred || model.name.startsWith(`${preferred.split(":")[0]}`));
+    if (hit) return hit.name;
+  }
+  return null;
+}
+
+async function resolveModels(signal?: AbortSignal) {
+  if (cachedModelPick && Date.now() - cachedModelPick.at < MODEL_CACHE_MS) return cachedModelPick;
+  const chat = await selectedModel(signal);
+  const embed = await selectedEmbedModel(signal);
+  cachedModelPick = { at: Date.now(), chat, embed };
+  return cachedModelPick;
 }
 
 export async function intelligenceStatus() {
@@ -214,7 +296,8 @@ export async function intelligenceStatus() {
 }
 
 export async function refreshEvidenceEmbeddings(limit = 250, options: { signal?: AbortSignal } = {}) {
-  const model = await selectedModel(options.signal);
+  const models = await resolveModels(options.signal);
+  const model = models.embed || models.chat;
   const rows = db.prepare(`
     SELECT id, text FROM evidence_documents
     WHERE embedding_json IS NULL ORDER BY updated_at DESC LIMIT ?
@@ -241,7 +324,11 @@ export async function answerRelationshipQuestion(question: string, options: { si
   citations: IntelligenceCitation[];
   provider: string;
 }> {
-  const evidence = await searchEvidence(question, 14, options);
+  const fast = answerPeopleInPlace(question);
+  if (fast) return fast;
+
+  // Small retrieval budget: Ask should feel like chat, not a research report.
+  const evidence = await searchEvidence(question, 8, { ...options, skipVector: false });
   if (!evidence.length) {
     return { answer: "I could not find local evidence for that question.", citations: [], provider: "local-evidence" };
   }
@@ -253,7 +340,7 @@ export async function answerRelationshipQuestion(question: string, options: { si
   }
   try {
     assertActive(options.signal);
-    const model = await selectedModel(options.signal);
+    const { chat: model } = await resolveModels(options.signal);
     const generated = await ollama.answerWithCitations({
       model,
       question,
@@ -261,9 +348,9 @@ export async function answerRelationshipQuestion(question: string, options: { si
       evidence: evidence.map((row) => ({
         id: row.id,
         title: `${people.get(row.person_id || "")?.name || "Network evidence"} · ${row.source}`,
-        text: row.text.slice(0, 2_000)
+        text: row.text.slice(0, 700)
       })),
-      system: "You are Nett, a private local relationship intelligence assistant. Be concise, useful, and explicit about uncertainty. Never invent facts."
+      system: "You are Nett, a private local relationship intelligence assistant. Answer in under 8 sentences. Be concise, useful, and explicit about uncertainty. Never invent facts."
     });
     const citations = generated.citations.flatMap((citation): IntelligenceCitation[] => {
       const row = evidence.find((item) => item.id === citation.evidenceId);
@@ -553,6 +640,37 @@ function deterministicEvidence(
       excerpt: `${item.field.replaceAll("_", " ")}: ${fact.field_value}`,
       observedAt: fact.observed_at ?? null
     }] : [];
+  }
+  if (item.field === "hometown") {
+    const institutions = Array.isArray(person.institutions) ? person.institutions : [];
+    const matched = institutions.find((value: unknown) => {
+      const text = String(value ?? "");
+      return text && (item.reason.includes(text) || text.toLocaleLowerCase().includes(proposed.split(",")[0] || ""));
+    });
+    if (matched) {
+      return [{
+        kind: "derived-signal",
+        sourceType: "education-inference",
+        sourceId: `institution:${person.id}`,
+        excerpt: `Institution: ${matched}`,
+        structured: { institution: matched, proposedHometown: item.value },
+        observedAt: null
+      }];
+    }
+    const fact = provenance.find((row) => row.field_name === "institutions" || row.field_name === "hometown");
+    return fact ? [{
+      kind: "provenance",
+      sourceType: String(fact.connector_id),
+      sourceId: String(fact.id),
+      excerpt: `${fact.field_name}: ${fact.field_value}`,
+      observedAt: fact.observed_at ?? null
+    }] : [{
+      kind: "derived-signal",
+      sourceType: "education-inference",
+      sourceId: `hometown:${person.id}`,
+      excerpt: item.reason,
+      observedAt: null
+    }];
   }
   if (item.field === "quick_memories") {
     const memory = memories.find((row) => String(row.raw_text ?? "").toLocaleLowerCase() === proposed);

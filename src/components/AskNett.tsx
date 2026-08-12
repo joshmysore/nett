@@ -8,9 +8,9 @@ type ModelState =
   | { checked: true; available: boolean; model?: string; documents?: number };
 
 const examples = [
+  "Who do I know in Paris?",
   "What do I know about the people I contacted most recently?",
   "Which people have I written notes about?",
-  "Where did I meet the people I know best?",
 ];
 
 /** The server answers either with a local model or, when the model call fails,
@@ -18,6 +18,9 @@ const examples = [
 function providerNote(provider: string) {
   if (provider.startsWith("ollama:")) {
     return `Written by ${provider.slice("ollama:".length)} running on this Mac.`;
+  }
+  if (provider === "local-people-index") {
+    return "Answered from your people index in milliseconds — no model wait.";
   }
   return "No model output. These are the stored records that matched the question.";
 }
@@ -86,10 +89,9 @@ export function AskNett({ onOpen }: { onOpen: (id: string) => void }) {
 
   return (
     <section className="ask" aria-labelledby="ask-nett-title">
-      <h2 id="ask-nett-title">Ask Nett</h2>
+      <h2 id="ask-nett-title">Ask or find anything</h2>
       <p className="ask-note">
-        Questions run against the records stored on this Mac. Nothing is sent anywhere
-        else.
+        The same retrieval system as ⌘K — people, places, messages, and notes on this Mac.
       </p>
 
       <form
@@ -106,7 +108,7 @@ export function AskNett({ onOpen }: { onOpen: (id: string) => void }) {
           id="ask-nett-query"
           value={query}
           onChange={(event) => setQuery(event.target.value)}
-          placeholder="Ask about a person, a place you met someone, or something you wrote down"
+          placeholder="Who did I meet in Oxford? Who do I know in Paris?"
           aria-describedby="ask-nett-provider"
         />
         <button className="ask-send" disabled={loading || !query.trim()}>

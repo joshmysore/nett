@@ -314,6 +314,58 @@ export const api = {
   },
   mergeQueue: () => request<{ sourceIdentityId: string; displayName: string; connectorId: string; raw: Record<string, unknown>; candidates: { suggestionId: string; personId: string; name: string; company?: string; confidence: number; reason: string }[] }[]>("/api/merges"),
   resolveMerge: (sourceIdentityId: string, personId?: string, createNew = false) => request<FullPerson>(`/api/merges/${sourceIdentityId}/resolve`, { method: "POST", body: JSON.stringify({ personId, createNew }) }),
+  reviewInbox: (signal?: AbortSignal, options: { limit?: number; offset?: number } = {}) => {
+    const params = new URLSearchParams();
+    if (options.limit) params.set("limit", String(options.limit));
+    if (options.offset) params.set("offset", String(options.offset));
+    const query = params.toString();
+    return request<{
+      counts: { merges: number; suggestions: number; total: number };
+      merges: {
+        sourceIdentityId: string;
+        displayName: string;
+        connectorId: string;
+        raw: Record<string, unknown>;
+        candidates: {
+          suggestionId: string;
+          personId: string;
+          name: string;
+          company?: string;
+          confidence: number;
+          reason: string;
+        }[];
+      }[];
+      mergesTotal: number;
+      suggestions: {
+        id: string;
+        personId: string;
+        personName: string;
+        fieldName: string;
+        proposedValue: unknown;
+        currentValue: unknown;
+        rationale: string;
+        confidence: number | null;
+        createdAt: string;
+      }[];
+    }>(`/api/review${query ? `?${query}` : ""}`, { signal });
+  },
+  reviewCounts: (signal?: AbortSignal) =>
+    request<{ merges: number; suggestions: number; total: number }>("/api/review/counts", { signal }),
+  freshness: (signal?: AbortSignal) =>
+    request<{
+      enabled: boolean;
+      running: string | null;
+      queued?: boolean;
+      lastTickAt: string | null;
+      lastResults: Record<string, { at: string; ok: boolean; message?: string; error?: string }>;
+      nextDue: Record<string, string | null>;
+    }>("/api/freshness", { signal }),
+  syncFreshness: (connectorId?: string) =>
+    request<{
+      accepted: boolean;
+      message?: string;
+      results?: Record<string, { at: string; ok: boolean; message?: string; error?: string }>;
+    }>("/api/freshness/sync", { method: "POST", body: JSON.stringify({ connectorId }) }),
   unmerge: (sourceIdentityId: string) => request<FullPerson>(`/api/identities/${sourceIdentityId}/unmerge`, { method: "POST" }),
   geoCountries: (signal?: AbortSignal) => request<GeoOption[]>("/api/geo/countries", { signal }),
   geoStates: (country: string, signal?: AbortSignal) =>

@@ -1,0 +1,350 @@
+[
+  {
+    "label": "landing",
+    "path": "/",
+    "viewport": {
+      "width": 1440,
+      "height": 900
+    },
+    "colorScheme": "light",
+    "scrollHeight": 4792,
+    "cls": 0,
+    "maxCovering": 0,
+    "maxSticky": 1,
+    "maxOverflowX": 0,
+    "endOverflow": 0,
+    "errors": [],
+    "frames": [
+      {
+        "i": 0,
+        "y": 0,
+        "covering": 0,
+        "sticky": 1,
+        "overflowX": 0,
+        "file": "docs/audits/scroll-qa/landing-w1440-0.png"
+      },
+      {
+        "i": 3,
+        "y": 1168,
+        "covering": 0,
+        "sticky": 1,
+        "overflowX": 0,
+        "file": "docs/audits/scroll-qa/landing-w1440-3.png"
+      },
+      {
+        "i": 5,
+        "y": 1946,
+        "covering": 0,
+        "sticky": 1,
+        "overflowX": 0,
+        "file": "docs/audits/scroll-qa/landing-w1440-5.png"
+      },
+      {
+        "i": 7,
+        "y": 2724,
+        "covering": 0,
+        "sticky": 1,
+        "overflowX": 0,
+        "file": "docs/audits/scroll-qa/landing-w1440-7.png"
+      },
+      {
+        "i": 10,
+        "y": 3892,
+        "covering": 0,
+        "sticky": 1,
+        "overflowX": 0,
+        "file": "docs/audits/scroll-qa/landing-w1440-10.png"
+      }
+    ]
+  },
+  {
+    "label": "landing",
+    "path": "/",
+    "viewport": {
+      "width": 1440,
+      "height": 900
+    },
+    "colorScheme": "dark",
+    "scrollHeight": 4792,
+    "cls": 0,
+    "maxCovering": 0,
+    "maxSticky": 1,
+    "maxOverflowX": 0,
+    "endOverflow": 0,
+    "errors": [],
+    "frames": [
+      {
+        "i": 0,
+        "y": 0,
+        "covering": 0,
+        "sticky": 1,
+        "overflowX": 0,
+        "file": "docs/audits/scroll-qa/landing-w1440-0.png"
+      },
+      {
+        "i": 3,
+        "y": 1168,
+        "covering": 0,
+        "sticky": 1,
+        "overflowX": 0,
+        "file": "docs/audits/scroll-qa/landing-w1440-3.png"
+      },
+      {
+        "i": 5,
+        "y": 1946,
+        "covering": 0,
+        "sticky": 1,
+        "overflowX": 0,
+        "file": "docs/audits/scroll-qa/landing-w1440-5.png"
+      },
+      {
+        "i": 7,
+        "y": 2724,
+        "covering": 0,
+        "sticky": 1,
+        "overflowX": 0,
+        "file": "docs/audits/scroll-qa/landing-w1440-7.png"
+      },
+      {
+        "i": 10,
+        "y": 3892,
+        "covering": 0,
+        "sticky": 1,
+        "overflowX": 0,
+        "file": "docs/audits/scroll-qa/landing-w1440-10.png"
+      }
+    ]
+  },
+  {
+    "label": "landing",
+    "path": "/",
+    "viewport": {
+      "width": 375,
+      "height": 812
+    },
+    "colorScheme": "light",
+    "scrollHeight": 5213,
+    "cls": 0,
+    "maxCovering": 0,
+    "maxSticky": 0,
+    "maxOverflowX": 0,
+    "endOverflow": 0,
+    "errors": [],
+    "frames": [
+      {
+        "i": 0,
+        "y": 0,
+        "covering": 0,
+        "sticky": 0,
+        "overflowX": 0,
+        "file": "docs/audits/scroll-qa/landing-w375-0.png"
+      },
+      {
+        "i": 3,
+        "y": 1320,
+        "covering": 0,
+        "sticky": 0,
+        "overflowX": 0,
+        "file": "docs/audits/scroll-qa/landing-w375-3.png"
+      },
+      {
+        "i": 5,
+        "y": 2201,
+        "covering": 0,
+        "sticky": 0,
+        "overflowX": 0,
+        "file": "docs/audits/scroll-qa/landing-w375-5.png"
+      },
+      {
+        "i": 7,
+        "y": 3081,
+        "covering": 0,
+        "sticky": 0,
+        "overflowX": 0,
+        "file": "docs/audits/scroll-qa/landing-w375-7.png"
+      },
+      {
+        "i": 10,
+        "y": 4401,
+        "covering": 0,
+        "sticky": 0,
+        "overflowX": 0,
+        "file": "docs/audits/scroll-qa/landing-w375-10.png"
+      }
+    ]
+  },
+  {
+    "label": "today",
+    "path": "/today",
+    "viewport": {
+      "width": 1440,
+      "height": 900
+    },
+    "colorScheme": "light",
+    "scrollHeight": 1436,
+    "cls": 0,
+    "maxCovering": 1,
+    "maxSticky": 3,
+    "maxOverflowX": 0,
+    "endOverflow": 0,
+    "errors": [],
+    "frames": [
+      {
+        "i": 0,
+        "y": 0,
+        "covering": 1,
+        "sticky": 3,
+        "overflowX": 0,
+        "file": "docs/audits/scroll-qa/today-w1440-0.png"
+      },
+      {
+        "i": 3,
+        "y": 161,
+        "covering": 1,
+        "sticky": 3,
+        "overflowX": 0,
+        "file": "docs/audits/scroll-qa/today-w1440-3.png"
+      },
+      {
+        "i": 5,
+        "y": 268,
+        "covering": 1,
+        "sticky": 3,
+        "overflowX": 0,
+        "file": "docs/audits/scroll-qa/today-w1440-5.png"
+      },
+      {
+        "i": 7,
+        "y": 375,
+        "covering": 1,
+        "sticky": 3,
+        "overflowX": 0,
+        "file": "docs/audits/scroll-qa/today-w1440-7.png"
+      },
+      {
+        "i": 10,
+        "y": 536,
+        "covering": 1,
+        "sticky": 3,
+        "overflowX": 0,
+        "file": "docs/audits/scroll-qa/today-w1440-10.png"
+      }
+    ]
+  },
+  {
+    "label": "today",
+    "path": "/today",
+    "viewport": {
+      "width": 375,
+      "height": 812
+    },
+    "colorScheme": "light",
+    "scrollHeight": 1882,
+    "cls": 0.001,
+    "maxCovering": 0,
+    "maxSticky": 4,
+    "maxOverflowX": 0,
+    "endOverflow": 0,
+    "errors": [],
+    "frames": [
+      {
+        "i": 0,
+        "y": 0,
+        "covering": 0,
+        "sticky": 4,
+        "overflowX": 0,
+        "file": "docs/audits/scroll-qa/today-w375-0.png"
+      },
+      {
+        "i": 3,
+        "y": 321,
+        "covering": 0,
+        "sticky": 4,
+        "overflowX": 0,
+        "file": "docs/audits/scroll-qa/today-w375-3.png"
+      },
+      {
+        "i": 5,
+        "y": 535,
+        "covering": 0,
+        "sticky": 4,
+        "overflowX": 0,
+        "file": "docs/audits/scroll-qa/today-w375-5.png"
+      },
+      {
+        "i": 7,
+        "y": 749,
+        "covering": 0,
+        "sticky": 4,
+        "overflowX": 0,
+        "file": "docs/audits/scroll-qa/today-w375-7.png"
+      },
+      {
+        "i": 10,
+        "y": 1070,
+        "covering": 0,
+        "sticky": 4,
+        "overflowX": 0,
+        "file": "docs/audits/scroll-qa/today-w375-10.png"
+      }
+    ]
+  },
+  {
+    "label": "today",
+    "path": "/today",
+    "viewport": {
+      "width": 1440,
+      "height": 900
+    },
+    "colorScheme": "dark",
+    "scrollHeight": 1436,
+    "cls": 0,
+    "maxCovering": 1,
+    "maxSticky": 3,
+    "maxOverflowX": 0,
+    "endOverflow": 0,
+    "errors": [],
+    "frames": [
+      {
+        "i": 0,
+        "y": 0,
+        "covering": 1,
+        "sticky": 3,
+        "overflowX": 0,
+        "file": "docs/audits/scroll-qa/today-w1440-0.png"
+      },
+      {
+        "i": 3,
+        "y": 161,
+        "covering": 1,
+        "sticky": 3,
+        "overflowX": 0,
+        "file": "docs/audits/scroll-qa/today-w1440-3.png"
+      },
+      {
+        "i": 5,
+        "y": 268,
+        "covering": 1,
+        "sticky": 3,
+        "overflowX": 0,
+        "file": "docs/audits/scroll-qa/today-w1440-5.png"
+      },
+      {
+        "i": 7,
+        "y": 375,
+        "covering": 1,
+        "sticky": 3,
+        "overflowX": 0,
+        "file": "docs/audits/scroll-qa/today-w1440-7.png"
+      },
+      {
+        "i": 10,
+        "y": 536,
+        "covering": 1,
+        "sticky": 3,
+        "overflowX": 0,
+        "file": "docs/audits/scroll-qa/today-w1440-10.png"
+      }
+    ]
+  }
+]

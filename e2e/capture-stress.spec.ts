@@ -10,7 +10,7 @@ test("capture open, structure, and cancel writes nothing", async ({ page, reques
   page.on("dialog", (dialog) => dialog.accept());
   const person = await firstPerson(request);
   const before = await personMemoryCount(request, person.id);
-  await page.goto("/");
+  await page.goto("/today");
   await openCapture(page);
   await page.getByPlaceholder(/Record what happened/i).fill(`Met ${person.name} about climate finance and AI.`);
   await page.getByRole("button", { name: "Structure memory" }).click();
@@ -23,7 +23,7 @@ test("capture open, structure, and cancel writes nothing", async ({ page, reques
 
 test("approve with no person selected stays blocked", async ({ page, request }) => {
   const person = await firstPerson(request);
-  await page.goto("/");
+  await page.goto("/today");
   await openCapture(page);
   await page.getByPlaceholder(/Record what happened/i).fill(`Remember that ${person.name} works on robotics.`);
   await page.getByRole("button", { name: "Structure memory" }).click();
@@ -38,7 +38,7 @@ test("approve with no person selected stays blocked", async ({ page, request }) 
 test("delayed parse does not crash and can be escaped", async ({ page }) => {
   page.on("dialog", (dialog) => dialog.accept());
   await delayRoute(page, "**/api/memories/parse", 800);
-  await page.goto("/");
+  await page.goto("/today");
   await openCapture(page);
   await page.getByPlaceholder(/Record what happened/i).fill("Met someone about product design.");
   await page.getByRole("button", { name: "Structure memory" }).click();
@@ -49,7 +49,7 @@ test("delayed parse does not crash and can be escaped", async ({ page }) => {
 test("per-proposal reject keeps rejected fields out of save payload path", async ({ page, request }) => {
   const person = await firstPerson(request);
   const before = await personMemoryCount(request, person.id);
-  await page.goto("/");
+  await page.goto("/today");
   await openCapture(page);
   await page.getByPlaceholder(/Record what happened/i).fill(
     `Met ${person.name} in Lisbon through Maya. She works in climate finance and speaks Portuguese.`,

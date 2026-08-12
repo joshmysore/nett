@@ -82,15 +82,15 @@ await section("cold-load", async () => {
 // --- 2. Loaded route navigation (dashboard -> people) ---
 await section("route-nav", async () => {
   const { context, page } = await newPage();
-  await page.goto(`${base}/`);
+  await page.goto(`${base}/today`);
   await page.waitForSelector("main h1, .page-heading h1");
   const values = [];
   for (let i = 0; i < 5; i += 1) {
-    await page.goto(`${base}/`);
+    await page.goto(`${base}/today`);
     await page.waitForSelector("main h1, .page-heading h1");
     const started = Date.now();
     await page.getByRole("link", { name: /People/ }).first().click();
-    await page.waitForSelector(".person-row, .people-row", { timeout: 20_000 });
+    await page.waitForSelector(".person-row, .people-row, .person-glow-card", { timeout: 20_000 });
     values.push(Date.now() - started);
   }
   record("route.dashboard-to-people-first-row", values);
@@ -104,7 +104,7 @@ await section("people-load", async () => {
     const { context, page } = await newPage();
     const started = Date.now();
     await page.goto(`${base}/people`, { waitUntil: "commit" });
-    await page.waitForSelector(".person-row, .people-row", { timeout: 30_000 });
+    await page.waitForSelector(".person-row, .people-row, .person-glow-card", { timeout: 30_000 });
     values.push(Date.now() - started);
     await context.close();
   }
@@ -116,7 +116,7 @@ await section("people-load", async () => {
 await section("search", async () => {
   const { context, page } = await newPage();
   await page.goto(`${base}/people`);
-  const rowSelector = ".person-row, .people-row";
+  const rowSelector = ".person-row, .people-row, .person-glow-card";
   await page.waitForSelector(rowSelector);
   const feedback = [];
   const settled = [];
@@ -175,10 +175,10 @@ await section("search", async () => {
 await section("drawer", async () => {
   const { context, page } = await newPage();
   await page.goto(`${base}/people`);
-  await page.waitForSelector(".person-row, .people-row");
+  await page.waitForSelector(".person-row, .people-row, .person-glow-card");
   const values = [];
   for (let i = 0; i < 5; i += 1) {
-    const row = page.locator(".person-row, .people-row").nth(i);
+    const row = page.locator(".person-row, .people-row, .person-glow-card").nth(i);
     const started = Date.now();
     await row.click();
     await page.waitForSelector('[role="dialog"] h1, [role="dialog"] h2', { timeout: 20_000 });
@@ -222,7 +222,7 @@ await section("cls-longtasks", async () => {
     }).observe({ type: "longtask", buffered: true });
   });
   await page.goto(`${base}/people`);
-  await page.waitForSelector(".person-row, .people-row");
+  await page.waitForSelector(".person-row, .people-row, .person-glow-card");
   await page.waitForTimeout(2500);
   const cls = await page.evaluate(() => window.__cls);
   const longTasks = await page.evaluate(() => window.__longTasks);

@@ -1,0 +1,226 @@
+[
+  {
+    "name": "about-sticky-desktop-light",
+    "overflow": 0,
+    "items": [
+      {
+        "i": 0,
+        "top": 898,
+        "h3": "Julia Chen",
+        "q": "“Who was the researcher I met in Oxford who was ",
+        "visible": true
+      },
+      {
+        "i": 1,
+        "top": 1802,
+        "h3": "Marcus Adeyemi",
+        "q": "“Who introduced me to the climate fund partner a",
+        "visible": false
+      },
+      {
+        "i": 2,
+        "top": 2706,
+        "h3": "Amina Farouk",
+        "q": "“What was the name of the product designer from ",
+        "visible": false
+      }
+    ],
+    "visibleNames": [
+      "Julia Chen"
+    ],
+    "path": "docs/audits/about-sticky-desktop-light.png"
+  },
+  {
+    "name": "about-sticky-desktop-light-scrolled",
+    "overflow": 0,
+    "items": [
+      {
+        "i": 0,
+        "top": 80,
+        "h3": "Julia Chen",
+        "q": "“Who was the researcher I met in Oxford who was ",
+        "visible": true
+      },
+      {
+        "i": 1,
+        "top": 184,
+        "h3": "Marcus Adeyemi",
+        "q": "“Who introduced me to the climate fund partner a",
+        "visible": true
+      },
+      {
+        "i": 2,
+        "top": 1088,
+        "h3": "Amina Farouk",
+        "q": "“What was the name of the product designer from ",
+        "visible": false
+      }
+    ],
+    "visibleNames": [
+      "Julia Chen",
+      "Marcus Adeyemi"
+    ],
+    "path": "docs/audits/about-sticky-desktop-light-scrolled.png"
+  },
+  {
+    "name": "about-sticky-desktop-light-card2",
+    "overflow": 0,
+    "items": [
+      {
+        "i": 0,
+        "top": 80,
+        "h3": "Julia Chen",
+        "q": "“Who was the researcher I met in Oxford who was ",
+        "visible": true
+      },
+      {
+        "i": 1,
+        "top": 80,
+        "h3": "Marcus Adeyemi",
+        "q": "“Who introduced me to the climate fund partner a",
+        "visible": true
+      },
+      {
+        "i": 2,
+        "top": 708,
+        "h3": "Amina Farouk",
+        "q": "“What was the name of the product designer from ",
+        "visible": true
+      }
+    ],
+    "visibleNames": [
+      "Julia Chen",
+      "Marcus Adeyemi",
+      "Amina Farouk"
+    ],
+    "path": "docs/audits/about-sticky-desktop-light-card2.png"
+  },
+  {
+    "name": "about-sticky-desktop-dark",
+    "overflow": 0,
+    "items": [
+      {
+        "i": 0,
+        "top": 80,
+        "h3": "Julia Chen",
+        "q": "“Who was the researcher I met in Oxford who was ",
+        "visible": true
+      },
+      {
+        "i": 1,
+        "top": 184,
+        "h3": "Marcus Adeyemi",
+        "q": "“Who introduced me to the climate fund partner a",
+        "visible": true
+      },
+      {
+        "i": 2,
+        "top": 1088,
+        "h3": "Amina Farouk",
+        "q": "“What was the name of the product designer from ",
+        "visible": false
+      }
+    ],
+    "visibleNames": [
+      "Julia Chen",
+      "Marcus Adeyemi"
+    ],
+    "path": "docs/audits/about-sticky-desktop-dark.png"
+  },
+  {
+    "name": "about-sticky-mobile-light",
+    "overflow": 0,
+    "items": [
+      {
+        "i": 0,
+        "top": -12,
+        "h3": "Julia Chen",
+        "q": "“Who was the researcher I met in Oxford who was ",
+        "visible": true
+      },
+      {
+        "i": 1,
+        "top": 671,
+        "h3": "Marcus Adeyemi",
+        "q": "“Who introduced me to the climate fund partner a",
+        "visible": true
+      },
+      {
+        "i": 2,
+        "top": 1379,
+        "h3": "Amina Farouk",
+        "q": "“What was the name of the product designer from ",
+        "visible": false
+      }
+    ],
+    "visibleNames": [
+      "Julia Chen",
+      "Marcus Adeyemi"
+    ],
+    "path": "docs/audits/about-sticky-mobile-light.png"
+  },
+  {
+    "name": "about-sticky-mobile-card",
+    "overflow": 0,
+    "items": [
+      {
+        "i": 0,
+        "top": -707,
+        "h3": "Julia Chen",
+        "q": "“Who was the researcher I met in Oxford who was ",
+        "visible": false
+      },
+      {
+        "i": 1,
+        "top": -24,
+        "h3": "Marcus Adeyemi",
+        "q": "“Who introduced me to the climate fund partner a",
+        "visible": true
+      },
+      {
+        "i": 2,
+        "top": 684,
+        "h3": "Amina Farouk",
+        "q": "“What was the name of the product designer from ",
+        "visible": true
+      }
+    ],
+    "visibleNames": [
+      "Marcus Adeyemi",
+      "Amina Farouk"
+    ],
+    "path": "docs/audits/about-sticky-mobile-card.png"
+  },
+  {
+    "name": "about-sticky-320",
+    "overflow": 0,
+    "items": [
+      {
+        "i": 0,
+        "top": -125,
+        "h3": "Julia Chen",
+        "q": "“Who was the researcher I met in Oxford who was ",
+        "visible": true
+      },
+      {
+        "i": 1,
+        "top": 639,
+        "h3": "Marcus Adeyemi",
+        "q": "“Who introduced me to the climate fund partner a",
+        "visible": true
+      },
+      {
+        "i": 2,
+        "top": 1399,
+        "h3": "Amina Farouk",
+        "q": "“What was the name of the product designer from ",
+        "visible": false
+      }
+    ],
+    "visibleNames": [
+      "Julia Chen",
+      "Marcus Adeyemi"
+    ],
+    "path": "docs/audits/about-sticky-320.png"
+  }
+]

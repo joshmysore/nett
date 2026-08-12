@@ -1,0 +1,49 @@
+[
+  {
+    "route": "/",
+    "after5s": {
+      "title": {
+        "text": "Remember everyone.",
+        "opacity": "1",
+        "color": "oklch(0.96 0.006 250)",
+        "h": 187.65625
+      },
+      "sub": {
+        "text": "Find the person. Recover the context.",
+        "opacity": "1",
+        "color": "oklch(0.72 0.012 250)",
+        "h": 39
+      },
+      "kicker": {
+        "text": "Private. Local. Yours.",
+        "opacity": "1",
+        "color": "oklch(0.78 0.02 250)",
+        "h": 33.796875
+      },
+      "about": true,
+      "scrollH": 910,
+      "panels": 0
+    },
+    "errors": [],
+    "url": "http://127.0.0.1:5173/about"
+  },
+  {
+    "route": "/about",
+    "h1": "How recognition stays local.",
+    "cls": 0,
+    "maxCovering": 5,
+    "maxOx": 0,
+    "errors": [],
+    "scrollH": 5629
+  },
+  {
+    "route": "/",
+    "mobile": true,
+    "ox": 0
+  },
+  {
+    "route": "/about",
+    "mobile": true,
+    "ox": 0
+  }
+]
