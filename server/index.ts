@@ -60,6 +60,7 @@ import { setupStatus, updateOnboarding } from "./setup.js";
 import {
   freshnessStatus,
   queueFreshnessNow,
+  setFreshnessEnabled,
   startFreshnessAgent,
   type FreshnessConnectorId
 } from "./platform/freshness.js";
@@ -476,6 +477,13 @@ app.post("/api/connectors/:id/sync", async (req, res) => {
   }
 });
 app.get("/api/freshness", (_req, res) => res.json(freshnessStatus()));
+app.post("/api/freshness", (req, res) => {
+  const enabled = req.body?.enabled;
+  if (typeof enabled !== "boolean") {
+    return res.status(400).json({ error: "Pass { enabled: true | false }" });
+  }
+  res.json(setFreshnessEnabled(enabled));
+});
 app.post("/api/freshness/sync", (req, res) => {
   try {
     const connectorId = req.body?.connectorId
@@ -1056,11 +1064,36 @@ app.listen(port, "127.0.0.1", () => {
       }
       activeConnectorSyncs.add(connectorId);
       try {
-        // One small batch per idle tick — large syncs block the Express event loop
-        // (better-sqlite3 is synchronous) and freeze the UI on /api/bootstrap.
-        const maxBatches = connectorId === "messages" || connectorId === "whatsapp" ? 1 : undefined;
-        const result = await performConnectorSync(connectorId, { maxBatches, signal });
-        return { message: typeof result?.message === "string" ? result.message : "Synced" };
+        // Refresh the local snapshot first so "every 6 hours" actually pulls new
+        // Desktop/Messages rows, not only re-reads a stale archive.
+        if (connectorId === "messages") {
+          await prepareLocalMessagesCopy(undefined, { resetCursor: false });
+        } else if (connectorId === "whatsapp") {
+          await prepareWhatsAppArchive({ resetCursor: false, signal });
+        }
+        // Drain in small batches with event-loop yields so HTTP stays responsive.
+        const batched = connectorId === "messages" || connectorId === "whatsapp";
+        let result = await performConnectorSync(connectorId, {
+          maxBatches: batched ? 1 : undefined,
+          signal,
+        });
+        let rounds = 1;
+        while (
+          batched
+          && "done" in result
+          && result.done === false
+          && rounds < 40
+          && !signal.aborted
+        ) {
+          await new Promise<void>((resolve) => setImmediate(resolve));
+          result = await performConnectorSync(connectorId, { maxBatches: 1, signal });
+          rounds += 1;
+        }
+        const done = !("done" in result) || result.done !== false;
+        return {
+          message: typeof result?.message === "string" ? result.message : "Synced",
+          done,
+        };
       } finally {
         activeConnectorSyncs.delete(connectorId);
       }

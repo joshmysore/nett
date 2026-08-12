@@ -357,9 +357,22 @@ export const api = {
       running: string | null;
       queued?: boolean;
       lastTickAt: string | null;
+      intervalsMs?: Record<string, number>;
       lastResults: Record<string, { at: string; ok: boolean; message?: string; error?: string }>;
       nextDue: Record<string, string | null>;
+      constraint?: string;
     }>("/api/freshness", { signal }),
+  setFreshness: (enabled: boolean) =>
+    request<{
+      enabled: boolean;
+      running: string | null;
+      queued?: boolean;
+      lastTickAt: string | null;
+      intervalsMs?: Record<string, number>;
+      lastResults: Record<string, { at: string; ok: boolean; message?: string; error?: string }>;
+      nextDue: Record<string, string | null>;
+      constraint?: string;
+    }>("/api/freshness", { method: "POST", body: JSON.stringify({ enabled }) }),
   syncFreshness: (connectorId?: string) =>
     request<{
       accepted: boolean;

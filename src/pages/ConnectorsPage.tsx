@@ -2,6 +2,7 @@ import {
   AddressBook,
   ArrowClockwise,
   CalendarBlank,
+  CaretDown,
   Check,
   Clock,
   Database,
@@ -26,36 +27,31 @@ const liveConnectors = [
   {
     id: "apple-contacts",
     label: "Apple Contacts",
-    description:
-      "Reads identity and contact fields through macOS Automation. Source contacts remain unchanged.",
+    blurb: "Identity fields via macOS Automation",
     icon: AddressBook,
   },
   {
     id: "messages",
     label: "Messages",
-    description:
-      "Reads communication evidence and derives last-contact dates from the local Messages database.",
+    blurb: "Local chat.db evidence",
     icon: Quotes,
   },
   {
     id: "gmail",
     label: "Gmail",
-    description:
-      "Read-only OAuth sync for message threads, participants, and relationship cadence. Tokens stay in macOS Keychain.",
+    blurb: "Read-only OAuth · Keychain tokens",
     icon: PaperPlaneTilt,
   },
   {
     id: "telegram",
     label: "Telegram",
-    description:
-      "Live personal-message sync through a local MTProto session stored in macOS Keychain.",
+    blurb: "Local MTProto session",
     icon: PaperPlaneTilt,
   },
   {
     id: "whatsapp",
     label: "WhatsApp",
-    description:
-      "Reads all chats from WhatsApp Desktop through wacrawl’s local archive. Links by phone to people already in Nett.",
+    blurb: "Desktop archive via wacrawl",
     icon: Quotes,
   },
 ];
@@ -64,6 +60,16 @@ const futureConnectors = [
   { label: "Calendar", icon: CalendarBlank },
   { label: "MCP plugins", icon: GearSix },
 ];
+
+type Freshness = Awaited<ReturnType<typeof api.freshness>>;
+
+function formatInterval(ms?: number) {
+  if (!ms || ms <= 0) return null;
+  const hours = ms / (60 * 60 * 1000);
+  if (hours >= 1) return `${hours % 1 === 0 ? hours : hours.toFixed(1)}h`;
+  const minutes = Math.round(ms / 60_000);
+  return `${minutes}m`;
+}
 
 export function ConnectorsPage({
   overview,
@@ -83,7 +89,9 @@ export function ConnectorsPage({
   const [intelligence, setIntelligence] = useState<Awaited<ReturnType<typeof api.intelligenceStatus>> | null>(null);
   const [messagesStatus, setMessagesStatus] = useState<Awaited<ReturnType<typeof api.messagesStatus>> | null>(null);
   const [whatsappStatus, setWhatsappStatus] = useState<Awaited<ReturnType<typeof api.whatsappStatus>> | null>(null);
+  const [freshness, setFreshness] = useState<Freshness | null>(null);
   const [indexing, setIndexing] = useState(false);
+  const [togglingFreshness, setTogglingFreshness] = useState(false);
   const timers = useRef<number[]>([]);
 
   useEffect(
@@ -95,6 +103,7 @@ export function ConnectorsPage({
     api.intelligenceStatus().then(setIntelligence).catch(() => setIntelligence(null));
     api.messagesStatus().then(setMessagesStatus).catch(() => setMessagesStatus(null));
     api.whatsappStatus().then(setWhatsappStatus).catch(() => setWhatsappStatus(null));
+    api.freshness().then(setFreshness).catch(() => setFreshness(null));
   }, []);
   useEffect(() => loadPlatform(), [loadPlatform]);
 
@@ -216,6 +225,26 @@ export function ConnectorsPage({
     }
   };
 
+  const toggleFreshness = async (enabled: boolean) => {
+    setTogglingFreshness(true);
+    try {
+      const next = await api.setFreshness(enabled);
+      setFreshness(next);
+      notify(
+        "success",
+        enabled
+          ? "Auto-pull on. Messages and WhatsApp refresh about every 6 hours while Nett is open."
+          : "Auto-pull off. Refresh sources manually when you need them.",
+      );
+    } catch (error) {
+      notify("error", error instanceof Error ? error.message : "Could not update auto-pull");
+    } finally {
+      setTogglingFreshness(false);
+    }
+  };
+
+  const whatsappInterval = formatInterval(freshness?.intervalsMs?.whatsapp) || "6h";
+
   return (
     <div className="connectors-page">
       <nav className="settings-nav" aria-label="Settings sections">
@@ -224,41 +253,55 @@ export function ConnectorsPage({
           Sources
         </a>
         <a href="#merge-review">Merge review</a>
-        <a href="#permissions">Permissions</a>
+        <a href="#more">More</a>
       </nav>
-      <section className="page-heading">
+
+      <section className="page-heading sources-heading">
         <div>
           <h1>Sources</h1>
-          <p>
-            See what Nett can read, when it last indexed, and where to add or import
-            evidence.
-          </p>
-        </div>
-        <div className="local-seal">
-          <ShieldCheck size={18} />
-          <span>
-            <strong>Local processing</strong>
-            Explicit access only
-          </span>
+          <p>Status and last refresh. Pull only when something is stale.</p>
         </div>
       </section>
 
-      <section className="local-intelligence-card panel">
-        <div className="connector-icon"><GearSix size={23} weight="duotone" /></div>
+      <section className="sources-autopull" aria-label="Automatic local refresh">
         <div>
+          <strong>Auto-pull while Nett is open</strong>
+          <p>
+            Messages and WhatsApp every {whatsappInterval}. Needs this Mac awake — sleep or quit
+            skips a cycle. Not a cloud agent.
+          </p>
+        </div>
+        <label className="sources-toggle">
+          <input
+            type="checkbox"
+            checked={Boolean(freshness?.enabled)}
+            disabled={togglingFreshness || freshness == null}
+            onChange={(event) => void toggleFreshness(event.target.checked)}
+          />
+          <span>{freshness?.enabled ? "On" : "Off"}</span>
+        </label>
+        {freshness?.running && (
+          <p className="sync-progress" role="status" aria-live="polite">
+            <SpinnerGap className="spin" size={13} />
+            Syncing {freshness.running}…
+          </p>
+        )}
+      </section>
+
+      <section className="sources-meta-row" aria-label="Local intelligence">
+        <div className="sources-meta-main">
           <span className={`permission-state ${intelligence?.ok ? "state-granted" : "state-blocked"}`}>
             {intelligence?.ok ? <Check size={13} /> : <WarningCircle size={13} />}
             {intelligence?.ok ? "Ollama ready" : "Ollama unavailable"}
           </span>
-          <h2>Local relationship intelligence</h2>
-          <p>
+          <span className="sources-meta-copy">
             {intelligence?.selectedModel
-              ? `${intelligence.selectedModel} · ${intelligence.evidenceDocuments} evidence records · ${intelligence.embeddedDocuments} embedded`
-              : "Start Ollama and install a local model to enable cited answers and smart autofill."}
-          </p>
+              ? `${intelligence.selectedModel} · ${(intelligence.evidenceDocuments || 0).toLocaleString()} evidence · ${(intelligence.embeddedDocuments || 0).toLocaleString()} embedded`
+              : "Start Ollama locally for cited answers"}
+          </span>
         </div>
         <button
-          className="secondary-button"
+          className="quiet-action sources-compact-btn"
           disabled={indexing || !intelligence?.ok}
           onClick={() => {
             setIndexing(true);
@@ -272,33 +315,33 @@ export function ConnectorsPage({
           }}
         >
           {indexing ? <SpinnerGap className="spin" /> : <ArrowClockwise />}
-          {indexing ? "Indexing" : "Refresh index"}
+          {indexing ? "Indexing" : "Index"}
         </button>
       </section>
 
       <section id="sources" className="connector-group">
-        <div className="section-heading">
+        <div className="section-heading sources-section-heading">
           <div>
-            <h2>Live connectors</h2>
-            <p>Permissioned sources that can refresh existing records.</p>
+            <h2>Connectors</h2>
           </div>
-          <span className="connector-kind live-kind">Live</span>
         </div>
         <div className="connector-ledger">
-          {liveConnectors.map(({ id, label, description, icon: Icon }) => {
+          {liveConnectors.map(({ id, label, blurb, icon: Icon }) => {
             const state = overview.connectors?.find(
               (connector) => connector.connector_id === id,
             );
             const account = platform?.accounts.find((item) => item.connectorId === id);
             const active = syncing === id;
+            const autoResult = freshness?.lastResults?.[id];
+            const refreshedAt = state?.last_sync_at || autoResult?.at;
             return (
               <article key={id}>
-                <div className="connector-icon">
-                  <Icon size={23} weight="duotone" />
+                <div className="connector-icon" aria-hidden="true">
+                  <Icon size={18} weight="regular" />
                 </div>
                 <div className="connector-info">
                   <h2>{label}</h2>
-                  <p>{description}</p>
+                  <p>{blurb}</p>
                   {active && (
                     <div className="sync-progress" role="status" aria-live="polite">
                       <SpinnerGap className="spin" size={13} />
@@ -320,13 +363,21 @@ export function ConnectorsPage({
                     ) : (
                       <Clock size={13} />
                     )}
-                    {state?.permission_state || "Not checked"}
+                    {state?.permission_state || "Unchecked"}
                   </span>
-                  {state?.last_sync_at && (
-                    <small>
-                      {state.records_seen || 0} seen / {state.records_linked || 0} linked
-                      <br />
-                      {friendlyDate(state.last_sync_at)}
+                  <small className="connector-refreshed">
+                    {refreshedAt
+                      ? `Refreshed ${friendlyDate(refreshedAt)}`
+                      : "Never refreshed"}
+                    {typeof state?.records_seen === "number" && state.records_seen > 0
+                      ? ` · ${state.records_seen.toLocaleString()} seen`
+                      : ""}
+                  </small>
+                  {freshness?.enabled
+                    && (id === "messages" || id === "whatsapp" || (id === "gmail" && state?.last_sync_at))
+                    && freshness.nextDue?.[id] && (
+                    <small className="connector-next-due">
+                      Next auto {friendlyDate(freshness.nextDue[id] || undefined)}
                     </small>
                   )}
                 </div>
@@ -334,15 +385,15 @@ export function ConnectorsPage({
                   {id === "messages" && messagesStatus?.readable ? (
                     <>
                       <button
-                        className="primary-button"
+                        className="primary-button sources-compact-btn"
                         onClick={() => void pullNewMessages()}
                         disabled={Boolean(syncing)}
                       >
                         {active ? <SpinnerGap className="spin" /> : <DownloadSimple />}
-                        {active ? "Pulling…" : "Pull new"}
+                        {active ? "Pulling" : "Pull"}
                       </button>
                       <button
-                        className="secondary-button"
+                        className="secondary-button sources-compact-btn"
                         onClick={() => setSetup("messages")}
                         disabled={Boolean(syncing)}
                         aria-label="Messages setup options"
@@ -354,15 +405,15 @@ export function ConnectorsPage({
                   ) : id === "whatsapp" && whatsappStatus?.readable ? (
                     <>
                       <button
-                        className="primary-button"
+                        className="primary-button sources-compact-btn"
                         onClick={() => void pullNewWhatsApp()}
                         disabled={Boolean(syncing)}
                       >
                         {active ? <SpinnerGap className="spin" /> : <DownloadSimple />}
-                        {active ? "Pulling…" : "Pull new"}
+                        {active ? "Pulling" : "Pull"}
                       </button>
                       <button
-                        className="secondary-button"
+                        className="secondary-button sources-compact-btn"
                         onClick={() => setSetup("whatsapp")}
                         disabled={Boolean(syncing)}
                         aria-label="WhatsApp setup options"
@@ -374,7 +425,7 @@ export function ConnectorsPage({
                   ) : id === "gmail" || id === "telegram" ? (
                     <>
                       <button
-                        className="primary-button"
+                        className="primary-button sources-compact-btn"
                         onClick={() => void sync(id)}
                         disabled={Boolean(syncing)}
                       >
@@ -386,7 +437,7 @@ export function ConnectorsPage({
                             : "Connect"}
                       </button>
                       <button
-                        className="secondary-button"
+                        className="secondary-button sources-compact-btn"
                         onClick={() => setSetup(id)}
                         disabled={Boolean(syncing)}
                         aria-label={`${label} setup options`}
@@ -397,7 +448,7 @@ export function ConnectorsPage({
                     </>
                   ) : (
                     <button
-                      className="secondary-button"
+                      className="secondary-button sources-compact-btn"
                       onClick={() => {
                         if (id === "messages" && messagesStatus && !messagesStatus.readable) {
                           setSetup("messages");
@@ -474,39 +525,20 @@ export function ConnectorsPage({
         />
       )}
 
-      <section className="import-connector panel">
-        <div className="connector-icon">
-          <FileCsv size={23} weight="duotone" />
-        </div>
-        <div>
-          <span className="connector-kind import-kind">One-time import</span>
-          <h2>Spreadsheet metadata</h2>
-          <p>
-            Choose a CSV or Excel workbook. Exact identities merge automatically, while
-            ambiguous names wait for your review.
-          </p>
-        </div>
-        <button className="primary-button" onClick={onImport}>
-          <FileCsv size={17} />
-          Choose file
+      <section className="sources-imports" aria-label="One-time imports">
+        <button type="button" className="sources-import-action" onClick={onImport}>
+          <FileCsv size={16} />
+          <span>
+            <strong>Spreadsheet</strong>
+            <small>CSV or Excel</small>
+          </span>
         </button>
-      </section>
-
-      <section className="import-connector panel">
-        <div className="connector-icon">
-          <Quotes size={23} weight="duotone" />
-        </div>
-        <div>
-          <span className="connector-kind import-kind">Fallback import</span>
-          <h2>WhatsApp chat export</h2>
-          <p>
-            Prefer the live WhatsApp connector above. Use this only for a single official
-            .txt or .zip export when Desktop is unavailable.
-          </p>
-        </div>
-        <button className="primary-button" onClick={() => setSetup("whatsapp-export")}>
-          <Plus size={17} />
-          Import export
+        <button type="button" className="sources-import-action" onClick={() => setSetup("whatsapp-export")}>
+          <Quotes size={16} />
+          <span>
+            <strong>WhatsApp export</strong>
+            <small>Fallback .txt / .zip</small>
+          </span>
         </button>
       </section>
       {setup === "whatsapp-export" && (
@@ -517,101 +549,84 @@ export function ConnectorsPage({
         />
       )}
 
-      <section className="connector-group">
-        <div className="section-heading">
-          <div>
-            <h2>Assisted public evidence</h2>
-            <p>Explicit, review-first capture from pages you choose to inspect.</p>
-          </div>
-          <span className="connector-kind live-kind">Available</span>
-        </div>
-        <div className="connector-ledger">
-          <article>
-            <div className="connector-icon"><Users size={23} weight="duotone" /></div>
-            <div className="connector-info">
-              <h2>LinkedIn public profile assist</h2>
-              <p>
-                Open a person, choose Edit fields, then paste a public profile URL and
-                visible text. Nett extracts likely headline, role, company, and location
-                locally, with a field-by-field review before saving.
-              </p>
-            </div>
-            <div className="connector-stats">
-              <span className="permission-state state-granted">
-                <Check size={13} /> User assisted
-              </span>
-              <small>Local parsing · review required</small>
-            </div>
-          </article>
-        </div>
-      </section>
-
       <div id="merge-review">
         <MergeReview refresh={refresh} notify={notify} />
       </div>
 
-      <section id="permissions" className="permission-guide">
-        <div>
-          <ShieldCheck size={24} weight="duotone" />
-          <h2>macOS permissions</h2>
-        </div>
-        <div>
-          <strong>Contacts</strong>
+      <details id="more" className="sources-more">
+        <summary>
+          <CaretDown size={14} />
+          Permissions, LinkedIn assist, and planned connectors
+        </summary>
+        <section className="sources-more-block">
+          <h3>LinkedIn public profile assist</h3>
           <p>
-            Allow the process running Nett to control Contacts when macOS prompts. Review
-            access under System Settings, Privacy &amp; Security, Automation.
+            Open a person, choose Edit fields, then paste a public profile URL and visible text.
+            Local parse with field-by-field review before saving.
           </p>
-        </div>
-        <div>
-          <strong>Messages</strong>
-          <p>
-            Prefer Settings → Sources → Messages → Prepare local copy. That uses Terminal
-            sqlite3 to copy chat.db into Nett without giving Node Full Disk Access. You can
-            also upload a copied chat.db.
-          </p>
-        </div>
-        <div>
-          <strong>WhatsApp</strong>
-          <p>
-            Install{" "}
-            <a href="https://github.com/openclaw/wacrawl" target="_blank" rel="noreferrer">
-              wacrawl
-            </a>
-            , keep WhatsApp Desktop synced, then use Sources → WhatsApp → Sync archive.
-            Nett reads only a local snapshot; it never talks to WhatsApp’s network.
-          </p>
-        </div>
-      </section>
-
-      <section className="future-connectors">
-        <div className="section-heading">
+          <span className="permission-state state-granted">
+            <Users size={13} /> User assisted
+          </span>
+        </section>
+        <section id="permissions" className="permission-guide">
           <div>
-            <h2>Future connectors</h2>
-            <p>Visible for planning only. These integrations cannot read or sync data.</p>
+            <ShieldCheck size={20} weight="duotone" />
+            <h2>macOS permissions</h2>
           </div>
-          <span className="connector-kind future-kind">Unavailable</span>
-        </div>
-        <div>
-          {futureConnectors.map(({ label, icon: Icon }) => (
-            <span key={label} aria-disabled="true">
-              <Icon size={18} />
-              <strong>{label}</strong>
-              <small>Planned</small>
-            </span>
-          ))}
-        </div>
-      </section>
-      <section className="merge-clear">
-        <LinkSimple size={17} />
-        <span>
-          <strong>Local MCP bridge</strong>
-          <small>
-            {platform?.mcp.configured
-              ? `${platform.mcp.servers.filter((server) => server.enabled).length} local plugin server(s) enabled`
-              : "Optional connector manifest not configured"}
-          </small>
-        </span>
-      </section>
+          <div>
+            <strong>Contacts</strong>
+            <p>
+              Allow the process running Nett to control Contacts when macOS prompts. Review
+              access under System Settings, Privacy &amp; Security, Automation.
+            </p>
+          </div>
+          <div>
+            <strong>Messages</strong>
+            <p>
+              Prefer Sources → Messages → Options → Prepare local copy. That uses Terminal
+              sqlite3 without giving Node Full Disk Access. You can also upload a copied chat.db.
+            </p>
+          </div>
+          <div>
+            <strong>WhatsApp</strong>
+            <p>
+              Install{" "}
+              <a href="https://github.com/openclaw/wacrawl" target="_blank" rel="noreferrer">
+                wacrawl
+              </a>
+              , keep WhatsApp Desktop synced, then Pull. Nett reads a local snapshot only.
+            </p>
+          </div>
+        </section>
+        <section className="future-connectors">
+          <div className="section-heading">
+            <div>
+              <h2>Planned</h2>
+              <p>Visible for planning only. These cannot read or sync yet.</p>
+            </div>
+          </div>
+          <div>
+            {futureConnectors.map(({ label, icon: Icon }) => (
+              <span key={label} aria-disabled="true">
+                <Icon size={18} />
+                <strong>{label}</strong>
+                <small>Planned</small>
+              </span>
+            ))}
+          </div>
+        </section>
+        <section className="merge-clear">
+          <LinkSimple size={17} />
+          <span>
+            <strong>Local MCP bridge</strong>
+            <small>
+              {platform?.mcp.configured
+                ? `${platform.mcp.servers.filter((server) => server.enabled).length} local plugin server(s) enabled`
+                : "Optional connector manifest not configured"}
+            </small>
+          </span>
+        </section>
+      </details>
     </div>
   );
 }
@@ -633,7 +648,6 @@ function SetupShell({
     <section className="connector-setup panel" aria-label={`${title} setup`}>
       <div className="section-heading">
         <div>
-          <p className="section-kicker">Local connector setup</p>
           <h2>{title}</h2>
           <p>{detail}</p>
         </div>
@@ -1250,7 +1264,7 @@ function MergeReview({
       <div className="section-heading">
         <div>
           <h2>Merge review</h2>
-          <p>Similar names and duplicate exact names wait here so the wrong people are never combined.</p>
+          <p>Similar names wait here so the wrong people are never combined.</p>
         </div>
         <span>{queue.length} pending</span>
       </div>

@@ -1,4 +1,4 @@
-import { connectorStates } from "../db.js";
+import { connectorSettings, connectorStates, updateConnectorSettings } from "../db.js";
 
 export type FreshnessConnectorId = "apple-contacts" | "messages" | "whatsapp" | "gmail";
 
@@ -7,23 +7,50 @@ export type FreshnessStatus = {
   running: FreshnessConnectorId | null;
   queued: boolean;
   lastTickAt: string | null;
+  intervalsMs: Record<FreshnessConnectorId, number>;
   lastResults: Partial<
     Record<FreshnessConnectorId, { at: string; ok: boolean; message?: string; error?: string }>
   >;
   nextDue: Partial<Record<FreshnessConnectorId, string | null>>;
+  constraint: string;
 };
 
-type SyncRunner = (connectorId: FreshnessConnectorId, signal: AbortSignal) => Promise<{ message?: string } | void>;
+type SyncRunner = (
+  connectorId: FreshnessConnectorId,
+  signal: AbortSignal,
+) => Promise<{ message?: string; done?: boolean } | void>;
 
-const INTERVAL_MS: Record<FreshnessConnectorId, number> = {
+/** Local-only idle pulls. WhatsApp/Messages need the Mac awake and Nett running. */
+export const INTERVAL_MS: Record<FreshnessConnectorId, number> = {
   "apple-contacts": 60 * 60 * 1000,
-  messages: 5 * 60 * 1000,
-  whatsapp: 5 * 60 * 1000,
-  gmail: 10 * 60 * 1000,
+  messages: 6 * 60 * 60 * 1000,
+  whatsapp: 6 * 60 * 60 * 1000,
+  gmail: 60 * 60 * 1000,
 };
 
-/** Opt-in only. Auto sync froze the API because better-sqlite3 blocks the event loop. */
-let enabled = process.env.NETT_FRESHNESS === "1";
+const FRESHNESS_SETTINGS_ID = "__freshness__";
+const CONSTRAINT =
+  "Runs only while Nett is open and this Mac is awake. Sleep, quit, or locked Full Disk Access skips a cycle — nothing syncs from the cloud.";
+
+function envFreshnessOverride(): boolean | null {
+  const raw = process.env.NETT_FRESHNESS?.trim();
+  if (raw === "1" || raw?.toLowerCase() === "true") return true;
+  if (raw === "0" || raw?.toLowerCase() === "false") return false;
+  return null;
+}
+
+function readPersistedEnabled(): boolean {
+  const override = envFreshnessOverride();
+  if (override !== null) return override;
+  try {
+    return connectorSettings(FRESHNESS_SETTINGS_ID).enabled === true;
+  } catch {
+    return false;
+  }
+}
+
+/** Opt-in only. Auto sync can block the API because better-sqlite3 is synchronous. */
+let enabled = false;
 let timer: ReturnType<typeof setInterval> | null = null;
 let running: FreshnessConnectorId | null = null;
 let queued = false;
@@ -33,6 +60,7 @@ const lastAttempt = new Map<FreshnessConnectorId, number>();
 let runner: SyncRunner | null = null;
 let isBusy: ((id: string) => boolean) | null = null;
 let readyCheck: ((id: FreshnessConnectorId) => Promise<boolean> | boolean) | null = null;
+let started = false;
 
 function due(id: FreshnessConnectorId): boolean {
   const previous = lastAttempt.get(id) ?? 0;
@@ -43,24 +71,57 @@ function yieldEventLoop() {
   return new Promise<void>((resolve) => setImmediate(resolve));
 }
 
+function ensureTimer() {
+  if (!started || !enabled || timer) return;
+  const seeded = Date.now();
+  for (const id of Object.keys(INTERVAL_MS) as FreshnessConnectorId[]) {
+    if (!lastAttempt.has(id)) lastAttempt.set(id, seeded);
+  }
+  timer = setInterval(() => {
+    void tick();
+  }, 60_000);
+}
+
+function clearTimer() {
+  if (timer) clearInterval(timer);
+  timer = null;
+}
+
 export function freshnessStatus(): FreshnessStatus {
   const nextDue: FreshnessStatus["nextDue"] = {};
   for (const id of Object.keys(INTERVAL_MS) as FreshnessConnectorId[]) {
     const previous = lastAttempt.get(id);
-    nextDue[id] = previous ? new Date(previous + INTERVAL_MS[id]).toISOString() : null;
+    nextDue[id] = previous && enabled
+      ? new Date(previous + INTERVAL_MS[id]).toISOString()
+      : null;
   }
   return {
     enabled,
     running,
     queued,
     lastTickAt,
+    intervalsMs: { ...INTERVAL_MS },
     lastResults: { ...lastResults },
     nextDue,
+    constraint: CONSTRAINT,
   };
 }
 
 export function setFreshnessEnabled(value: boolean) {
   enabled = value;
+  try {
+    const existing = connectorSettings(FRESHNESS_SETTINGS_ID);
+    updateConnectorSettings(FRESHNESS_SETTINGS_ID, {
+      ...existing,
+      enabled: value,
+      updatedAt: new Date().toISOString(),
+    });
+  } catch {
+    // Persistence is best-effort; in-memory toggle still applies for this process.
+  }
+  if (value) ensureTimer();
+  else clearTimer();
+  return freshnessStatus();
 }
 
 async function runOne(id: FreshnessConnectorId): Promise<void> {
@@ -119,19 +180,14 @@ export function startFreshnessAgent(options: {
   runner = options.sync;
   isBusy = options.isBusy;
   readyCheck = options.ready ?? null;
-  if (timer || !enabled) return;
-  const seeded = Date.now();
-  for (const id of Object.keys(INTERVAL_MS) as FreshnessConnectorId[]) {
-    lastAttempt.set(id, seeded);
-  }
-  timer = setInterval(() => {
-    void tick();
-  }, 60_000);
+  started = true;
+  enabled = readPersistedEnabled();
+  if (enabled) ensureTimer();
 }
 
 export function stopFreshnessAgent() {
-  if (timer) clearInterval(timer);
-  timer = null;
+  clearTimer();
+  started = false;
 }
 
 /**
