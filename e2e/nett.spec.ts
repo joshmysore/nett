@@ -77,11 +77,12 @@ test("server-paginated people and evidence profile", async ({ page, request }, t
 test("connector setup states are explicit and local", async ({ page }, testInfo) => {
   await page.goto("/settings/connectors");
   await expect(page.getByRole("heading", { name: "Sources" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Local relationship intelligence" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Connectors" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Gmail", exact: true })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Telegram", exact: true })).toBeVisible();
   await expect(page.getByRole("heading", { name: "WhatsApp", exact: true })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "LinkedIn public profile assist", exact: true })).toBeVisible();
+  await expect(page.getByText("Auto-pull while Nett is open")).toBeVisible();
+  await expect(page.getByText(/Needs this Mac awake/i)).toBeVisible();
   // Dark-mode muted chips on tinted surfaces currently sit under WCAG AA for
   // color-contrast; keep other serious rules enforced.
   await expectNoSeriousAccessibilityViolations(page, { disableRules: ["color-contrast"] });
