@@ -373,7 +373,9 @@ export function ConnectorsPage({
                       ? ` · ${state.records_seen.toLocaleString()} seen`
                       : ""}
                   </small>
-                  {freshness?.enabled && freshness.nextDue?.[id] && (
+                  {freshness?.enabled
+                    && (id === "messages" || id === "whatsapp" || (id === "gmail" && state?.last_sync_at))
+                    && freshness.nextDue?.[id] && (
                     <small className="connector-next-due">
                       Next auto {friendlyDate(freshness.nextDue[id] || undefined)}
                     </small>
