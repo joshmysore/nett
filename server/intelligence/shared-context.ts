@@ -59,6 +59,9 @@ const STRONG_SIGNAL_WEIGHT = {
 const MIN_OVERLAP_SCORE = 4; // e.g. institution (3) + place (2) or company+place
 const MAX_MUTUAL_ADDITIONS = 6;
 const MAX_PEER_EVIDENCE = 4;
+const GRAPH_CACHE_MS = 5_000;
+
+let graphCache: { at: number; signature: string; rows: GraphPerson[] } | null = null;
 
 function parseList(value: unknown): string[] {
   if (Array.isArray(value)) {
@@ -107,23 +110,18 @@ function placeTokens(...values: string[]): Set<string> {
   const out = new Set<string>();
   const stop = new Set([
     "usa", "us", "united states", "united states of america", "the", "of", "and",
-    "area", "metro", "greater", "city", "county", "tx", "texas", "ca", "ny",
+    "area", "metro", "greater", "city", "county",
+    "texas", "california", "florida", "england", "canada", "australia",
+    "new york", "tx", "ca", "ny", "fl",
   ]);
   for (const value of values) {
     const normalized = normalizeToken(value);
     if (!normalized) continue;
-    // Keep multi-word phrases and individual city-sized tokens.
-    if (normalized.length >= 3 && !stop.has(normalized)) out.add(normalized);
     for (const part of normalized.split(/[/,|]/).map((item) => item.trim()).filter(Boolean)) {
-      if (part.length >= 3 && !stop.has(part)) out.add(part);
-      for (const word of part.split(" ")) {
-        if (word.length >= 4 && !stop.has(word)) out.add(word);
-      }
+      if (part.length < 3 || stop.has(part)) continue;
+      // Keep the phrase intact. Splitting "new york" into "york" over-matches.
+      out.add(part);
     }
-  }
-  // Drop ultra-generic state-only tokens that would over-match.
-  for (const generic of ["texas", "california", "new york", "florida", "england", "canada"]) {
-    if (out.size > 1) out.delete(generic);
   }
   return out;
 }
@@ -183,6 +181,18 @@ function sharedLabels(left: Set<string>, right: Set<string>, limit = 3): string[
 }
 
 function loadGraphPeople(): GraphPerson[] {
+  const signatureRow = db.prepare(`
+    SELECT COUNT(*) AS count, COALESCE(MAX(updated_at), '') AS stamp FROM people
+  `).get() as { count: number; stamp: string };
+  const signature = `${signatureRow.count}:${signatureRow.stamp}`;
+  if (
+    graphCache
+    && graphCache.signature === signature
+    && Date.now() - graphCache.at < GRAPH_CACHE_MS
+  ) {
+    return graphCache.rows;
+  }
+
   const rows = db.prepare(`
     SELECT p.id, p.preferred_name, COALESCE(p.nickname, '') AS nickname,
       m.hometown, m.location, m.institutions, m.mutuals, m.company, m.industry,
@@ -191,7 +201,7 @@ function loadGraphPeople(): GraphPerson[] {
     LEFT JOIN nett_metadata m ON m.person_id = p.id
   `).all() as Record<string, unknown>[];
 
-  return rows.map((row) => {
+  const people = rows.map((row) => {
     const name = String(row.preferred_name ?? "").trim();
     const nickname = String(row.nickname ?? "").trim();
     const hometown = parseList(row.hometown);
@@ -224,6 +234,29 @@ function loadGraphPeople(): GraphPerson[] {
       },
     };
   });
+  graphCache = { at: Date.now(), signature, rows: people };
+  return people;
+}
+
+/** School overlap, or place reinforced by already-shared mutuals — never company+city alone. */
+function qualifiesForMutualProposal(shared: string[]): boolean {
+  const hasSchool = shared.some((item) => item.startsWith("school:"));
+  const hasPlace = shared.some((item) => item.startsWith("place:"));
+  const hasMutualOverlap = shared.some((item) => item.startsWith("shared-mutuals:"));
+  if (hasSchool && (hasPlace || hasMutualOverlap)) return true;
+  if (hasSchool && shared.length >= 2) return true;
+  if (hasPlace && hasMutualOverlap) return true;
+  return false;
+}
+
+function buildNameIndex(people: readonly GraphPerson[]): Map<string, GraphPerson> {
+  const index = new Map<string, GraphPerson>();
+  for (const person of people) {
+    for (const key of person.nameKeys) {
+      if (!index.has(key)) index.set(key, person);
+    }
+  }
+  return index;
 }
 
 function overlapScore(a: GraphPerson, b: GraphPerson): {
@@ -290,10 +323,10 @@ function evidenceFor(
   peers: { peer: GraphPerson; shared: string[]; score: number }[],
   summary: string,
 ): SharedContextEvidence[] {
-  return peers.slice(0, MAX_PEER_EVIDENCE).map((item, index) => ({
+  return peers.slice(0, MAX_PEER_EVIDENCE).map((item) => ({
     kind: "derived-signal" as const,
     sourceType: "shared-context" as const,
-    sourceId: `shared-context:${personId}:${item.peer.id}:${index}`,
+    sourceId: `shared-context:${personId}:${summary}:${item.peer.id}`,
     excerpt: `${item.peer.name} — shared ${formatShared(item.shared) || "context"}`,
     structured: {
       peerId: item.peer.id,
@@ -320,11 +353,13 @@ function emptyList(value: unknown): boolean {
  */
 export function collectSharedContextSuggestions(
   person: Record<string, unknown>,
+  options: { rejectedMutualKeys?: ReadonlySet<string> } = {},
 ): SharedContextSuggestion[] {
   const personId = String(person.id ?? "");
   if (!personId) return [];
 
   const people = loadGraphPeople();
+  const nameIndex = buildNameIndex(people);
   const self = people.find((row) => row.id === personId);
   if (!self) return [];
 
@@ -357,6 +392,7 @@ export function collectSharedContextSuggestions(
 
   const knownMutuals = new Set(target.mutuals.map(normalizeToken));
   knownMutuals.add(normalizeToken(target.name));
+  for (const key of options.rejectedMutualKeys ?? []) knownMutuals.add(key);
 
   type MutualCandidate = {
     name: string;
@@ -370,9 +406,6 @@ export function collectSharedContextSuggestions(
   const addMutual = (candidate: MutualCandidate) => {
     const key = normalizeToken(candidate.name);
     if (!key || knownMutuals.has(key)) return;
-    // Never propose a name that does not resolve to a stored person for
-    // reciprocal/shared-context peer proposals; cluster-mutual may cite a
-    // display name already recorded on a peer's mutuals list.
     const existing = mutualCandidates.get(key);
     if (!existing || candidate.confidence > existing.confidence) {
       mutualCandidates.set(key, candidate);
@@ -399,31 +432,32 @@ export function collectSharedContextSuggestions(
     if (score < MIN_OVERLAP_SCORE) continue;
     strongPeers.push({ peer, shared, score });
 
-    addMutual({
-      name: peer.name,
-      confidence: Math.min(0.86, 0.58 + score * 0.05),
-      shared,
-      peer,
-      kind: "shared-context",
-    });
+    if (qualifiesForMutualProposal(shared)) {
+      addMutual({
+        name: peer.name,
+        confidence: Math.min(0.82, 0.58 + score * 0.04),
+        shared,
+        peer,
+        kind: "shared-context",
+      });
+    }
 
-    // Mutuals already recorded on high-overlap peers are strong cluster cues.
+    // Friends-of-friends only when the listed person resolves in-graph and
+    // also shares strong context with the target — never unresolved ghosts.
+    if (!qualifiesForMutualProposal(shared)) continue;
     for (const listed of peer.mutuals) {
       const listedKey = normalizeToken(listed);
       if (!listedKey || knownMutuals.has(listedKey)) continue;
       if (target.nameKeys.has(listedKey)) continue;
-      // Prefer names that also exist as people in the graph.
-      const resolved = people.find((row) => row.nameKeys.has(listedKey));
-      if (resolved && resolved.id === target.id) continue;
-      const clusterBoost = resolved
-        ? overlapScore(target, resolved).score >= MIN_OVERLAP_SCORE
-        : false;
-      if (!resolved && score < MIN_OVERLAP_SCORE + 2) continue;
+      const resolved = nameIndex.get(listedKey);
+      if (!resolved || resolved.id === target.id) continue;
+      const withResolved = overlapScore(target, resolved);
+      if (!qualifiesForMutualProposal(withResolved.shared)) continue;
       addMutual({
-        name: resolved?.name ?? listed,
-        confidence: Math.min(0.8, (clusterBoost ? 0.7 : 0.6) + score * 0.02),
-        shared: [...shared, `via:${peer.name}`],
-        peer,
+        name: resolved.name,
+        confidence: Math.min(0.74, 0.55 + withResolved.score * 0.03),
+        shared: [...withResolved.shared, `via:${peer.name}`],
+        peer: resolved,
         kind: "cluster-mutual",
       });
     }
@@ -454,24 +488,27 @@ export function collectSharedContextSuggestions(
         `${contextPeers.length} suggested from shared context${sample ? ` (${sample})` : ""}`,
       );
     }
+    const meanConfidence =
+      rankedMutuals.reduce((sum, item) => sum + item.confidence, 0) / rankedMutuals.length;
     suggestions.push({
       field: "mutuals",
       value: merged,
-      confidence: Math.max(...rankedMutuals.map((item) => item.confidence)),
+      confidence: Math.min(...rankedMutuals.map((item) => item.confidence), meanConfidence),
       reason: reasonParts.join("; ") || "Suggested from overlapping place, school, and mutuals.",
       evidence: evidenceFor(
         personId,
         rankedMutuals.map((item) => ({
           peer: item.peer,
           shared: item.shared,
-          score: Math.round(item.confidence * 10),
+          score: item.kind === "reciprocal" ? 9 : Math.round(item.confidence * 10),
         })),
-        "mutuals-from-shared-context",
+        "mutuals",
       ),
     });
   }
 
   // Sparse field consensus among strong peers — only when the field is empty.
+  // Meeting stories (how/where met) are about the peer, not the target — skip.
   const consensusFields: {
     field: string;
     read: (peer: GraphPerson) => string | string[];
@@ -508,18 +545,6 @@ export function collectSharedContextSuggestions(
       empty: emptyScalar(person.industry),
       list: false,
     },
-    {
-      field: "where_met",
-      read: (peer) => peer.whereMet,
-      empty: emptyScalar(person.where_met),
-      list: false,
-    },
-    {
-      field: "how_met",
-      read: (peer) => peer.howMet,
-      empty: emptyScalar(person.how_met),
-      list: false,
-    },
   ];
 
   // Need a real cluster: at least two strong peers.
@@ -546,9 +571,13 @@ export function collectSharedContextSuggestions(
         .filter((entry) => entry.peers.length >= 2)
         .sort((left, right) => right.peers.length - left.peers.length)[0];
       if (!winner) continue;
-      // For places/institutions, require the target already shares another
-      // strong signal with those peers — otherwise any popular company wins.
-      const supporting = winner.peers.filter((item) => item.score >= MIN_OVERLAP_SCORE);
+      // Prefer peers who also share school/place — not company-only cohorts.
+      const supporting = winner.peers.filter((item) =>
+        item.score >= MIN_OVERLAP_SCORE
+        && (
+          item.shared.some((signal) => signal.startsWith("school:"))
+          || item.shared.some((signal) => signal.startsWith("place:"))
+        ));
       if (supporting.length < 2) continue;
       const confidence = Math.min(0.78, 0.52 + supporting.length * 0.08);
       suggestions.push({

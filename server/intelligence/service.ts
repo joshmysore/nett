@@ -606,6 +606,29 @@ function rejectedFingerprints(personId: string): Set<string> {
   return result;
 }
 
+/** Names previously rejected on a list field — suppress them even if the batch grows. */
+function rejectedListItemKeys(personId: string, field: string): Set<string> {
+  if (!listFields.has(field)) return new Set();
+  const rows = db.prepare(`
+    SELECT proposed_value_json, current_value_json
+    FROM inference_suggestions
+    WHERE person_id=? AND field_name=? AND status='rejected'
+  `).all(personId, field) as { proposed_value_json: string; current_value_json: string }[];
+  const keys = new Set<string>();
+  for (const row of rows) {
+    const proposed = normalizeValue(field, parse<unknown>(row.proposed_value_json, [])) as unknown[];
+    const current = new Set(
+      (normalizeValue(field, parse<unknown>(row.current_value_json, [])) as unknown[])
+        .map((item) => String(item).toLocaleLowerCase()),
+    );
+    for (const item of proposed) {
+      const key = String(item).toLocaleLowerCase();
+      if (key && !current.has(key)) keys.add(key);
+    }
+  }
+  return keys;
+}
+
 function documentEvidence(document: EvidenceDocument): SuggestionEvidence {
   return {
     kind: "evidence-document",
@@ -932,7 +955,8 @@ export async function intelligentAutofill(
 
   // Shared place / school / company / reciprocal mutuals — local graph only.
   const claimedFields = new Set(candidates.map((candidate) => candidate.field));
-  for (const item of collectSharedContextSuggestions(person)) {
+  const rejectedMutualKeys = rejectedListItemKeys(personId, "mutuals");
+  for (const item of collectSharedContextSuggestions(person, { rejectedMutualKeys })) {
     if (claimedFields.has(item.field) || !isProposable(item.field)) continue;
     if (!item.evidence.length) continue;
     candidates.push({

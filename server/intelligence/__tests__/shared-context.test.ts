@@ -165,3 +165,108 @@ test("does not invent mutuals from a single weak signal", () => {
     "state-only overlap must not propose mutuals",
   );
 });
+
+test("company and city alone do not propose mutuals", () => {
+  seed("Alice Google SF", {
+    location: "San Francisco, CA",
+    company: "Google",
+    mutuals: [],
+  });
+  seed("Bob Google SF", {
+    location: "San Francisco",
+    company: "Google",
+    mutuals: [],
+  });
+  const targetId = seed("Carol Google SF", {
+    location: "San Francisco, California",
+    company: "Google",
+    mutuals: [],
+  });
+  const suggestions = collectSharedContextSuggestions(getPerson(targetId) as Record<string, unknown>);
+  assert.equal(
+    suggestions.some((item) => item.field === "mutuals"),
+    false,
+    "coworkers in the same city are not assumed mutuals",
+  );
+});
+
+test("unresolved ghost mutuals are never proposed", () => {
+  seed("Dana Strong", {
+    hometown: ["Dallas, Texas"],
+    institutions: ["Greenhill School"],
+    mutuals: ["Ghost Name Not In DB", "Eli Peer"],
+  });
+  seed("Eli Peer", {
+    hometown: ["Dallas"],
+    institutions: ["Greenhill School"],
+    mutuals: ["Dana Strong"],
+  });
+  const targetId = seed("Fran Target", {
+    hometown: ["Dallas, Texas"],
+    institutions: ["Greenhill School"],
+    mutuals: [],
+  });
+  const suggestions = collectSharedContextSuggestions(getPerson(targetId) as Record<string, unknown>);
+  const mutuals = suggestions.find((item) => item.field === "mutuals");
+  assert.ok(mutuals);
+  const names = (mutuals!.value as string[]).map((name) => name.toLocaleLowerCase());
+  assert.equal(names.includes("ghost name not in db"), false);
+  assert.equal(names.includes("dana strong"), true);
+  assert.equal(names.includes("eli peer"), true);
+});
+
+test("rejected mutual names stay suppressed when the batch grows", async () => {
+  seed("Harper One", {
+    hometown: ["Dallas, Texas"],
+    institutions: ["Booker T. Washington High School"],
+    mutuals: [],
+  });
+  const targetId = seed("Jules Target", {
+    hometown: ["Dallas, Texas"],
+    institutions: ["Booker T. Washington High School"],
+    mutuals: [],
+  });
+
+  const first = await intelligentAutofill(targetId, { generate: false });
+  const mutuals = first.suggestions.find((item) => item.field === "mutuals");
+  assert.ok(mutuals);
+  reviewInferenceSuggestion(mutuals!.id, "rejected", false);
+
+  seed("Ian Two", {
+    hometown: ["Dallas"],
+    institutions: ["Booker T. Washington High School"],
+    mutuals: [],
+  });
+
+  const second = await intelligentAutofill(targetId, { generate: false });
+  const again = second.suggestions.find((item) => item.field === "mutuals");
+  if (again) {
+    const names = (again.value as string[]).map((name) => name.toLocaleLowerCase());
+    assert.equal(names.includes("harper one"), false, "previously rejected Harper must stay out");
+  }
+});
+
+test("confidence is not inflated by a single reciprocal in a mixed batch", () => {
+  seed("Reciprocal Peer", {
+    hometown: ["Austin, Texas"],
+    institutions: ["St. Mark's School of Texas"],
+    mutuals: ["Mixed Target"],
+  });
+  seed("School Peer", {
+    hometown: ["Dallas, Texas"],
+    institutions: ["St. Mark's School of Texas"],
+    mutuals: [],
+  });
+  const targetId = seed("Mixed Target", {
+    hometown: ["Dallas, Texas"],
+    institutions: ["St. Mark's School of Texas"],
+    mutuals: [],
+  });
+  const suggestions = collectSharedContextSuggestions(getPerson(targetId) as Record<string, unknown>);
+  const mutuals = suggestions.find((item) => item.field === "mutuals");
+  assert.ok(mutuals);
+  assert.ok(
+    mutuals!.confidence < 0.9,
+    `mixed-batch confidence should stay below a pure reciprocal (${mutuals!.confidence})`,
+  );
+});
