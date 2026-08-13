@@ -485,6 +485,7 @@ export function SetupPage({
               className="visually-hidden"
               type="file"
               accept=".db,.sqlite,.sqlite3,application/x-sqlite3"
+              aria-label="Choose a copied Messages database"
               onChange={(event) => {
                 const file = event.target.files?.[0];
                 if (file) void prepareMessages(file);
@@ -496,6 +497,7 @@ export function SetupPage({
               className="visually-hidden"
               type="file"
               accept=".csv,.xlsx,.xls,text/csv,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+              aria-label="Choose a CSV or Excel spreadsheet"
               onChange={(event) => {
                 const file = event.target.files?.[0];
                 if (file) void importSpreadsheet(file);

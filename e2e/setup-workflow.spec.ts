@@ -26,11 +26,14 @@ test("owner-preview extracts hometowns and interests without writing", async ({ 
 });
 
 test("setup you and conversations stages are the first-run path", async ({ page, request }, testInfo) => {
-  await request.patch(`${api}/api/setup/onboarding`, { data: { phase: "you" } });
+  test.skip(testInfo.project.name !== "desktop", "Mutates shared onboarding; run on one project");
+  await request.patch(`${api}/api/setup/onboarding`, {
+    data: { phase: "you", ownerHometowns: [], ownerInterests: [] },
+  });
   try {
     await page.goto("/setup");
     await expect(page.getByRole("heading", { name: /Hometowns and interests are enough/i })).toBeVisible();
-    const hometowns = page.getByLabel("Hometowns");
+    const hometowns = page.getByRole("textbox", { name: "Hometowns", exact: true });
     await hometowns.fill("Dallas");
     await hometowns.press("Enter");
     await expect(page.getByRole("button", { name: "Remove Dallas" })).toBeVisible();
