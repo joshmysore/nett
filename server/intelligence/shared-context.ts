@@ -8,6 +8,7 @@
  */
 
 import { db } from "../db.js";
+import { getOwnerContext } from "../setup.js";
 
 export type SharedContextEvidence = {
   kind: "derived-signal";
@@ -114,14 +115,17 @@ function placeTokens(...values: string[]): Set<string> {
     "texas", "california", "florida", "england", "canada", "australia",
     "new york", "tx", "ca", "ny", "fl",
   ]);
+  const add = (raw: string) => {
+    const normalized = normalizeToken(raw);
+    if (!normalized || normalized.length < 3 || stop.has(normalized)) return;
+    out.add(normalized);
+  };
   for (const value of values) {
-    const normalized = normalizeToken(value);
-    if (!normalized) continue;
-    for (const part of normalized.split(/[/,|]/).map((item) => item.trim()).filter(Boolean)) {
-      if (part.length < 3 || stop.has(part)) continue;
-      // Keep the phrase intact. Splitting "new york" into "york" over-matches.
-      out.add(part);
-    }
+    add(value);
+    // Keep the city head so "Dallas" overlaps "Dallas, Texas" without
+    // splitting "New York" into "york".
+    const head = value.split(",")[0] ?? value;
+    if (head.trim() !== String(value).trim()) add(head);
   }
   return out;
 }
@@ -238,7 +242,8 @@ function loadGraphPeople(): GraphPerson[] {
   return people;
 }
 
-/** School overlap, or place reinforced by already-shared mutuals — never company+city alone. */
+/** School overlap, or place reinforced by already-shared mutuals — never company+city alone.
+ *  Owner hometown is a named cluster prior (Instagram-mutuals style), never a sole signal. */
 function qualifiesForMutualProposal(shared: string[]): boolean {
   const hasSchool = shared.some((item) => item.startsWith("school:"));
   const hasPlace = shared.some((item) => item.startsWith("place:"));
@@ -259,7 +264,7 @@ function buildNameIndex(people: readonly GraphPerson[]): Map<string, GraphPerson
   return index;
 }
 
-function overlapScore(a: GraphPerson, b: GraphPerson): {
+function overlapScore(a: GraphPerson, b: GraphPerson, ownerPlaces: Set<string> = new Set()): {
   score: number;
   shared: string[];
 } {
@@ -275,6 +280,11 @@ function overlapScore(a: GraphPerson, b: GraphPerson): {
   if (placeHits.length) {
     score += STRONG_SIGNAL_WEIGHT.place;
     shared.push(...placeHits.map((item) => `place:${item}`));
+    const ownerHits = placeHits.filter((item) => ownerPlaces.has(item));
+    if (ownerHits.length) {
+      score += 1;
+      shared.push(`owner-place:${ownerHits[0]}`);
+    }
   }
   const companyHits = sharedLabels(a.tokens.company, b.tokens.company);
   if (companyHits.length) {
@@ -313,7 +323,7 @@ function listsPerson(mutuals: string[], target: GraphPerson): boolean {
 
 function formatShared(shared: string[]): string {
   return shared
-    .map((item) => item.replace(/^(school|place|company|where-met|how-met|shared-mutuals):/, ""))
+    .map((item) => item.replace(/^(school|place|company|where-met|how-met|shared-mutuals|owner-place):/, ""))
     .slice(0, 4)
     .join(", ");
 }
@@ -362,6 +372,7 @@ export function collectSharedContextSuggestions(
   const nameIndex = buildNameIndex(people);
   const self = people.find((row) => row.id === personId);
   if (!self) return [];
+  const ownerPlaces = placeTokens(...getOwnerContext().hometowns);
 
   // Prefer live person fields (may be fresher than the lean row) when present.
   const liveHometown = Array.isArray(person.hometown) ? person.hometown.map(String) : self.hometown;
@@ -428,7 +439,7 @@ export function collectSharedContextSuggestions(
       });
     }
 
-    const { score, shared } = overlapScore(target, peer);
+    const { score, shared } = overlapScore(target, peer, ownerPlaces);
     if (score < MIN_OVERLAP_SCORE) continue;
     strongPeers.push({ peer, shared, score });
 
@@ -451,7 +462,7 @@ export function collectSharedContextSuggestions(
       if (target.nameKeys.has(listedKey)) continue;
       const resolved = nameIndex.get(listedKey);
       if (!resolved || resolved.id === target.id) continue;
-      const withResolved = overlapScore(target, resolved);
+      const withResolved = overlapScore(target, resolved, ownerPlaces);
       if (!qualifiesForMutualProposal(withResolved.shared)) continue;
       addMutual({
         name: resolved.name,
@@ -487,6 +498,13 @@ export function collectSharedContextSuggestions(
       reasonParts.push(
         `${contextPeers.length} suggested from shared context${sample ? ` (${sample})` : ""}`,
       );
+    }
+    const ownerPlaceLabel = rankedMutuals
+      .flatMap((item) => item.shared)
+      .find((item) => item.startsWith("owner-place:"))
+      ?.replace(/^owner-place:/, "");
+    if (ownerPlaceLabel) {
+      reasonParts.push(`${ownerPlaceLabel} is one of your hometowns`);
     }
     const meanConfidence =
       rankedMutuals.reduce((sum, item) => sum + item.confidence, 0) / rankedMutuals.length;
@@ -579,13 +597,60 @@ export function collectSharedContextSuggestions(
           || item.shared.some((signal) => signal.startsWith("place:"))
         ));
       if (supporting.length < 2) continue;
-      const confidence = Math.min(0.78, 0.52 + supporting.length * 0.08);
+      const ownerPlaceHit = field.field === "hometown"
+        && [...placeTokens(winner.value)].some((token) => ownerPlaces.has(token));
+      const confidence = Math.min(
+        ownerPlaceHit ? 0.84 : 0.78,
+        0.52 + supporting.length * 0.08 + (ownerPlaceHit ? 0.06 : 0),
+      );
       suggestions.push({
         field: field.field,
         value: field.list ? [winner.value] : winner.value,
         confidence,
-        reason: `${supporting.length} people who share context with ${target.name} also have “${winner.value}” for ${field.field.replaceAll("_", " ")}.`,
+        reason: `${supporting.length} people who share context with ${target.name} also have “${winner.value}” for ${field.field.replaceAll("_", " ")}.${
+          ownerPlaceHit ? " That place is also one of your hometowns." : ""
+        }`,
         evidence: evidenceFor(personId, supporting, `consensus:${field.field}`),
+      });
+    }
+  }
+
+  // Existing edges + owner hometown: fill a missing hometown from people the
+  // user already connected, when those neighbors grew up in a place the owner
+  // named. Does not assume strangers in a city know each other.
+  if (ownerPlaces.size && emptyList(person.hometown) && !suggestions.some((item) => item.field === "hometown")) {
+    const votes = new Map<string, { value: string; peers: GraphPerson[] }>();
+    for (const peer of people) {
+      if (peer.id === target.id) continue;
+      const connected = listsPerson(peer.mutuals, target) || listsPerson(target.mutuals, peer);
+      if (!connected) continue;
+      for (const hometown of peer.hometown) {
+        const matched = [...placeTokens(hometown)].filter((token) => ownerPlaces.has(token));
+        for (const ownerToken of matched) {
+          const entry = votes.get(ownerToken) ?? { value: hometown, peers: [] };
+          if (!entry.peers.some((item) => item.id === peer.id)) entry.peers.push(peer);
+          votes.set(ownerToken, entry);
+        }
+      }
+    }
+    const winner = [...votes.values()]
+      .filter((entry) => entry.peers.length >= 2)
+      .sort((left, right) => right.peers.length - left.peers.length)[0];
+    if (winner) {
+      suggestions.push({
+        field: "hometown",
+        value: [winner.value],
+        confidence: Math.min(0.8, 0.56 + winner.peers.length * 0.08),
+        reason: `${winner.peers.length} people already connected to ${target.name} grew up in ${winner.value} — one of your hometowns.`,
+        evidence: evidenceFor(
+          personId,
+          winner.peers.map((peer) => ({
+            peer,
+            shared: [`owner-place:${normalizeToken(winner.value)}`, "neighbor-edge"],
+            score: 5,
+          })),
+          "owner-hometown",
+        ),
       });
     }
   }

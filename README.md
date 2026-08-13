@@ -32,6 +32,18 @@ npm start
 
 The production server is available at [http://127.0.0.1:4174](http://127.0.0.1:4174).
 
+## First-run workflow
+
+Setup is `/setup`. The intended path is short:
+
+1. **You.** Name yourself, then speak or type a couple of hometowns and a couple of interests. The transcript is kept; chips are editable; nothing is written onto other people yet.
+2. **Contacts.** Apple Contacts is the identity foundation. Skip if you do not want it yet.
+3. **Conversations.** Connect Messages, WhatsApp Desktop, and Gmail from the same step. Spreadsheet import remains available as a fallback. Open Nett whenever you are ready — sources can be added later from **Sources**.
+
+Nett then uses your hometowns as a private cluster prior: people you already connected who share one of those places can get a reviewable hometown suggestion, and mutual suggestions that already qualify on school/place can mention that the overlap is one of your hometowns. It does not assume that strangers in the same city know each other, and it does not scrape Instagram.
+
+After setup, People opens filtered to missing hometowns so **Fill gaps** is the easy manual path beside autofill.
+
 ## Apple Contacts access
 
 Choose **Sources**, then **Connect** beside Apple Contacts. Nett uses the fast Swift `Contacts` framework export (`server/macos/export-contacts.swift`) for normal fields. It separately asks Contacts.app through a read-only, vectorized JXA pass for notes.

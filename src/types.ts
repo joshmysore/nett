@@ -75,10 +75,13 @@ export type FullPerson = Person & { memories: MemoryRecord[]; interactions: Inte
 
 export type ConnectorState = { connector_id: string; permission_state: string; status: string; last_sync_at?: string; last_error?: string; records_seen: number; records_linked: number };
 export type SetupStatus = {
-  phase: "welcome" | "contacts" | "messages" | "optional" | "complete";
+  phase: "welcome" | "you" | "contacts" | "conversations" | "complete";
   isFirstRun: boolean;
   isUsable: boolean;
   ownerDisplayName: string | null;
+  ownerHometowns: string[];
+  ownerInterests: string[];
+  ownerCaptureTranscript: string | null;
   completedAt: string | null;
   skippedSteps: string[];
   milestones: {
@@ -86,6 +89,8 @@ export type SetupStatus = {
     peopleCount: number;
     contacts: { permission: string; status: string; synced: boolean; seen: number; error: string | null };
     messages: { readable: boolean; usingLocalCopy: boolean; messageCount: number | null; status: string; synced: boolean; seen: number; error: string | null };
+    gmail: { permission: string; status: string; synced: boolean; seen: number; error: string | null };
+    whatsapp: { permission: string; status: string; synced: boolean; seen: number; error: string | null };
   };
   nextAction: { step: string; label: string; route: string } | null;
 };

@@ -11,34 +11,34 @@ import "@/styles/dashboard.css";
 function FirstRun({ onCapture }: { onCapture: () => void }) {
   return (
     <div className="desk desk-first-run">
-      <h1>Nothing has been imported yet</h1>
+      <h1>Start with who you are, then your conversations</h1>
       <p className="desk-status">
         Nett keeps one SQLite file on this Mac. There is no account and nothing is sent
-        anywhere. Three ways to start:
+        anywhere unless you connect a source you already own.
       </p>
       <ol className="desk-start-steps">
         <li>
-          <h2>Read your Apple Contacts</h2>
+          <h2>Tell Nett a couple of hometowns and interests</h2>
           <p>
-            Read-only. Nett copies names and contact methods into its own database and
-            records where each value came from.
+            Speak or type them. They stay yours. Nett uses them only as a prior when
+            suggesting who might know each other.
           </p>
-          <Link className="secondary-button" to="/settings/connectors">
-            Open connectors
+          <Link className="secondary-button" to="/setup">
+            Open setup
           </Link>
         </li>
         <li>
-          <h2>Import a spreadsheet you already keep</h2>
+          <h2>Connect Messages, WhatsApp, or Gmail</h2>
           <p>
-            A CSV of people, one row each. Every raw row is kept so an import can be
-            traced or repeated without creating duplicates.
+            Read-only. People link by phone or email. Hometowns and interests are
+            proposed later, never silently filled.
           </p>
           <Link className="secondary-button" to="/settings/connectors">
-            Import a file
+            Open sources
           </Link>
         </li>
         <li>
-          <h2>Write down one thing you remember</h2>
+          <h2>Remember someone in a sentence</h2>
           <p>
             Plain language. Nett proposes the person and the fields it thinks it found,
             and waits for you to accept them.
@@ -48,9 +48,6 @@ function FirstRun({ onCapture }: { onCapture: () => void }) {
           </button>
         </li>
       </ol>
-      <p className="desk-note">
-        Guided setup is still available at <Link to="/setup">/setup</Link>.
-      </p>
     </div>
   );
 }

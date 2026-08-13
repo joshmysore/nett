@@ -78,6 +78,9 @@ const initialOverview: Overview = {
     isFirstRun: true,
     isUsable: false,
     ownerDisplayName: null,
+    ownerHometowns: [],
+    ownerInterests: [],
+    ownerCaptureTranscript: null,
     completedAt: null,
     skippedSteps: [],
     milestones: {
@@ -85,6 +88,8 @@ const initialOverview: Overview = {
       peopleCount: 0,
       contacts: { permission: "unknown", status: "idle", synced: false, seen: 0, error: null },
       messages: { readable: false, usingLocalCopy: false, messageCount: null, status: "idle", synced: false, seen: 0, error: null },
+      gmail: { permission: "unknown", status: "idle", synced: false, seen: 0, error: null },
+      whatsapp: { permission: "unknown", status: "idle", synced: false, seen: 0, error: null },
     },
     nextAction: { step: "welcome", label: "Start local setup", route: "/setup" },
   },
