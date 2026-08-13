@@ -442,15 +442,6 @@
   .source-cards {
     grid-template-columns: minmax(0, 1fr);
   }
-
-  .source-card-actions {
-    flex-direction: column;
-  }
-
-  .source-card-actions .primary-button,
-  .source-card-actions .secondary-button {
-    width: 100%;
-  }
 }
 
 @media (pointer: coarse) {
