@@ -401,7 +401,13 @@ export function ConnectorsPage({
       )}
 
       <section className="sources-imports" aria-label="One-time imports">
-        <h2>Imports</h2>
+        <TextAnimation
+          as="h2"
+          text="Imports"
+          direction="up"
+          lineAnime
+          classname="sources-scroll-heading block"
+        />
         <ul className="source-cards">
           <li>
             <GlowCard className="source-glow-card" glowColor="graphite" customSize>
@@ -496,7 +502,7 @@ export function ConnectorsPage({
                 text="Planned"
                 direction="up"
                 lineAnime
-                classname="sources-scroll-heading"
+                classname="sources-scroll-heading block"
               />
               <p>Visible for planning only. These cannot read or sync yet.</p>
             </div>
@@ -1363,7 +1369,7 @@ function MergeReview({
       <div className="section-heading">
         <div>
           <h2 className="sources-scroll-heading">
-            <TextAnimation as="span" text="Merge review" direction="up" lineAnime />
+            <TextAnimation as="span" text="Merge review" direction="up" lineAnime classname="block" />
           </h2>
           <p>Similar names wait here so the wrong people are never combined.</p>
         </div>

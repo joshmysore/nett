@@ -199,7 +199,10 @@ strings.
 
 Sources uses the same GlowCard primitive in a compact grid: connector name,
 permission, last refresh, and the primary pull or connect action on the card.
-Workbench GlowCards are paper with a pointer spotlight — not glass.
+Workbench GlowCards are paper with a pointer spotlight — not glass. In light
+mode they keep a graphite edge and drop shadow, and they drop the outer bloom
+so paper does not pick up a muddy halo. `color-scheme` follows the resolved
+theme so native controls never mix with the opposite appearance.
 
 The public `/` landing is only the Digital Serenity hero (crystal N, slow word
 roll-in, held-thread background paths). Product explanation lives on `/about`.

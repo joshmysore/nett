@@ -7,7 +7,7 @@
    pinned either way with [data-theme] on <html>. */
 
 :root {
-  color-scheme: light dark;
+  color-scheme: light;
   font-family: "Geist Variable", "Geist", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   font-synthesis: none;
 
@@ -87,11 +87,13 @@
   --avatar-3: oklch(91% 0.04 75);
   --brand-purple: oklch(42% 0.18 305);
   --glow-lightness: 48;
-  --glow-saturation: 55;
-  --glow-bg-spot-opacity: 0.12;
-  --glow-border-spot-opacity: 0.72;
-  --glow-border-light-opacity: 0.4;
-  --glow-shadow: 0 1px 0 var(--edge), 0 8px 22px oklch(19% 0.015 255 / .07);
+  --glow-saturation: 42;
+  --glow-bg-spot-opacity: 0.06;
+  --glow-border-spot-opacity: 0.5;
+  --glow-border-light-opacity: 0.14;
+  --glow-outer: 0;
+  --glow-shadow: 0 1px 0 oklch(19% 0.015 255 / .08), 0 10px 28px oklch(19% 0.015 255 / .1);
+  color-scheme: light;
 }
 
 /* Dark */
@@ -146,7 +148,9 @@
     --glow-bg-spot-opacity: 0.1;
     --glow-border-spot-opacity: 0.85;
     --glow-border-light-opacity: 0.55;
+    --glow-outer: 1;
     --glow-shadow: 0 12px 36px oklch(4% 0.01 255 / .42);
+    color-scheme: dark;
   }
 }
 
@@ -200,11 +204,13 @@
   --glow-bg-spot-opacity: 0.1;
   --glow-border-spot-opacity: 0.85;
   --glow-border-light-opacity: 0.55;
+  --glow-outer: 1;
   --glow-shadow: 0 12px 36px oklch(4% 0.01 255 / .42);
+  color-scheme: dark;
 }
 
 * { box-sizing: border-box; }
-html { background: var(--bg); }
+html { background: var(--bg); overflow-x: clip; }
 html, body, #root { min-height: 100%; margin: 0; }
 #root, .app-frame, .workbench { background: var(--bg); }
 body {
@@ -398,7 +404,7 @@ button:active { transform: translateY(1px); }
   --backdrop: var(--surface);
   --backup-border: var(--line);
   --size: 180;
-  --outer: 1;
+  --outer: var(--glow-outer, 1);
   --border-size: calc(var(--border) * 1px);
   --spotlight-size: calc(var(--size) * 1px);
   --hue: calc(var(--base, 250) + (var(--xp, 0) * var(--spread, 20)));
@@ -412,6 +418,7 @@ button:active { transform: translateY(1px); }
   gap: 0;
   padding: 0;
   border-radius: calc(var(--radius) * 1px);
+  overflow: clip;
   background-color: var(--backdrop);
   background-image: radial-gradient(
     var(--spotlight-size) var(--spotlight-size) at calc(var(--x, 0) * 1px) calc(var(--y, 0) * 1px),
@@ -510,6 +517,13 @@ button:active { transform: translateY(1px); }
   .glow-card:hover,
   .glow-card:focus-visible {
     transform: none;
+  }
+}
+@media (max-width: 800px) {
+  .glow-card,
+  .glow-card::before,
+  .glow-card::after {
+    background-attachment: scroll;
   }
 }
 

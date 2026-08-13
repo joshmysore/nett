@@ -6,9 +6,17 @@ test.beforeEach(async ({ request }) => {
   await waitForHealth(request);
 });
 
-for (const path of ["/", "/today", "/people", "/settings/connectors"] as const) {
+const overflowPaths = [
+  { path: "/", heading: /Remember\s+everyone/i },
+  { path: "/today", heading: "Home" },
+  { path: "/people", heading: "People" },
+  { path: "/settings/connectors", heading: "Sources" },
+] as const;
+
+for (const { path, heading } of overflowPaths) {
   test(`no overflow on ${path}`, async ({ page }) => {
     await page.goto(path);
+    await expect(page.getByRole("heading", { name: heading })).toBeVisible();
     await expectNoOverflow(page);
   });
 }

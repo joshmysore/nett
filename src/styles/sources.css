@@ -1,6 +1,12 @@
 /* Hallmark · genre: modern-minimal · macrostructure: Workbench · design-system: design.md · designed-as-app
  * component: source-card · states: default · hover · focus · active · disabled · loading · error · success
+ * Hallmark · pre-emit critique: P5 H4 E5 S4 R5 V4
  */
+
+.connectors-page {
+  min-width: 0;
+  overflow-x: clip;
+}
 
 .connectors-page .page-heading {
   align-items: flex-end;
@@ -41,6 +47,11 @@
   color: var(--text);
   background: transparent;
   box-shadow: inset 0 -2px 0 var(--accent);
+}
+
+.connectors-page .settings-nav > span,
+.connectors-page .settings-nav a {
+  overflow-wrap: anywhere;
 }
 
 .sources-toolbar {
@@ -142,8 +153,12 @@
   padding: 0;
   list-style: none;
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(248px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(248px, 100%), 1fr));
   gap: var(--space-xs);
+}
+
+.source-cards > li {
+  min-width: 0;
 }
 
 .source-glow-card {
@@ -155,6 +170,13 @@
 .source-glow-card:focus-within {
   transform: translateY(-1px);
   border-color: var(--line-strong);
+}
+
+.source-glow-card:hover .source-card-icon,
+.source-glow-card:focus-within .source-card-icon {
+  color: var(--accent-strong);
+  border-color: var(--accent-line);
+  background: var(--accent-wash);
 }
 
 .source-glow-card.is-syncing,
@@ -206,6 +228,7 @@
   font-size: 15px;
   font-weight: 600;
   letter-spacing: -0.02em;
+  overflow-wrap: anywhere;
 }
 
 .source-card-blurb {
@@ -217,10 +240,13 @@
   -webkit-line-clamp: 1;
   -webkit-box-orient: vertical;
   overflow: hidden;
+  overflow-wrap: anywhere;
+  transition: color var(--dur-micro) var(--ease-out);
 }
 
 .source-glow-card:hover .source-card-blurb,
 .source-glow-card:focus-within .source-card-blurb {
+  color: var(--text-soft);
   -webkit-line-clamp: 3;
 }
 
@@ -244,6 +270,7 @@
   font-size: 12px;
   font-family: "JetBrains Mono Variable", ui-monospace, monospace;
   line-height: 1.35;
+  overflow-wrap: anywhere;
 }
 
 .source-card-actions {
@@ -277,12 +304,6 @@
 
 .sources-imports {
   margin: var(--space-md) 0 var(--space-sm);
-}
-
-.sources-imports > h2 {
-  margin: 0 0 var(--space-xs);
-  font-size: 16px;
-  font-weight: 600;
 }
 
 .source-import-card {
@@ -335,13 +356,16 @@
 
 .sources-more > summary {
   list-style: none;
-  display: inline-flex;
+  display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 6px;
+  max-width: 100%;
   min-height: 40px;
   color: var(--muted);
   font-size: 14px;
   cursor: pointer;
+  overflow-wrap: anywhere;
 }
 
 .sources-more > summary::-webkit-details-marker {
@@ -376,11 +400,18 @@
 }
 
 .connectors-page .sources-scroll-heading {
+  display: block;
   margin: 0;
+  max-width: 100%;
   font-size: 16px;
   font-weight: 600;
   letter-spacing: -0.02em;
   font-style: normal;
+  overflow-wrap: anywhere;
+}
+
+.connectors-page .sources-imports > .sources-scroll-heading {
+  margin: 0 0 var(--space-xs);
 }
 
 .future-connectors .source-cards {
@@ -388,6 +419,10 @@
 }
 
 @media (max-width: 800px) {
+  .connectors-page .sources-heading h1 {
+    font-size: 34px;
+  }
+
   .sources-toolbar {
     grid-template-columns: 1fr;
   }
@@ -398,8 +433,23 @@
 }
 
 @media (max-width: 560px) {
+  .connectors-page .settings-nav {
+    flex-wrap: wrap;
+    overflow-x: visible;
+    row-gap: 2px;
+  }
+
   .source-cards {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .source-card-actions {
+    flex-direction: column;
+  }
+
+  .source-card-actions .primary-button,
+  .source-card-actions .secondary-button {
+    width: 100%;
   }
 }
 
