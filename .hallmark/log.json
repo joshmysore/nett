@@ -1,5 +1,14 @@
 [
   {
+    "date": "2026-08-13",
+    "scope": "app",
+    "genre": "modern-minimal",
+    "macrostructure": "Workbench",
+    "theme": "system-adaptive calm technical",
+    "enrichment": "none",
+    "brief": "Sources compact GlowCard grid and light-mode paper cards"
+  },
+  {
     "date": "2026-07-15",
     "scope": "app",
     "genre": "modern-minimal",

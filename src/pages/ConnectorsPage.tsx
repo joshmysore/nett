@@ -4,24 +4,30 @@ import {
   CalendarBlank,
   CaretDown,
   Check,
+  ChatsCircle,
   Clock,
   Database,
   DownloadSimple,
+  EnvelopeSimple,
   FileCsv,
   GearSix,
   LinkSimple,
-  PaperPlaneTilt,
   Plus,
   Quotes,
   ShieldCheck,
   SpinnerGap,
+  TelegramLogo,
   Users,
   WarningCircle,
+  WhatsappLogo,
 } from "@phosphor-icons/react";
 import { type FormEvent, type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import { Avatar, friendlyDate, SourceBadge, type ToastKind } from "@/components/Primitives";
+import { GlowCard } from "@/components/ui/spotlight-card";
+import TextAnimation from "@/components/ui/scroll-text";
 import { api } from "@/lib/api";
-import type { Overview } from "@/types";
+import type { ConnectorState, Overview } from "@/types";
+import "@/styles/sources.css";
 
 const liveConnectors = [
   {
@@ -34,25 +40,25 @@ const liveConnectors = [
     id: "messages",
     label: "Messages",
     blurb: "Local chat.db evidence",
-    icon: Quotes,
+    icon: ChatsCircle,
   },
   {
     id: "gmail",
     label: "Gmail",
     blurb: "Read-only OAuth · Keychain tokens",
-    icon: PaperPlaneTilt,
+    icon: EnvelopeSimple,
   },
   {
     id: "telegram",
     label: "Telegram",
     blurb: "Local MTProto session",
-    icon: PaperPlaneTilt,
+    icon: TelegramLogo,
   },
   {
     id: "whatsapp",
     label: "WhatsApp",
     blurb: "Desktop archive via wacrawl",
-    icon: Quotes,
+    icon: WhatsappLogo,
   },
 ];
 
@@ -263,33 +269,32 @@ export function ConnectorsPage({
         </div>
       </section>
 
-      <section className="sources-autopull" aria-label="Automatic local refresh">
-        <div>
-          <strong>Auto-pull while Nett is open</strong>
-          <p>
-            Messages and WhatsApp every {whatsappInterval}. Needs this Mac awake — sleep or quit
-            skips a cycle. Not a cloud agent.
-          </p>
+      <section className="sources-toolbar" aria-label="Local refresh and intelligence">
+        <div className="sources-toolbar-cluster">
+          <div className="sources-toolbar-copy">
+            <strong>Auto-pull while Nett is open</strong>
+            <p>
+              Messages and WhatsApp every {whatsappInterval}. Needs this Mac awake — sleep or quit
+              skips a cycle. Not a cloud agent.
+            </p>
+          </div>
+          <label className="sources-toggle">
+            <input
+              type="checkbox"
+              checked={Boolean(freshness?.enabled)}
+              disabled={togglingFreshness || freshness == null}
+              onChange={(event) => void toggleFreshness(event.target.checked)}
+            />
+            <span>{freshness?.enabled ? "On" : "Off"}</span>
+          </label>
+          {freshness?.running && (
+            <p className="sync-progress" role="status" aria-live="polite">
+              <SpinnerGap className="spin" size={13} />
+              Syncing {freshness.running}…
+            </p>
+          )}
         </div>
-        <label className="sources-toggle">
-          <input
-            type="checkbox"
-            checked={Boolean(freshness?.enabled)}
-            disabled={togglingFreshness || freshness == null}
-            onChange={(event) => void toggleFreshness(event.target.checked)}
-          />
-          <span>{freshness?.enabled ? "On" : "Off"}</span>
-        </label>
-        {freshness?.running && (
-          <p className="sync-progress" role="status" aria-live="polite">
-            <SpinnerGap className="spin" size={13} />
-            Syncing {freshness.running}…
-          </p>
-        )}
-      </section>
-
-      <section className="sources-meta-row" aria-label="Local intelligence">
-        <div className="sources-meta-main">
+        <div className="sources-toolbar-cluster">
           <span className={`permission-state ${intelligence?.ok ? "state-granted" : "state-blocked"}`}>
             {intelligence?.ok ? <Check size={13} /> : <WarningCircle size={13} />}
             {intelligence?.ok ? "Ollama ready" : "Ollama unavailable"}
@@ -299,189 +304,59 @@ export function ConnectorsPage({
               ? `${intelligence.selectedModel} · ${(intelligence.evidenceDocuments || 0).toLocaleString()} evidence · ${(intelligence.embeddedDocuments || 0).toLocaleString()} embedded`
               : "Start Ollama locally for cited answers"}
           </span>
+          <button
+            className="quiet-action"
+            disabled={indexing || !intelligence?.ok}
+            onClick={() => {
+              setIndexing(true);
+              api.refreshIntelligence(500)
+                .then((result) => {
+                  notify("success", `Indexed ${result.indexed} records and embedded ${result.embedded}`);
+                  loadPlatform();
+                })
+                .catch((error) => notify("error", error instanceof Error ? error.message : "Indexing failed"))
+                .finally(() => setIndexing(false));
+            }}
+          >
+            {indexing ? <SpinnerGap className="spin" /> : <ArrowClockwise />}
+            {indexing ? "Indexing" : "Index"}
+          </button>
         </div>
-        <button
-          className="quiet-action sources-compact-btn"
-          disabled={indexing || !intelligence?.ok}
-          onClick={() => {
-            setIndexing(true);
-            api.refreshIntelligence(500)
-              .then((result) => {
-                notify("success", `Indexed ${result.indexed} records and embedded ${result.embedded}`);
-                loadPlatform();
-              })
-              .catch((error) => notify("error", error instanceof Error ? error.message : "Indexing failed"))
-              .finally(() => setIndexing(false));
-          }}
-        >
-          {indexing ? <SpinnerGap className="spin" /> : <ArrowClockwise />}
-          {indexing ? "Indexing" : "Index"}
-        </button>
       </section>
 
       <section id="sources" className="connector-group">
         <div className="section-heading sources-section-heading">
-          <div>
-            <h2>Connectors</h2>
-          </div>
+          <h2>Connectors</h2>
         </div>
-        <div className="connector-ledger">
-          {liveConnectors.map(({ id, label, blurb, icon: Icon }) => {
+        <ul className="source-cards">
+          {liveConnectors.map((connector) => {
             const state = overview.connectors?.find(
-              (connector) => connector.connector_id === id,
+              (item) => item.connector_id === connector.id,
             );
-            const account = platform?.accounts.find((item) => item.connectorId === id);
-            const active = syncing === id;
-            const autoResult = freshness?.lastResults?.[id];
-            const refreshedAt = state?.last_sync_at || autoResult?.at;
+            const account = platform?.accounts.find((item) => item.connectorId === connector.id);
             return (
-              <article key={id}>
-                <div className="connector-icon" aria-hidden="true">
-                  <Icon size={18} weight="regular" />
-                </div>
-                <div className="connector-info">
-                  <h2>{label}</h2>
-                  <p>{blurb}</p>
-                  {active && (
-                    <div className="sync-progress" role="status" aria-live="polite">
-                      <SpinnerGap className="spin" size={13} />
-                      {syncStage}
-                    </div>
-                  )}
-                  {state?.last_error && (
-                    <small className="connector-error">{state.last_error}</small>
-                  )}
-                </div>
-                <div className="connector-stats">
-                  <span
-                    className={`permission-state state-${state?.permission_state || "unknown"}`}
-                  >
-                    {state?.permission_state === "granted" ? (
-                      <Check size={13} />
-                    ) : state?.permission_state === "blocked" ? (
-                      <WarningCircle size={13} />
-                    ) : (
-                      <Clock size={13} />
-                    )}
-                    {state?.permission_state || "Unchecked"}
-                  </span>
-                  <small className="connector-refreshed">
-                    {refreshedAt
-                      ? `Refreshed ${friendlyDate(refreshedAt)}`
-                      : "Never refreshed"}
-                    {typeof state?.records_seen === "number" && state.records_seen > 0
-                      ? ` · ${state.records_seen.toLocaleString()} seen`
-                      : ""}
-                  </small>
-                  {freshness?.enabled
-                    && (id === "messages" || id === "whatsapp" || (id === "gmail" && state?.last_sync_at))
-                    && freshness.nextDue?.[id] && (
-                    <small className="connector-next-due">
-                      Next auto {friendlyDate(freshness.nextDue[id] || undefined)}
-                    </small>
-                  )}
-                </div>
-                <div className="connector-actions">
-                  {id === "messages" && messagesStatus?.readable ? (
-                    <>
-                      <button
-                        className="primary-button sources-compact-btn"
-                        onClick={() => void pullNewMessages()}
-                        disabled={Boolean(syncing)}
-                      >
-                        {active ? <SpinnerGap className="spin" /> : <DownloadSimple />}
-                        {active ? "Pulling" : "Pull"}
-                      </button>
-                      <button
-                        className="secondary-button sources-compact-btn"
-                        onClick={() => setSetup("messages")}
-                        disabled={Boolean(syncing)}
-                        aria-label="Messages setup options"
-                      >
-                        <GearSix />
-                        Options
-                      </button>
-                    </>
-                  ) : id === "whatsapp" && whatsappStatus?.readable ? (
-                    <>
-                      <button
-                        className="primary-button sources-compact-btn"
-                        onClick={() => void pullNewWhatsApp()}
-                        disabled={Boolean(syncing)}
-                      >
-                        {active ? <SpinnerGap className="spin" /> : <DownloadSimple />}
-                        {active ? "Pulling" : "Pull"}
-                      </button>
-                      <button
-                        className="secondary-button sources-compact-btn"
-                        onClick={() => setSetup("whatsapp")}
-                        disabled={Boolean(syncing)}
-                        aria-label="WhatsApp setup options"
-                      >
-                        <GearSix />
-                        Options
-                      </button>
-                    </>
-                  ) : id === "gmail" || id === "telegram" ? (
-                    <>
-                      <button
-                        className="primary-button sources-compact-btn"
-                        onClick={() => void sync(id)}
-                        disabled={Boolean(syncing)}
-                      >
-                        {active ? <SpinnerGap className="spin" /> : <ArrowClockwise />}
-                        {active
-                          ? "Syncing"
-                          : account?.authState === "authenticated" || state?.last_sync_at
-                            ? "Refresh"
-                            : "Connect"}
-                      </button>
-                      <button
-                        className="secondary-button sources-compact-btn"
-                        onClick={() => setSetup(id)}
-                        disabled={Boolean(syncing)}
-                        aria-label={`${label} setup options`}
-                      >
-                        <GearSix />
-                        Options
-                      </button>
-                    </>
-                  ) : (
-                    <button
-                      className="secondary-button sources-compact-btn"
-                      onClick={() => {
-                        if (id === "messages" && messagesStatus && !messagesStatus.readable) {
-                          setSetup("messages");
-                          return;
-                        }
-                        if (id === "whatsapp" && whatsappStatus && !whatsappStatus.readable) {
-                          setSetup("whatsapp");
-                          return;
-                        }
-                        void sync(id);
-                      }}
-                      disabled={Boolean(syncing)}
-                    >
-                      {active ? (
-                        <SpinnerGap className="spin" />
-                      ) : (
-                        <ArrowClockwise />
-                      )}
-                      {active
-                        ? "Syncing"
-                        : (id === "messages" && messagesStatus && !messagesStatus.readable)
-                          || (id === "whatsapp" && whatsappStatus && !whatsappStatus.readable)
-                          ? "Set up"
-                          : account?.authState === "authenticated" || state?.last_sync_at
-                            ? "Refresh"
-                            : "Set up"}
-                    </button>
-                  )}
-                </div>
-              </article>
+              <SourceCard
+                key={connector.id}
+                id={connector.id}
+                label={connector.label}
+                blurb={connector.blurb}
+                icon={connector.icon}
+                state={state}
+                account={account}
+                active={syncing === connector.id}
+                syncStage={syncStage}
+                syncing={Boolean(syncing)}
+                freshness={freshness}
+                messagesReadable={Boolean(messagesStatus?.readable)}
+                whatsappReadable={Boolean(whatsappStatus?.readable)}
+                onSync={(id) => void sync(id)}
+                onPullMessages={() => void pullNewMessages()}
+                onPullWhatsApp={() => void pullNewWhatsApp()}
+                onSetup={setSetup}
+              />
             );
           })}
-        </div>
+        </ul>
       </section>
 
       {setup === "messages" && (
@@ -526,20 +401,35 @@ export function ConnectorsPage({
       )}
 
       <section className="sources-imports" aria-label="One-time imports">
-        <button type="button" className="sources-import-action" onClick={onImport}>
-          <FileCsv size={16} />
-          <span>
-            <strong>Spreadsheet</strong>
-            <small>CSV or Excel</small>
-          </span>
-        </button>
-        <button type="button" className="sources-import-action" onClick={() => setSetup("whatsapp-export")}>
-          <Quotes size={16} />
-          <span>
-            <strong>WhatsApp export</strong>
-            <small>Fallback .txt / .zip</small>
-          </span>
-        </button>
+        <h2>Imports</h2>
+        <ul className="source-cards">
+          <li>
+            <GlowCard className="source-glow-card" glowColor="graphite" customSize>
+              <button type="button" className="source-import-card" onClick={onImport}>
+                <span className="source-card-icon" aria-hidden="true">
+                  <FileCsv size={16} />
+                </span>
+                <span>
+                  <strong>Spreadsheet</strong>
+                  <small>CSV or Excel</small>
+                </span>
+              </button>
+            </GlowCard>
+          </li>
+          <li>
+            <GlowCard className="source-glow-card" glowColor="graphite" customSize>
+              <button type="button" className="source-import-card" onClick={() => setSetup("whatsapp-export")}>
+                <span className="source-card-icon" aria-hidden="true">
+                  <Quotes size={16} />
+                </span>
+                <span>
+                  <strong>WhatsApp export</strong>
+                  <small>Fallback .txt / .zip</small>
+                </span>
+              </button>
+            </GlowCard>
+          </li>
+        </ul>
       </section>
       {setup === "whatsapp-export" && (
         <WhatsAppExportSetup
@@ -601,19 +491,36 @@ export function ConnectorsPage({
         <section className="future-connectors">
           <div className="section-heading">
             <div>
-              <h2>Planned</h2>
+              <TextAnimation
+                as="h2"
+                text="Planned"
+                direction="up"
+                lineAnime
+                classname="sources-scroll-heading"
+              />
               <p>Visible for planning only. These cannot read or sync yet.</p>
             </div>
           </div>
-          <div>
+          <ul className="source-cards source-cards-planned">
             {futureConnectors.map(({ label, icon: Icon }) => (
-              <span key={label} aria-disabled="true">
-                <Icon size={18} />
-                <strong>{label}</strong>
-                <small>Planned</small>
-              </span>
+              <li key={label}>
+                <GlowCard className="source-glow-card is-planned" glowColor="graphite" customSize>
+                  <article className="source-card" aria-disabled="true">
+                    <header className="source-card-head">
+                      <div className="source-card-icon" aria-hidden="true">
+                        <Icon size={18} />
+                      </div>
+                      <div className="source-card-titles">
+                        <h3>{label}</h3>
+                        <small>Planned</small>
+                      </div>
+                    </header>
+                    <p className="source-card-blurb">Cannot read or sync yet.</p>
+                  </article>
+                </GlowCard>
+              </li>
             ))}
-          </div>
+          </ul>
         </section>
         <section className="merge-clear">
           <LinkSimple size={17} />
@@ -632,6 +539,198 @@ export function ConnectorsPage({
 }
 
 type PlatformAccount = Awaited<ReturnType<typeof api.platformStatus>>["accounts"][number];
+type SetupKind = "gmail" | "telegram" | "whatsapp" | "whatsapp-export" | "messages";
+
+function sourceGlowColor(permission: string, active: boolean): "blue" | "graphite" | "green" | "orange" {
+  if (active) return "blue";
+  if (permission === "granted") return "green";
+  if (permission === "blocked") return "orange";
+  return "graphite";
+}
+
+function SourceCard({
+  id,
+  label,
+  blurb,
+  icon: Icon,
+  state,
+  account,
+  active,
+  syncStage,
+  syncing,
+  freshness,
+  messagesReadable,
+  whatsappReadable,
+  onSync,
+  onPullMessages,
+  onPullWhatsApp,
+  onSetup,
+}: {
+  id: string;
+  label: string;
+  blurb: string;
+  icon: typeof AddressBook;
+  state?: ConnectorState;
+  account?: PlatformAccount;
+  active: boolean;
+  syncStage: string;
+  syncing: boolean;
+  freshness: Freshness | null;
+  messagesReadable: boolean;
+  whatsappReadable: boolean;
+  onSync: (id: string) => void;
+  onPullMessages: () => void;
+  onPullWhatsApp: () => void;
+  onSetup: (id: SetupKind) => void;
+}) {
+  const permission = state?.permission_state || "unknown";
+  const autoResult = freshness?.lastResults?.[id];
+  const refreshedAt = state?.last_sync_at || autoResult?.at;
+  const connected = account?.authState === "authenticated" || Boolean(state?.last_sync_at);
+  const needsMessagesSetup = id === "messages" && !messagesReadable;
+  const needsWhatsAppSetup = id === "whatsapp" && !whatsappReadable;
+
+  return (
+    <li>
+      <GlowCard
+        className={`source-glow-card${active ? " is-syncing" : ""}`}
+        glowColor={sourceGlowColor(permission, active)}
+        customSize
+      >
+        <article className="source-card" aria-busy={active || undefined}>
+          <header className="source-card-head">
+            <div className="source-card-icon" aria-hidden="true">
+              <Icon size={18} weight="regular" />
+            </div>
+            <div className="source-card-titles">
+              <h3>{label}</h3>
+              <span className={`permission-state state-${permission}`}>
+                {permission === "granted" ? (
+                  <Check size={13} />
+                ) : permission === "blocked" ? (
+                  <WarningCircle size={13} />
+                ) : (
+                  <Clock size={13} />
+                )}
+                {permission === "unknown" ? "Unchecked" : permission}
+              </span>
+            </div>
+          </header>
+          {active ? (
+            <p className="sync-progress" role="status" aria-live="polite">
+              <SpinnerGap className="spin" size={13} />
+              {syncStage}
+            </p>
+          ) : (
+            <p className="source-card-blurb">{blurb}</p>
+          )}
+          {state?.last_error && (
+            <small className="connector-error">{state.last_error}</small>
+          )}
+          <p className="source-card-meta">
+            <span>{refreshedAt ? `Refreshed ${friendlyDate(refreshedAt)}` : "Never refreshed"}</span>
+            {typeof state?.records_seen === "number" && state.records_seen > 0 && (
+              <span>{state.records_seen.toLocaleString()} seen</span>
+            )}
+            {freshness?.enabled
+              && (id === "messages" || id === "whatsapp" || (id === "gmail" && state?.last_sync_at))
+              && freshness.nextDue?.[id] && (
+                <span>Next auto {friendlyDate(freshness.nextDue[id] || undefined)}</span>
+              )}
+          </p>
+          <div className="source-card-actions">
+            {id === "messages" && messagesReadable ? (
+              <>
+                <button
+                  className="primary-button"
+                  onClick={onPullMessages}
+                  disabled={syncing}
+                >
+                  {active ? <SpinnerGap className="spin" /> : <DownloadSimple />}
+                  {active ? "Pulling" : "Pull"}
+                </button>
+                <button
+                  className="secondary-button"
+                  onClick={() => onSetup("messages")}
+                  disabled={syncing}
+                  aria-label="Messages setup options"
+                >
+                  <GearSix />
+                  Options
+                </button>
+              </>
+            ) : id === "whatsapp" && whatsappReadable ? (
+              <>
+                <button
+                  className="primary-button"
+                  onClick={onPullWhatsApp}
+                  disabled={syncing}
+                >
+                  {active ? <SpinnerGap className="spin" /> : <DownloadSimple />}
+                  {active ? "Pulling" : "Pull"}
+                </button>
+                <button
+                  className="secondary-button"
+                  onClick={() => onSetup("whatsapp")}
+                  disabled={syncing}
+                  aria-label="WhatsApp setup options"
+                >
+                  <GearSix />
+                  Options
+                </button>
+              </>
+            ) : id === "gmail" || id === "telegram" ? (
+              <>
+                <button
+                  className="primary-button"
+                  onClick={() => onSync(id)}
+                  disabled={syncing}
+                >
+                  {active ? <SpinnerGap className="spin" /> : <ArrowClockwise />}
+                  {active ? "Syncing" : connected ? "Refresh" : "Connect"}
+                </button>
+                <button
+                  className="secondary-button"
+                  onClick={() => onSetup(id)}
+                  disabled={syncing}
+                  aria-label={`${label} setup options`}
+                >
+                  <GearSix />
+                  Options
+                </button>
+              </>
+            ) : (
+              <button
+                className="secondary-button"
+                onClick={() => {
+                  if (needsMessagesSetup) {
+                    onSetup("messages");
+                    return;
+                  }
+                  if (needsWhatsAppSetup) {
+                    onSetup("whatsapp");
+                    return;
+                  }
+                  onSync(id);
+                }}
+                disabled={syncing}
+              >
+                {active ? <SpinnerGap className="spin" /> : <ArrowClockwise />}
+                {active
+                  ? "Syncing"
+                  : needsMessagesSetup || needsWhatsAppSetup
+                    ? "Set up"
+                    : connected
+                      ? "Refresh"
+                      : "Set up"}
+              </button>
+            )}
+          </div>
+        </article>
+      </GlowCard>
+    </li>
+  );
+}
 
 function SetupShell({
   title,
@@ -1263,7 +1362,9 @@ function MergeReview({
     <section className="merge-review">
       <div className="section-heading">
         <div>
-          <h2>Merge review</h2>
+          <h2 className="sources-scroll-heading">
+            <TextAnimation as="span" text="Merge review" direction="up" lineAnime />
+          </h2>
           <p>Similar names wait here so the wrong people are never combined.</p>
         </div>
         <span>{queue.length} pending</span>
