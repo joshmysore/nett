@@ -16,6 +16,13 @@ import {
   type EvidenceIndexState
 } from "./evidence-index.js";
 import { OllamaProvider } from "./ollama.js";
+import {
+  askCitations,
+  askEvidenceBlocks,
+  formatAskAnswer,
+  ftsQuery,
+  retrieveAskMatches,
+} from "./ask.js";
 import { collectSharedContextSuggestions } from "./shared-context.js";
 import { collectTraitSuggestions } from "./traits.js";
 
@@ -100,12 +107,6 @@ function cosine(left: readonly number[], right: readonly number[]): number {
   return leftNorm && rightNorm ? dot / Math.sqrt(leftNorm * rightNorm) : 0;
 }
 
-function ftsQuery(query: string): string {
-  return [...new Set(query.toLocaleLowerCase().match(/[\p{L}\p{N}@._+-]{2,}/gu) ?? [])]
-    .slice(0, 14)
-    .map((token) => `"${token.replaceAll('"', '""')}"*`)
-    .join(" OR ");
-}
 
 const evidenceColumns = "id, person_id, kind, source, source_record_id, text, occurred_at, metadata_json, embedding_json";
 const joinedEvidenceColumns = "d.id, d.person_id, d.kind, d.source, d.source_record_id, d.text, d.occurred_at, d.metadata_json, d.embedding_json";
@@ -169,69 +170,10 @@ export async function searchEvidence(
     }
   }
 
-  if (!documents.size) {
-    const fallback = db.prepare(`
-      SELECT ${evidenceColumns} FROM evidence_documents
-      ORDER BY updated_at DESC LIMIT ?
-    `).all(limit) as EvidenceDocument[];
-    fallback.forEach((row, index) => {
-      documents.set(row.id, row);
-      scores.set(row.id, 1 - index / Math.max(fallback.length, 1));
-    });
-  }
   return [...documents.values()]
     .map((row) => ({ ...row, score: scores.get(row.id) ?? 0 }))
     .sort((a, b) => b.score - a.score)
     .slice(0, limit);
-}
-
-/** Instant answers for “who do I know in X” without calling Ollama. */
-function answerPeopleInPlace(question: string): {
-  answer: string;
-  citations: IntelligenceCitation[];
-  provider: string;
-} | null {
-  const match = question.match(
-    /\b(?:who\s+do\s+i\s+know|who\s+know|people|anyone)\s+(?:in|from|around|near)\s+([A-Za-zÀ-ÿ][\wÀ-ÿ.'\-\s]{1,48})\??$/i,
-  ) || question.match(/\b(?:in|from)\s+([A-Za-zÀ-ÿ][\wÀ-ÿ.'\-]{2,40})\??$/i);
-  if (!match) return null;
-  const place = match[1].replace(/[?.!]+$/, "").trim();
-  if (place.length < 2) return null;
-  const needle = `%${place.toLocaleLowerCase()}%`;
-  const rows = db.prepare(`
-    SELECT p.id, p.preferred_name AS name, m.location, m.hometown, m.company, m.job_title
-    FROM people p
-    JOIN nett_metadata m ON m.person_id = p.id
-    WHERE lower(COALESCE(m.location, '')) LIKE ?
-       OR lower(COALESCE(m.hometown, '')) LIKE ?
-    ORDER BY p.preferred_name COLLATE NOCASE
-    LIMIT 40
-  `).all(needle, needle) as {
-    id: string;
-    name: string;
-    location: string | null;
-    hometown: string | null;
-    company: string | null;
-    job_title: string | null;
-  }[];
-  // Empty people-index hit → fall through to FTS / model for messages & notes.
-  if (!rows.length) return null;
-  const lines = rows.map((row) => {
-    const where = [row.location, row.hometown].filter(Boolean).join(" · ");
-    const role = [row.job_title, row.company].filter(Boolean).join(" at ");
-    return `• ${row.name}${where ? ` — ${where}` : ""}${role ? ` (${role})` : ""}`;
-  });
-  return {
-    answer: `People with ${place} in location or hometown (${rows.length}):\n\n${lines.join("\n")}`,
-    citations: rows.slice(0, 12).map((row) => ({
-      personId: row.id,
-      label: row.name,
-      field: "location",
-      value: row.location || row.hometown || place,
-      source: "nett",
-    })),
-    provider: "local-people-index",
-  };
 }
 
 /** Prefer small/fast chat models for Ask Nett. Override with NETT_OLLAMA_MODEL. */
@@ -325,20 +267,21 @@ export async function answerRelationshipQuestion(question: string, options: { si
   citations: IntelligenceCitation[];
   provider: string;
 }> {
-  const fast = answerPeopleInPlace(question);
-  if (fast) return fast;
+  const retrieval = retrieveAskMatches(question);
+  const citations = askCitations(retrieval);
+  if (!retrieval.people.length) {
+    return {
+      answer: "Nothing stored in people, notes, messages, or email matched that question.",
+      citations: [],
+      provider: "local-evidence",
+    };
+  }
 
-  // Small retrieval budget: Ask should feel like chat, not a research report.
-  const evidence = await searchEvidence(question, 8, { ...options, skipVector: false });
-  if (!evidence.length) {
-    return { answer: "I could not find local evidence for that question.", citations: [], provider: "local-evidence" };
+  // Place-only lookups are a metadata index hit — skip the model wait.
+  if (retrieval.provider === "local-people-index") {
+    return { answer: formatAskAnswer(retrieval), citations, provider: retrieval.provider };
   }
-  const people = new Map<string, { name: string }>();
-  for (const row of evidence) {
-    if (!row.person_id || people.has(row.person_id)) continue;
-    const person = getPerson(row.person_id) as { name: string } | null;
-    if (person) people.set(row.person_id, person);
-  }
+
   try {
     assertActive(options.signal);
     const { chat: model } = await resolveModels(options.signal);
@@ -346,43 +289,37 @@ export async function answerRelationshipQuestion(question: string, options: { si
       model,
       question,
       signal: options.signal,
-      evidence: evidence.map((row) => ({
-        id: row.id,
-        title: `${people.get(row.person_id || "")?.name || "Network evidence"} · ${row.source}`,
-        text: row.text.slice(0, 700)
-      })),
-      system: "You are Nett, a private local relationship intelligence assistant. Answer in under 8 sentences. Be concise, useful, and explicit about uncertainty. Never invent facts."
+      evidence: askEvidenceBlocks(retrieval),
+      system: [
+        "You are Nett, a private local relationship assistant.",
+        "Each evidence block is one person: profile fields plus excerpts from notes, messages, or email.",
+        "Name people. Use only these records. If a constraint has no evidence, say so.",
+        "Never invent facts or infer health, politics, religion, sexuality, or ethnicity.",
+        "Answer in under 12 sentences.",
+      ].join(" "),
     });
-    const citations = generated.citations.flatMap((citation): IntelligenceCitation[] => {
-      const row = evidence.find((item) => item.id === citation.evidenceId);
-      if (!row?.person_id) return [];
+    const byId = new Map(retrieval.people.map((person) => [person.personId, person]));
+    const modelCitations = generated.citations.flatMap((citation): IntelligenceCitation[] => {
+      const person = byId.get(citation.evidenceId)
+        || retrieval.people.find((item) => item.matches.some((match) => match.evidenceId === citation.evidenceId));
+      if (!person) return [];
+      const match = person.matches.find((item) => item.evidenceId === citation.evidenceId) ?? person.matches[0];
       return [{
-        personId: row.person_id,
-        label: people.get(row.person_id)?.name || "Person",
-        field: row.kind,
-        value: citation.quote || row.text.slice(0, 240),
-        source: row.source,
-        evidenceId: row.id
+        personId: person.personId,
+        label: person.name,
+        field: match?.field || "profile",
+        value: citation.quote || match?.excerpt || person.location || person.name,
+        source: match?.source || "nett",
+        evidenceId: match?.evidenceId,
       }];
     });
-    return { answer: generated.answer, citations, provider: `ollama:${model}` };
-  } catch {
-    const grouped = evidence.slice(0, 6).map((row) => {
-      const label = people.get(row.person_id || "")?.name || "Network evidence";
-      return `${label}: ${row.text.replace(/\s+/g, " ").slice(0, 260)}`;
-    });
     return {
-      answer: `Here are the strongest local evidence matches:\n\n${grouped.join("\n\n")}`,
-      citations: evidence.slice(0, 6).flatMap((row): IntelligenceCitation[] => row.person_id ? [{
-        personId: row.person_id,
-        label: people.get(row.person_id)?.name || "Person",
-        field: row.kind,
-        value: row.text.slice(0, 240),
-        source: row.source,
-        evidenceId: row.id
-      }] : []),
-      provider: "local-evidence"
+      answer: generated.answer,
+      citations: modelCitations.length ? modelCitations : citations,
+      provider: `ollama:${model}`,
     };
+  } catch {
+    return { answer: formatAskAnswer(retrieval), citations, provider: retrieval.provider };
   }
 }
 

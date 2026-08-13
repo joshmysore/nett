@@ -1014,8 +1014,17 @@ app.post("/api/import/csv", upload.single("file"), (req, res) => {
 app.post("/api/agent/query", async (req, res) => {
   const query = String(req.body.query || "").trim();
   if (!query) return res.status(400).json({ error: "Ask a question about your network" });
-  try { res.json(await getProvider().answer(query)); }
-  catch (error) { res.status(500).json({ error: error instanceof Error ? error.message : "Insight query failed" }); }
+  const controller = new AbortController();
+  req.on("close", () => { if (!res.writableEnded) controller.abort(); });
+  try {
+    const result = await getProvider().answer(query, controller.signal);
+    if (res.writableEnded) return;
+    res.json(result);
+  } catch (error) {
+    if (res.writableEnded) return;
+    if (error instanceof Error && error.name === "AbortError") return;
+    res.status(500).json({ error: error instanceof Error ? error.message : "Insight query failed" });
+  }
 });
 
 if (process.env.NODE_ENV === "production") {
