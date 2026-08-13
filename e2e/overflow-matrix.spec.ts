@@ -6,7 +6,7 @@ test.beforeEach(async ({ request }) => {
   await waitForHealth(request);
 });
 
-for (const path of ["/", "/today", "/people"] as const) {
+for (const path of ["/", "/today", "/people", "/settings/connectors"] as const) {
   test(`no overflow on ${path}`, async ({ page }) => {
     await page.goto(path);
     await expectNoOverflow(page);

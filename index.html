@@ -6,10 +6,11 @@
     <meta name="theme-color" content="#08090d" />
     <meta name="description" content="Nett is a local-first relationship intelligence system for your personal network." />
     <title>Nett · Private relationship intelligence</title>
-    <!-- Paint the public shell black before JS/CSS arrive — prevents light-theme flash on /. -->
+    <!-- Landing routes paint black before JS/CSS arrive. Workbench routes
+         inherit --bg from the stylesheet so light mode is not trapped on
+         the ceremonial landing black. -->
     <style>
       html, body, #root {
-        background: #08090d;
         margin: 0;
         min-height: 100%;
       }

@@ -142,8 +142,8 @@
   padding: 0;
   list-style: none;
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
-  gap: var(--space-sm);
+  grid-template-columns: repeat(auto-fill, minmax(248px, 1fr));
+  gap: var(--space-xs);
 }
 
 .source-glow-card {
@@ -167,12 +167,12 @@
 }
 
 .source-card {
-  min-height: 168px;
+  min-height: 148px;
   height: 100%;
-  padding: var(--space-sm);
+  padding: 12px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
 }
 
 .source-card-head {
@@ -255,6 +255,11 @@
 }
 
 .source-card-actions .primary-button,
+.source-card-actions .secondary-button {
+  flex: 1 1 auto;
+}
+
+.source-card-actions .primary-button,
 .source-card-actions .secondary-button,
 .sources-toolbar .quiet-action {
   min-width: 0;
@@ -282,8 +287,8 @@
 
 .source-import-card {
   width: 100%;
-  min-height: 88px;
-  padding: var(--space-sm);
+  min-height: 72px;
+  padding: 12px;
   display: grid;
   grid-template-columns: 32px minmax(0, 1fr);
   gap: 10px;

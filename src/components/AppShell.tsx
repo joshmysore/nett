@@ -40,6 +40,12 @@ export function AppShell({
   const location = useLocation();
   const { preference, cycle } = useTheme();
 
+  useEffect(() => {
+    document.documentElement.classList.remove("on-landing");
+    document.body.classList.remove("on-landing");
+    document.documentElement.style.removeProperty("background");
+  }, []);
+
   useEffect(() => setRailOpen(false), [location.pathname]);
 
   useEffect(() => {
