@@ -44,12 +44,19 @@ export type AskIntent = {
   sources: string[];
   recencyDays: number | null;
   foodIntent: boolean;
+  inferential: boolean;
 };
 
 export type AskRetrieval = {
   intent: AskIntent;
   people: AskPerson[];
   provider: "local-people-index" | "local-evidence";
+};
+
+export type AskRetrieveOptions = {
+  signal?: AbortSignal;
+  /** Dedicated embedding model only. Omit when Ollama has no embed model. */
+  embedQuery?: (text: string, signal?: AbortSignal) => Promise<number[] | null>;
 };
 
 const STOPWORDS = new Set([
@@ -144,6 +151,84 @@ function expandTerm(term: string): string[] {
   return [...new Set([term, ...extra])];
 }
 
+const INFERENTIAL_PATTERN = /\b(might|maybe|perhaps|would|could|should|interested|recommend|suggest|introduc(?:e|tion)?|relevant|good fit|who would|who might|likely|probably)\b/i;
+
+export function isInferentialQuestion(question: string): boolean {
+  return INFERENTIAL_PATTERN.test(question);
+}
+
+/** Text handed to the embedding model — constraints, not question syntax. */
+export function embedQueryText(intent: AskIntent): string {
+  const parts = [
+    ...intent.places,
+    ...intent.topics,
+    ...intent.expansions.slice(0, 8),
+    intent.foodIntent ? "food cuisine" : "",
+  ].filter(Boolean);
+  return parts.join(" ") || intent.question;
+}
+
+export function cosine(left: readonly number[], right: readonly number[]): number {
+  const length = Math.min(left.length, right.length);
+  if (!length) return 0;
+  let dot = 0, leftNorm = 0, rightNorm = 0;
+  for (let index = 0; index < length; index++) {
+    dot += left[index] * right[index];
+    leftNorm += left[index] ** 2;
+    rightNorm += right[index] ** 2;
+  }
+  return leftNorm && rightNorm ? dot / Math.sqrt(leftNorm * rightNorm) : 0;
+}
+
+export function reciprocalRankFusion(rankedIds: readonly (readonly string[])[], k = 60): Map<string, number> {
+  const scores = new Map<string, number>();
+  for (const list of rankedIds) {
+    list.forEach((id, rank) => {
+      scores.set(id, (scores.get(id) ?? 0) + 1 / (k + rank + 1));
+    });
+  }
+  return scores;
+}
+
+type EmbeddedRow = {
+  id: string;
+  person_id: string | null;
+  kind: string;
+  source: string;
+  text: string;
+  occurred_at: string | null;
+  embedding_json: string;
+};
+
+export function scoreEmbeddedRows(
+  query: readonly number[],
+  rows: readonly EmbeddedRow[],
+  limit = 24,
+  minScore = 0.28,
+): Array<EmbeddedRow & { score: number }> {
+  return rows
+    .map((row) => {
+      let embedding: number[] = [];
+      try { embedding = JSON.parse(row.embedding_json) as number[]; } catch { embedding = []; }
+      return { ...row, score: cosine(query, embedding) };
+    })
+    .filter((row) => row.score >= minScore)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit);
+}
+
+/** Profile and memory vectors only — not 286k messages. */
+export function loadEmbeddableDocuments(limit = 2_000): EmbeddedRow[] {
+  return db.prepare(`
+    SELECT id, person_id, kind, source, text, occurred_at, embedding_json
+    FROM evidence_documents
+    WHERE embedding_json IS NOT NULL
+      AND kind IN ('profile-field', 'memory')
+    ORDER BY kind ASC, occurred_at DESC
+    LIMIT ?
+  `).all(limit) as EmbeddedRow[];
+}
+
 function recencyDaysFrom(question: string): number | null {
   if (/\b(today|yesterday)\b/i.test(question)) return 2;
   if (/\blast\s+week\b|\bthis\s+week\b/i.test(question)) return 7;
@@ -212,6 +297,7 @@ export function parseAskIntent(question: string): AskIntent {
     sources,
     recencyDays,
     foodIntent,
+    inferential: isInferentialQuestion(question),
   };
 }
 
@@ -582,7 +668,10 @@ function attachEvidenceForPeople(people: AskPerson[], intent: AskIntent): void {
   applyEvidenceHits(byPerson, hits, intent.topics.length ? "topic" : "place", profiles);
 }
 
-export function retrieveAskMatches(question: string): AskRetrieval {
+export async function retrieveAskMatches(
+  question: string,
+  options: AskRetrieveOptions = {},
+): Promise<AskRetrieval> {
   const intent = parseAskIntent(question);
   const structuredTerms = distinctiveTopicTerms([...intent.topics, ...intent.expansions]);
   const topicMatch = topicFtsMatch(intent);
@@ -607,8 +696,40 @@ export function retrieveAskMatches(question: string): AskRetrieval {
     })
     : [];
 
+  const fromVector = new Map<string, AskPerson>();
+  const needsSemantic = Boolean(
+    options.embedQuery && (intent.topics.length || intent.inferential || intent.foodIntent),
+  );
+  if (needsSemantic && options.embedQuery) {
+    try {
+      const queryVector = await options.embedQuery(embedQueryText(intent), options.signal);
+      if (queryVector?.length) {
+        const ranked = scoreEmbeddedRows(queryVector, loadEmbeddableDocuments());
+        const vectorIds = ranked.map((row) => row.person_id).filter(Boolean) as string[];
+        const vectorProfiles = profilesByIds(vectorIds);
+        for (const row of ranked) {
+          if (!row.person_id) continue;
+          const profile = vectorProfiles.get(row.person_id);
+          if (!profile) continue;
+          const person = fromVector.get(row.person_id) ?? emptyPerson(profile);
+          const field = row.kind === "memory" ? "memory" : "profile";
+          addMatch(person, "topic", {
+            field,
+            source: row.source,
+            excerpt: row.text.replace(/\s+/g, " ").trim().slice(0, 240),
+            evidenceId: row.id,
+            occurredAt: row.occurred_at,
+          }, 3 + Math.round(row.score * 4));
+          fromVector.set(row.person_id, person);
+        }
+      }
+    } catch {
+      // Lexical and structured retrieval still answer when embedding fails.
+    }
+  }
+
   const evidenceIds = [...placeFts, ...topicFts, ...combinedFts].map((hit) => hit.person_id).filter(Boolean) as string[];
-  const structuredIds = [...placePeople.keys(), ...topicPeople.keys(), ...recent.keys()];
+  const structuredIds = [...placePeople.keys(), ...topicPeople.keys(), ...recent.keys(), ...fromVector.keys()];
   const profiles = profilesByIds([...structuredIds, ...evidenceIds]);
 
   const fromPlaceEvidence = new Map<string, AskPerson>();
@@ -618,7 +739,7 @@ export function retrieveAskMatches(question: string): AskRetrieval {
   applyEvidenceHits(fromTopicEvidence, combinedFts, "topic", profiles);
   applyEvidenceHits(fromPlaceEvidence, combinedFts, "place", profiles);
 
-  const merged = mergePeople(placePeople, topicPeople, recent, fromPlaceEvidence, fromTopicEvidence);
+  const merged = mergePeople(placePeople, topicPeople, recent, fromPlaceEvidence, fromTopicEvidence, fromVector);
   const people = selectPeople(merged, intent);
   attachEvidenceForPeople(people, intent);
 
@@ -626,7 +747,8 @@ export function retrieveAskMatches(question: string): AskRetrieval {
     && !intent.topics.length
     && !intent.foodIntent
     && !intent.recencyDays
-    && !intent.sources.length;
+    && !intent.sources.length
+    && !intent.inferential;
 
   return {
     intent,

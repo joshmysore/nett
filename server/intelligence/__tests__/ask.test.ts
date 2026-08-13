@@ -10,14 +10,17 @@ process.env.NETT_DB_PATH = path.join(temporaryDirectory, "nett.db");
 process.env.NETT_MESSAGES_DB = path.join(temporaryDirectory, "chat.db");
 delete process.env.NETT_OLLAMA_MODEL;
 
-globalThis.fetch = (async () => {
+type FetchHandler = (url: string, init?: RequestInit) => Promise<Response>;
+const offline: FetchHandler = async () => {
   throw new Error("connect ECONNREFUSED 127.0.0.1:11434");
-}) as typeof fetch;
+};
+let handler: FetchHandler = offline;
+globalThis.fetch = ((input: unknown, init?: RequestInit) => handler(String(input), init)) as typeof fetch;
 
 const { addMemory, createPerson, db, updatePerson } = await import("../../db.js");
 const { refreshEvidenceIndex } = await import("../evidence-index.js");
-const { parseAskIntent, retrieveAskMatches, formatAskAnswer } = await import("../ask.js");
-const { answerRelationshipQuestion } = await import("../service.js");
+const { parseAskIntent, retrieveAskMatches, formatAskAnswer, cosine, reciprocalRankFusion } = await import("../ask.js");
+const { answerRelationshipQuestion, refreshEvidenceEmbeddings, resetIntelligenceModelCache } = await import("../service.js");
 
 after(() => {
   db.close();
@@ -58,8 +61,16 @@ function addMessage(
   `).run(communicationId, personId);
 }
 
-const names = (retrieval: ReturnType<typeof retrieveAskMatches>) =>
-  retrieval.people.map((person) => person.name);
+function json(body: unknown): Response {
+  return new Response(JSON.stringify(body), {
+    status: 200,
+    headers: { "content-type": "application/json" },
+  });
+}
+
+function peopleNames(retrieval: Awaited<ReturnType<typeof retrieveAskMatches>>) {
+  return retrieval.people.map((person) => person.name);
+}
 
 describe("Ask Nett retrieval", { concurrency: false }, () => {
 test("parses a place plus food constraint without treating food as a place", () => {
@@ -69,6 +80,7 @@ test("parses a place plus food constraint without treating food as a place", () 
   assert.ok(intent.foodIntent);
   assert.ok(intent.topics.includes("spicy"));
   assert.ok(!intent.topics.includes("food"));
+  assert.equal(intent.inferential, false);
 });
 
 test("Paris and spicy food intersects metadata instead of returning everyone in the city", async () => {
@@ -81,10 +93,10 @@ test("Paris and spicy food intersects metadata instead of returning everyone in 
   seedPerson("Cam Chili London", { location: "London, UK", foods: ["chili", "spicy noodles"] });
   refreshEvidenceIndex();
 
-  const retrieval = retrieveAskMatches("Who do I know in Paris who like spicy food?");
-  assert.ok(names(retrieval).includes("Ana Spicy Paris"));
-  assert.ok(!names(retrieval).includes("Ben Pastry Paris"));
-  assert.ok(!names(retrieval).includes("Cam Chili London"));
+  const retrieval = await retrieveAskMatches("Who do I know in Paris who like spicy food?");
+  assert.ok(peopleNames(retrieval).includes("Ana Spicy Paris"));
+  assert.ok(!peopleNames(retrieval).includes("Ben Pastry Paris"));
+  assert.ok(!peopleNames(retrieval).includes("Cam Chili London"));
   assert.ok(retrieval.people[0]?.groups.has("place"));
   assert.ok(retrieval.people[0]?.groups.has("topic"));
   const answer = await answerRelationshipQuestion("Who do I know in Paris who like spicy food?");
@@ -104,9 +116,9 @@ test("spicy food in recent email is enough when the foods field is empty", async
   seedPerson("Noel Quiet Paris", { location: "Paris, France", notes: "Met at a gallery opening." });
   refreshEvidenceIndex();
 
-  const retrieval = retrieveAskMatches("Who do I know in Paris who like spicy food?");
-  assert.ok(names(retrieval).includes("Maya Email Paris"));
-  assert.ok(!names(retrieval).includes("Noel Quiet Paris"));
+  const retrieval = await retrieveAskMatches("Who do I know in Paris who like spicy food?");
+  assert.ok(peopleNames(retrieval).includes("Maya Email Paris"));
+  assert.ok(!peopleNames(retrieval).includes("Noel Quiet Paris"));
   const mayaHit = retrieval.people.find((person) => person.personId === maya);
   assert.ok(mayaHit?.matches.some((match) => /spicy|hot pot/i.test(match.excerpt)));
   const answer = await answerRelationshipQuestion("Who do I know in Paris who like spicy food?");
@@ -121,8 +133,8 @@ test("legal tech finds industry and notes, not an unrelated climate contact", as
   seedPerson("Fay Climate", { location: "Berlin", industry: "Climate", company: "Green Grid" });
   refreshEvidenceIndex();
 
-  const retrieval = retrieveAskMatches("Who might be interested in legal tech?");
-  const found = names(retrieval);
+  const retrieval = await retrieveAskMatches("Who might be interested in legal tech?");
+  const found = peopleNames(retrieval);
   assert.ok(found.includes("Dana Legal"));
   assert.ok(found.includes("Eli Notes"));
   assert.ok(!found.includes("Fay Climate"));
@@ -149,11 +161,107 @@ test("unmatched questions do not dump unrelated recent evidence", async () => {
   assert.match(answer.answer, /Nothing stored|No one matched|Reykjavik/i);
 });
 
-test("recent-contact questions prefer last_contact over the rest of the network", () => {
+test("recent-contact questions prefer last_contact over the rest of the network", async () => {
   seedPerson("Jules Today", { location: "Madrid", last_contact: new Date().toISOString() });
   seedPerson("Kim Years", { location: "Madrid", last_contact: "2020-01-01T00:00:00.000Z" });
-  const retrieval = retrieveAskMatches("What do I know about the people I contacted most recently?");
-  assert.ok(names(retrieval).includes("Jules Today"));
+  const retrieval = await retrieveAskMatches("What do I know about the people I contacted most recently?");
+  assert.ok(peopleNames(retrieval).includes("Jules Today"));
   assert.ok(formatAskAnswer(retrieval).includes("Jules Today"));
+});
+
+test("hybrid retrieval finds a paraphrase via profile embeddings", async () => {
+  const owen = seedPerson("Owen Dispute", {
+    location: "Edinburgh",
+    industry: "Dispute resolution",
+    company: "North Chambers",
+    notes: "Advises founders on regulatory filings.",
+  });
+  seedPerson("Fay Climate Vector", { location: "Berlin", industry: "Climate", company: "Green Grid" });
+  refreshEvidenceIndex();
+  const without = await retrieveAskMatches("Who might be interested in legal tech?");
+  assert.ok(!peopleNames(without).includes("Owen Dispute"));
+
+  const query = [1, 0, 0];
+  db.prepare("UPDATE evidence_documents SET embedding_json=? WHERE id=?").run(JSON.stringify([0.99, 0.02, 0]), `profile:${owen}`);
+  const climate = db.prepare("SELECT id FROM people WHERE preferred_name=?").get("Fay Climate Vector") as { id: string } | undefined;
+  if (climate) {
+    db.prepare("UPDATE evidence_documents SET embedding_json=? WHERE id=?").run(JSON.stringify([0, 1, 0]), `profile:${climate.id}`);
+  }
+  const withVectors = await retrieveAskMatches("Who might be interested in legal tech?", {
+    embedQuery: async () => query,
+  });
+  assert.ok(peopleNames(withVectors).includes("Owen Dispute"));
+  assert.ok(!peopleNames(withVectors).includes("Fay Climate Vector"));
+});
+
+test("cosine and reciprocal rank fusion score as expected", () => {
+  assert.ok(cosine([1, 0], [1, 0]) > 0.99);
+  assert.ok(cosine([1, 0], [0, 1]) < 0.01);
+  const fused = reciprocalRankFusion([["a", "b"], ["b", "a"]]);
+  assert.ok((fused.get("a") ?? 0) > 0);
+  assert.equal(fused.get("a"), fused.get("b"));
+});
+
+test("inferential questions use the stronger local chat model", async () => {
+  seedPerson("Dana Legal Model", { location: "Berlin", industry: "Legal technology" });
+  refreshEvidenceIndex();
+  resetIntelligenceModelCache();
+  let generateModel = "";
+  handler = async (url, init) => {
+    if (url.endsWith("/api/version")) return json({ version: "test" });
+    if (url.endsWith("/api/tags")) {
+      return json({ models: [{ name: "llama3.2:3b" }, { name: "qwen3:14b" }, { name: "nomic-embed-text" }] });
+    }
+    if (url.endsWith("/api/embed")) return json({ embeddings: [[0, 0, 1]] });
+    if (url.endsWith("/api/generate")) {
+      generateModel = JSON.parse(String(init?.body || "{}")).model;
+      return json({
+        response: JSON.stringify({
+          answer: "Dana Legal Model works in legal technology.",
+          citations: [],
+        }),
+      });
+    }
+    throw new Error(`unexpected ${url}`);
+  };
+  const answer = await answerRelationshipQuestion("Who might be interested in legal tech?");
+  assert.equal(generateModel, "qwen3:14b");
+  assert.equal(answer.provider, "ollama:qwen3:14b");
+  handler = offline;
+  resetIntelligenceModelCache();
+});
+
+test("factual questions do not wait on a chat model", async () => {
+  resetIntelligenceModelCache();
+  let generateCalled = false;
+  handler = async (url) => {
+    if (url.endsWith("/api/version")) return json({ version: "test" });
+    if (url.endsWith("/api/tags")) return json({ models: [{ name: "llama3.2:3b" }, { name: "qwen3:14b" }] });
+    if (url.endsWith("/api/generate")) {
+      generateCalled = true;
+      return json({ response: JSON.stringify({ answer: "should not run", citations: [] }) });
+    }
+    throw new Error(`unexpected ${url}`);
+  };
+  const answer = await answerRelationshipQuestion("Who do I know in Paris who like spicy food?");
+  assert.equal(generateCalled, false);
+  assert.equal(answer.provider, "local-evidence");
+  handler = offline;
+  resetIntelligenceModelCache();
+});
+
+test("embeddings are never written with a chat model", async () => {
+  resetIntelligenceModelCache();
+  handler = async (url) => {
+    if (url.endsWith("/api/version")) return json({ version: "test" });
+    if (url.endsWith("/api/tags")) return json({ models: [{ name: "llama3.2:3b" }, { name: "qwen3:14b" }] });
+    if (url.endsWith("/api/embed")) throw new Error("chat models must not be used to embed");
+    throw new Error(`unexpected ${url}`);
+  };
+  const result = await refreshEvidenceEmbeddings(10);
+  assert.equal(result.embedded, 0);
+  assert.equal(result.model, null);
+  handler = offline;
+  resetIntelligenceModelCache();
 });
 });

@@ -19,9 +19,14 @@ import { OllamaProvider } from "./ollama.js";
 import {
   askCitations,
   askEvidenceBlocks,
+  embedQueryText,
   formatAskAnswer,
   ftsQuery,
+  loadEmbeddableDocuments,
+  parseAskIntent,
+  reciprocalRankFusion,
   retrieveAskMatches,
+  scoreEmbeddedRows,
 } from "./ask.js";
 import { collectSharedContextSuggestions } from "./shared-context.js";
 import { collectTraitSuggestions } from "./traits.js";
@@ -71,8 +76,6 @@ const numericFields = new Set(["relationship_strength", "priority", "warmth", "i
 
 /** Documents handed to the model, and the ceiling on the autofill read. */
 const EVIDENCE_WINDOW = 40;
-/** Embedded documents scored in memory by a single retrieval call. */
-const VECTOR_CANDIDATE_LIMIT = 600;
 const EMBEDDING_DIMENSIONS = 384;
 
 export class AutofillCancelled extends Error {
@@ -95,20 +98,6 @@ function parse<T>(value: string | null | undefined, fallback: T): T {
   }
 }
 
-function cosine(left: readonly number[], right: readonly number[]): number {
-  const length = Math.min(left.length, right.length);
-  if (!length) return 0;
-  let dot = 0, leftNorm = 0, rightNorm = 0;
-  for (let index = 0; index < length; index++) {
-    dot += left[index] * right[index];
-    leftNorm += left[index] ** 2;
-    rightNorm += right[index] ** 2;
-  }
-  return leftNorm && rightNorm ? dot / Math.sqrt(leftNorm * rightNorm) : 0;
-}
-
-
-const evidenceColumns = "id, person_id, kind, source, source_record_id, text, occurred_at, metadata_json, embedding_json";
 const joinedEvidenceColumns = "d.id, d.person_id, d.kind, d.source, d.source_record_id, d.text, d.occurred_at, d.metadata_json, d.embedding_json";
 
 export async function searchEvidence(
@@ -126,34 +115,28 @@ export async function searchEvidence(
       ORDER BY rank LIMIT ?
     `).all(match, Math.max(limit * 3, 24)) as Array<EvidenceDocument & { rank: number }>
     : [];
-  const scores = new Map<string, number>();
   const documents = new Map<string, EvidenceDocument>();
-  lexical.forEach((row, index) => {
+  const lexicalIds: string[] = [];
+  for (const row of lexical) {
     documents.set(row.id, row);
-    scores.set(row.id, Math.max(scores.get(row.id) ?? 0, 1 - index / Math.max(lexical.length, 1)));
-  });
+    lexicalIds.push(row.id);
+  }
 
-  // Strong FTS hits are enough for Ask — skip embedding the question with a 14b chat model.
-  const skipVector = options.skipVector || lexical.length >= Math.min(limit, 6);
-  if (!skipVector) {
+  const vectorIds: string[] = [];
+  if (!options.skipVector) {
     try {
       assertActive(options.signal);
       const models = await resolveModels(options.signal);
-      const embedModel = models.embed;
-      if (embedModel) {
-        const [queryEmbedding] = await ollama.embed(embedModel, [query], options.signal);
+      if (models.embed) {
+        const intent = parseAskIntent(query);
+        const [queryEmbedding] = await ollama.embed(
+          models.embed,
+          [embedQueryText(intent)],
+          options.signal,
+        );
         if (queryEmbedding?.length) {
           const compactQuery = queryEmbedding.slice(0, EMBEDDING_DIMENSIONS);
-          const candidates = db.prepare(`
-            SELECT id, embedding_json FROM evidence_documents
-            WHERE embedding_json IS NOT NULL
-            ORDER BY updated_at DESC LIMIT ?
-          `).all(Math.min(VECTOR_CANDIDATE_LIMIT, 200)) as { id: string; embedding_json: string }[];
-          const ranked = candidates
-            .map((row) => ({ id: row.id, score: cosine(compactQuery, parse<number[]>(row.embedding_json, [])) }))
-            .filter((item) => item.score > 0)
-            .sort((a, b) => b.score - a.score)
-            .slice(0, limit * 2);
+          const ranked = scoreEmbeddedRows(compactQuery, loadEmbeddableDocuments(), limit * 3);
           const hydrated = new Map(
             evidenceDocumentsByIds(ranked.map((item) => item.id)).map((row) => [row.id, row])
           );
@@ -161,7 +144,7 @@ export async function searchEvidence(
             const row = hydrated.get(item.id);
             if (!row) continue;
             documents.set(row.id, row);
-            scores.set(row.id, (scores.get(row.id) ?? 0) * 0.6 + item.score * 0.4);
+            vectorIds.push(row.id);
           }
         }
       }
@@ -170,20 +153,36 @@ export async function searchEvidence(
     }
   }
 
+  const fused = reciprocalRankFusion([lexicalIds, vectorIds]);
+  const fallbackOrder = [...documents.keys()];
   return [...documents.values()]
-    .map((row) => ({ ...row, score: scores.get(row.id) ?? 0 }))
+    .map((row) => ({
+      ...row,
+      score: fused.get(row.id) ?? (1 / (60 + fallbackOrder.indexOf(row.id) + 1)),
+    }))
     .sort((a, b) => b.score - a.score)
     .slice(0, limit);
 }
 
-/** Prefer small/fast chat models for Ask Nett. Override with NETT_OLLAMA_MODEL. */
-const PREFERRED_CHAT_MODELS = [
+/** Small/fast chat for snappy Ask fallbacks. Override with NETT_OLLAMA_FAST_MODEL. */
+const PREFERRED_FAST_CHAT = [
   "llama3.2:3b",
   "llama3.2:1b",
   "qwen2.5:3b",
-  "qwen3:8b",
-  "qwen3.5:9b",
+  "qwen2.5:1.5b",
+  "phi3:mini",
+  "gemma2:2b",
+];
+
+/** Stronger local chat for inferential write-ups. Override with NETT_OLLAMA_MODEL. */
+const PREFERRED_REASON_CHAT = [
   "qwen3:14b",
+  "qwen3.5:9b",
+  "qwen2.5:14b",
+  "qwen3:8b",
+  "llama3.1:8b",
+  "qwen2.5:7b",
+  "mistral:7b",
 ];
 
 const PREFERRED_EMBED_MODELS = [
@@ -193,46 +192,73 @@ const PREFERRED_EMBED_MODELS = [
   "all-minilm",
 ];
 
-let cachedModelPick: { at: number; chat: string; embed: string | null } | null = null;
+type ModelPick = { at: number; fast: string | null; reason: string | null; embed: string | null };
+let cachedModelPick: ModelPick | null = null;
 const MODEL_CACHE_MS = 60_000;
 
-async function selectedModel(signal?: AbortSignal): Promise<string> {
-  const models = await ollama.listModels(signal);
-  const requested = process.env.NETT_OLLAMA_MODEL;
-  if (requested && models.some((model) => model.name === requested)) return requested;
-  for (const preferred of PREFERRED_CHAT_MODELS) {
-    const hit = models.find((model) => model.name === preferred || model.name.startsWith(`${preferred}:`));
-    if (hit) return hit.name;
-  }
-  return models.find((model) => !model.name.toLocaleLowerCase().includes("embed"))?.name
-    ?? models[0]?.name
-    ?? (() => { throw new Error("No Ollama model is installed"); })();
+export function resetIntelligenceModelCache(): void {
+  cachedModelPick = null;
 }
 
-async function selectedEmbedModel(signal?: AbortSignal): Promise<string | null> {
-  const models = await ollama.listModels(signal);
-  for (const preferred of PREFERRED_EMBED_MODELS) {
-    const hit = models.find((model) => model.name === preferred || model.name.startsWith(`${preferred.split(":")[0]}`));
-    if (hit) return hit.name;
-  }
-  return null;
+function isEmbedModelName(name: string): boolean {
+  return /embed|minilm|nomic|mxbai/i.test(name);
 }
 
-async function resolveModels(signal?: AbortSignal) {
+function pickPreferred(
+  models: readonly { name: string }[],
+  preferred: readonly string[],
+  predicate: (name: string) => boolean = () => true,
+): string | null {
+  for (const wanted of preferred) {
+    const hit = models.find((model) =>
+      predicate(model.name)
+      && (model.name === wanted || model.name.startsWith(`${wanted}:`))
+    );
+    if (hit) return hit.name;
+  }
+  return models.find((model) => predicate(model.name))?.name ?? null;
+}
+
+async function resolveModels(signal?: AbortSignal): Promise<ModelPick> {
   if (cachedModelPick && Date.now() - cachedModelPick.at < MODEL_CACHE_MS) return cachedModelPick;
-  const chat = await selectedModel(signal);
-  const embed = await selectedEmbedModel(signal);
-  cachedModelPick = { at: Date.now(), chat, embed };
-  return cachedModelPick;
+  const listed = await ollama.listModels(signal).catch(() => []);
+  const requestedReason = process.env.NETT_OLLAMA_MODEL;
+  const requestedFast = process.env.NETT_OLLAMA_FAST_MODEL;
+  const requestedEmbed = process.env.NETT_OLLAMA_EMBED_MODEL;
+  const chatModels = listed.filter((model) => !isEmbedModelName(model.name));
+  const embedModels = listed.filter((model) => isEmbedModelName(model.name));
+  const fast = (requestedFast && chatModels.some((model) => model.name === requestedFast) ? requestedFast : null)
+    ?? pickPreferred(chatModels, PREFERRED_FAST_CHAT)
+    ?? chatModels[0]?.name
+    ?? null;
+  const reason = (requestedReason && chatModels.some((model) => model.name === requestedReason) ? requestedReason : null)
+    ?? pickPreferred(chatModels, PREFERRED_REASON_CHAT)
+    ?? fast;
+  const embed = (requestedEmbed && embedModels.some((model) => model.name === requestedEmbed) ? requestedEmbed : null)
+    ?? pickPreferred(embedModels, PREFERRED_EMBED_MODELS, isEmbedModelName);
+  const pick = { at: Date.now(), fast, reason, embed };
+  if (fast || reason || embed) cachedModelPick = pick;
+  return pick;
+}
+
+async function selectedModel(signal?: AbortSignal): Promise<string> {
+  const models = await resolveModels(signal);
+  const name = models.reason ?? models.fast;
+  if (!name) throw new Error("No Ollama model is installed");
+  return name;
 }
 
 export async function intelligenceStatus() {
   const health = await ollama.health();
   const models = health.ok ? await ollama.listModels().catch(() => []) : [];
+  const pick = models.length ? await resolveModels().catch(() => null) : null;
   return {
     ...health,
     models,
-    selectedModel: models.length ? await selectedModel().catch(() => undefined) : undefined,
+    selectedModel: pick?.fast ?? pick?.reason ?? undefined,
+    fastModel: pick?.fast ?? undefined,
+    reasonModel: pick?.reason ?? undefined,
+    embedModel: pick?.embed ?? undefined,
     evidenceDocuments: (db.prepare("SELECT COUNT(*) AS count FROM evidence_documents").get() as { count: number }).count,
     embeddedDocuments: (db.prepare("SELECT COUNT(*) AS count FROM evidence_documents WHERE embedding_json IS NOT NULL").get() as { count: number }).count
   };
@@ -240,7 +266,7 @@ export async function intelligenceStatus() {
 
 export async function refreshEvidenceEmbeddings(limit = 250, options: { signal?: AbortSignal } = {}) {
   const models = await resolveModels(options.signal);
-  const model = models.embed || models.chat;
+  if (!models.embed) return { embedded: 0, model: null as string | null };
   const rows = db.prepare(`
     SELECT id, text FROM evidence_documents
     WHERE embedding_json IS NULL ORDER BY updated_at DESC LIMIT ?
@@ -250,7 +276,7 @@ export async function refreshEvidenceEmbeddings(limit = 250, options: { signal?:
   for (let offset = 0; offset < rows.length; offset += 32) {
     if (options.signal?.aborted) break;
     const batch = rows.slice(offset, offset + 32);
-    const vectors = await ollama.embed(model, batch.map((row) => row.text.slice(0, 4_000)), options.signal);
+    const vectors = await ollama.embed(models.embed, batch.map((row) => row.text.slice(0, 4_000)), options.signal);
     db.transaction(() => {
       batch.forEach((row, index) => {
         const compact = (vectors[index] ?? []).slice(0, EMBEDDING_DIMENSIONS);
@@ -259,7 +285,7 @@ export async function refreshEvidenceEmbeddings(limit = 250, options: { signal?:
       });
     })();
   }
-  return { embedded, model };
+  return { embedded, model: models.embed };
 }
 
 export async function answerRelationshipQuestion(question: string, options: { signal?: AbortSignal } = {}): Promise<{
@@ -267,7 +293,16 @@ export async function answerRelationshipQuestion(question: string, options: { si
   citations: IntelligenceCitation[];
   provider: string;
 }> {
-  const retrieval = retrieveAskMatches(question);
+  const models = await resolveModels(options.signal).catch(() => null);
+  const retrieval = await retrieveAskMatches(question, {
+    signal: options.signal,
+    embedQuery: models?.embed
+      ? async (text, signal) => {
+        const [vector] = await ollama.embed(models.embed!, [text], signal);
+        return vector?.length ? vector.slice(0, EMBEDDING_DIMENSIONS) : null;
+      }
+      : undefined,
+  });
   const citations = askCitations(retrieval);
   if (!retrieval.people.length) {
     return {
@@ -277,14 +312,17 @@ export async function answerRelationshipQuestion(question: string, options: { si
     };
   }
 
-  // Place-only lookups are a metadata index hit — skip the model wait.
-  if (retrieval.provider === "local-people-index") {
+  if (retrieval.provider === "local-people-index" || !retrieval.intent.inferential) {
+    return { answer: formatAskAnswer(retrieval), citations, provider: retrieval.provider };
+  }
+
+  const model = models?.reason ?? models?.fast;
+  if (!model) {
     return { answer: formatAskAnswer(retrieval), citations, provider: retrieval.provider };
   }
 
   try {
     assertActive(options.signal);
-    const { chat: model } = await resolveModels(options.signal);
     const generated = await ollama.answerWithCitations({
       model,
       question,

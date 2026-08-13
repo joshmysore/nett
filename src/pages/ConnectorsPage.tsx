@@ -296,7 +296,15 @@ export function ConnectorsPage({
           </span>
           <span className="sources-meta-copy">
             {intelligence?.selectedModel
-              ? `${intelligence.selectedModel} · ${(intelligence.evidenceDocuments || 0).toLocaleString()} evidence · ${(intelligence.embeddedDocuments || 0).toLocaleString()} embedded`
+              ? [
+                  intelligence.fastModel || intelligence.selectedModel,
+                  intelligence.reasonModel && intelligence.reasonModel !== intelligence.fastModel
+                    ? `reason ${intelligence.reasonModel}`
+                    : "",
+                  intelligence.embedModel ? intelligence.embedModel : "no embed model",
+                  `${(intelligence.evidenceDocuments || 0).toLocaleString()} evidence`,
+                  `${(intelligence.embeddedDocuments || 0).toLocaleString()} embedded`,
+                ].filter(Boolean).join(" · ")
               : "Start Ollama locally for cited answers"}
           </span>
         </div>

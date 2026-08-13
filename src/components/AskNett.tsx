@@ -5,7 +5,14 @@ import type { AgentAnswer, Person } from "@/types";
 
 type ModelState =
   | { checked: false }
-  | { checked: true; available: boolean; model?: string; documents?: number };
+  | {
+      checked: true;
+      available: boolean;
+      model?: string;
+      reasonModel?: string;
+      embedModel?: string;
+      documents?: number;
+    };
 
 const examples = [
   "Who do I know in Paris who like spicy food?",
@@ -23,6 +30,19 @@ function providerNote(provider: string) {
     return "Answered from your people index in milliseconds — no model wait.";
   }
   return "No model output. These are the stored records that matched the question.";
+}
+
+function runningNote(model: Extract<ModelState, { checked: true }>) {
+  const records = typeof model.documents === "number"
+    ? ` over ${model.documents.toLocaleString()} indexed records`
+    : "";
+  const reason = model.reasonModel && model.reasonModel !== model.model
+    ? ` Inferential questions use ${model.reasonModel}.`
+    : "";
+  const embed = model.embedModel
+    ? ` Semantic search is on with ${model.embedModel}.`
+    : " Install nomic-embed-text in Ollama to match paraphrases.";
+  return `Local model ${model.model || "unnamed"} is running${records}.${reason}${embed} Generated answers are not stored facts.`;
 }
 
 export function AskNett({ onOpen }: { onOpen: (id: string) => void }) {
@@ -43,7 +63,9 @@ export function AskNett({ onOpen }: { onOpen: (id: string) => void }) {
         setModel({
           checked: true,
           available: Boolean(status.ok),
-          model: status.selectedModel,
+          model: status.fastModel || status.selectedModel,
+          reasonModel: status.reasonModel,
+          embedModel: status.embedModel,
           documents: status.evidenceDocuments,
         });
       })
@@ -185,11 +207,7 @@ export function AskNett({ onOpen }: { onOpen: (id: string) => void }) {
         {!model.checked
           ? "Checking whether a local model is running..."
           : model.available
-            ? `Local model ${model.model || "unnamed"} is running${
-                typeof model.documents === "number"
-                  ? ` over ${model.documents.toLocaleString()} indexed records`
-                  : ""
-              }. Its answers are generated text, not stored facts.`
+            ? runningNote(model)
             : "No local model is running. Nett will return the stored records that match your question instead of a written answer."}
       </p>
     </section>
