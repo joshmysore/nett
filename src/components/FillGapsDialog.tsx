@@ -78,11 +78,24 @@ export function FillGapsDialog({
   const [listError, setListError] = useState<string | null>(null);
   const [accepted, setAccepted] = useState(0);
   const [skipped, setSkipped] = useState(0);
+  const [ownerInterests, setOwnerInterests] = useState<string[]>([]);
   const abortRef = useRef<AbortController | null>(null);
   const inputId = useId();
   const current = queue[index] ?? null;
 
   useEffect(() => () => abortRef.current?.abort(), []);
+
+  useEffect(() => {
+    const abort = new AbortController();
+    api.setupStatus()
+      .then((setup) => {
+        if (!abort.signal.aborted) setOwnerInterests(setup.ownerInterests || []);
+      })
+      .catch(() => {
+        if (!abort.signal.aborted) setOwnerInterests([]);
+      });
+    return () => abort.abort();
+  }, []);
 
   useEffect(() => {
     abortRef.current?.abort();
@@ -384,6 +397,7 @@ export function FillGapsDialog({
                   values={listDraft}
                   onChange={setListDraft}
                   placeholder="Type and press Enter"
+                  suggestions={field === "interests" ? ownerInterests : []}
                   disabled={saving || current.status === "loading"}
                 />
               ) : (

@@ -1743,6 +1743,70 @@ kbd, .section-kicker, .mono-label, .result-caption, .priority-index { font-size:
 .setup-status-row > div { display:grid; gap:3px; }
 .setup-status-row strong { color:var(--text-soft); font-size:14px; }
 .setup-status-row span { color:var(--muted); font-size:13px; line-height:1.5; }
+.setup-you-fields {
+  max-width: 680px;
+  margin-top: 28px;
+  display: grid;
+  gap: 18px;
+}
+.setup-you-fields .chip-input-label {
+  color: var(--text-soft);
+  font-size: 14px;
+  font-weight: 600;
+}
+.setup-self-note { max-width: 680px; margin-top: 28px; }
+.setup-self-note textarea { min-height: 120px; }
+.setup-source-list {
+  max-width: 680px;
+  margin: 34px 0 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 0;
+  border-top: 1px solid var(--line);
+}
+.setup-source-list > li {
+  display: grid;
+  grid-template-columns: 10px minmax(0, 1fr);
+  gap: 13px;
+  padding: 17px 0;
+  border-bottom: 1px solid var(--line);
+}
+.setup-source-list > li > div { display: grid; gap: 4px; min-width: 0; }
+.setup-source-list strong { color: var(--text-soft); font-size: 14px; }
+.setup-source-list span { color: var(--muted); font-size: 13px; line-height: 1.5; }
+.setup-source-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+.setup-source-actions .secondary-button,
+.setup-source-actions .text-button { min-height: 44px; }
+.setup-gmail-form {
+  margin-top: 12px;
+  display: grid;
+  gap: 12px;
+}
+.setup-gmail-form label { display: grid; gap: 6px; }
+.setup-gmail-form label > span { color: var(--muted); font-size: 13px; }
+.setup-gmail-form input {
+  width: 100%;
+  min-height: 44px;
+  padding: 0 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--control-radius);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 14px;
+}
+.setup-aside-action {
+  max-width: 680px;
+  margin: 18px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+.setup-aside-action .text-button { min-height: 44px; vertical-align: baseline; }
 .setup-actions {
   margin-top:34px;
   display:flex;

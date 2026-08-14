@@ -14,6 +14,7 @@ globalThis.fetch = (async () => {
 }) as typeof fetch;
 
 const { createPerson, db, getPerson, updatePerson } = await import("../../db.js");
+const { getOwnerContext, setAppSetting } = await import("../../setup.js");
 const { collectSharedContextSuggestions } = await import("../shared-context.js");
 const { intelligentAutofill, reviewInferenceSuggestion } = await import("../service.js");
 
@@ -268,5 +269,58 @@ test("confidence is not inflated by a single reciprocal in a mixed batch", () =>
   assert.ok(
     mutuals!.confidence < 0.9,
     `mixed-batch confidence should stay below a pure reciprocal (${mutuals!.confidence})`,
+  );
+});
+
+test("owner hometown fills a missing hometown along existing edges only", () => {
+  setAppSetting("onboarding", {
+    phase: "complete",
+    ownerHometowns: ["Dallas, Texas"],
+    ownerInterests: ["climbing"],
+  });
+  assert.deepEqual(getOwnerContext().hometowns, ["Dallas, Texas"]);
+  seed("Maya Neighbor", {
+    hometown: ["Dallas, Texas"],
+    mutuals: ["Alex Gap"],
+  });
+  seed("Jordan Neighbor", {
+    hometown: ["Dallas"],
+    mutuals: ["Alex Gap"],
+  });
+  seed("Lisbon Stranger", {
+    hometown: ["Lisbon"],
+    mutuals: [],
+  });
+  const targetId = seed("Alex Gap", {
+    hometown: [],
+    mutuals: ["Maya Neighbor", "Jordan Neighbor"],
+  });
+  const person = getPerson(targetId) as Record<string, unknown>;
+  assert.equal(Array.isArray(person.hometown) && person.hometown.length === 0, true, `hometown was ${JSON.stringify(person.hometown)}`);
+  const suggestions = collectSharedContextSuggestions(person);
+  const hometown = suggestions.find((item) => item.field === "hometown");
+  assert.ok(hometown, `expected an owner-seeded hometown suggestion, got ${suggestions.map((item) => item.field).join(",") || "none"}`);
+  const values = Array.isArray(hometown!.value) ? hometown!.value : [hometown!.value];
+  assert.equal(
+    values.some((value) => /dallas/i.test(String(value))),
+    true,
+  );
+  assert.match(hometown!.reason, /your hometowns/i);
+});
+
+test("owner hometown alone does not invent mutuals among strangers", () => {
+  setAppSetting("onboarding", {
+    phase: "complete",
+    ownerHometowns: ["Dallas, Texas"],
+    ownerInterests: [],
+  });
+  seed("Dallas Stranger A", { hometown: ["Dallas, Texas"], mutuals: [] });
+  seed("Dallas Stranger B", { hometown: ["Dallas"], mutuals: [] });
+  const targetId = seed("Dallas Stranger C", { hometown: ["Dallas, Texas"], mutuals: [] });
+  const suggestions = collectSharedContextSuggestions(getPerson(targetId) as Record<string, unknown>);
+  assert.equal(
+    suggestions.some((item) => item.field === "mutuals"),
+    false,
+    "people who only share the owner's hometown must not be assumed to know each other",
   );
 });

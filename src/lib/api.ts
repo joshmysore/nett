@@ -58,7 +58,23 @@ function peopleParams(input: PeopleQuery): URLSearchParams {
 export const api = {
   bootstrap: () => request<Overview>("/api/bootstrap"),
   setupStatus: () => request<SetupStatus>("/api/setup/status"),
-  updateSetup: (input: { phase?: SetupStatus["phase"]; ownerDisplayName?: string; skipStep?: string; complete?: boolean }) =>
+  previewOwnerContext: (transcript: string, signal?: AbortSignal) =>
+    request<{
+      transcript: string;
+      hometowns: string[];
+      interests: string[];
+      proposals: import("@/types").CaptureProposal[];
+    }>("/api/setup/owner-preview", { method: "POST", body: JSON.stringify({ transcript }), signal }),
+  updateSetup: (input: {
+    phase?: SetupStatus["phase"];
+    ownerDisplayName?: string;
+    ownerHometowns?: string[];
+    ownerInterests?: string[];
+    ownerCaptureTranscript?: string;
+    gmailReturnTo?: string;
+    skipStep?: string;
+    complete?: boolean;
+  }) =>
     request<SetupStatus>("/api/setup/onboarding", { method: "PATCH", body: JSON.stringify(input) }),
   people: () => request<Person[]>("/api/people"),
   peoplePage: (input: PeopleQuery & { page?: number; limit?: number }, signal?: AbortSignal) => {

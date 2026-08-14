@@ -16,6 +16,7 @@ import {
 import { addMemory, connectorStates, createPerson, db, findExactPerson, getPeople, getPeoplePage, getPerson, getPersonCommunications, listify, mergeReviewQueue, mergeReviewQueuePage, normalizeEmail, normalizePhone, overview, pendingInferenceSuggestions, peopleFacets, resolveMerge, reviewCounts, searchIndexRows, unmergeIdentity, updatePerson } from "./db.js";
 import type { PeopleFilters } from "./db.js";
 import { extractCapture } from "./capture/extract.js";
+import { extractOwnerContext } from "./capture/owner-context.js";
 import { getProvider } from "./agent.js";
 import {
   calculateRelationshipSignals,
@@ -56,7 +57,7 @@ import {
   syncGmail,
   syncTelegram
 } from "./platform/service.js";
-import { setupStatus, updateOnboarding } from "./setup.js";
+import { getOnboardingState, setupStatus, updateOnboarding } from "./setup.js";
 import {
   freshnessStatus,
   queueFreshnessNow,
@@ -154,6 +155,16 @@ function parseSpreadsheet(file: { buffer: Buffer; originalname: string }) {
 app.get("/api/health", (_req, res) => res.json({ ok: true, local: true, database: "sqlite" }));
 app.get("/api/bootstrap", (_req, res) => res.json({ ...overview(), setup: setupStatus() }));
 app.get("/api/setup/status", (_req, res) => res.json(setupStatus()));
+app.post("/api/setup/owner-preview", (req, res) => {
+  const transcript = String(req.body?.transcript ?? "");
+  if (!transcript.trim()) {
+    return res.status(400).json({ error: "Say or type a couple of hometowns and interests first" });
+  }
+  if (transcript.length > 4000) {
+    return res.status(400).json({ error: "That recording is too long to keep as evidence" });
+  }
+  res.json(extractOwnerContext(transcript));
+});
 app.patch("/api/setup/onboarding", (req, res) => {
   try {
     updateOnboarding(req.body || {});
@@ -614,7 +625,12 @@ app.get("/api/platform/gmail/callback", async (req, res) => {
   if (!code || !state) return res.status(400).send("Gmail authorization did not return a code and state.");
   try {
     await finishGmailAuthorization(code, state);
-    res.redirect(webAppUrl("/settings/connectors?gmail=connected"));
+    const onboarding = getOnboardingState();
+    const returnTo = onboarding.gmailReturnTo && onboarding.gmailReturnTo.startsWith("/")
+      ? onboarding.gmailReturnTo
+      : "/settings/connectors?gmail=connected";
+    if (onboarding.gmailReturnTo) updateOnboarding({ gmailReturnTo: "" });
+    res.redirect(webAppUrl(returnTo));
   } catch (error) {
     res.status(400).send(`Gmail authorization failed: ${error instanceof Error ? error.message : "Unknown error"}`);
   }
