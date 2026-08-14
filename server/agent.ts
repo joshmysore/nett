@@ -8,7 +8,7 @@ export type AgentAnswer = { answer: string; citations: Citation[]; provider: str
 
 export interface LlmProvider {
   id: string;
-  answer(query: string): Promise<AgentAnswer>;
+  answer(query: string, signal?: AbortSignal): Promise<AgentAnswer>;
 }
 
 const daysSince = (date?: string) => date ? Math.floor((Date.now() - Date.parse(date)) / 86400000) : 9999;
@@ -59,8 +59,8 @@ export class LocalEvidenceProvider implements LlmProvider {
 export function getProvider(): LlmProvider {
   return {
     id: "local-relationship-intelligence",
-    async answer(query) {
-      const result = await answerRelationshipQuestion(query);
+    async answer(query, signal) {
+      const result = await answerRelationshipQuestion(query, { signal });
       db.prepare("INSERT INTO ai_queries (id, query, response, citations_json, provider, created_at) VALUES (?, ?, ?, ?, ?, datetime('now'))")
         .run(randomUUID(), query, result.answer, JSON.stringify(result.citations), result.provider);
       return result;

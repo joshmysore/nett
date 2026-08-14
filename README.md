@@ -131,10 +131,18 @@ Nett uses Ollama on the loopback interface. Remote Ollama hosts are rejected unl
 ```bash
 brew install ollama
 ollama serve
+ollama pull nomic-embed-text
+ollama pull llama3.2:3b
 ollama pull qwen3:14b
 ```
 
-Nett detects installed models automatically and prefers `qwen3:14b` (then other Qwen 3 sizes, then `llama3.2:3b`). Override the choice with `NETT_OLLAMA_MODEL`. Open Settings and choose **Refresh index** to build:
+Nett detects installed models automatically:
+
+- **Embed** — `nomic-embed-text` (then `mxbai-embed-large`, `all-minilm`). Chat models are never used to embed.
+- **Fast chat** — `llama3.2:3b` for anything that should stay snappy. Factual Ask lists skip the chat model entirely.
+- **Reasoning chat** — `qwen3:14b` for “who might be interested” write-ups and profile autofill.
+
+Override with `NETT_OLLAMA_EMBED_MODEL`, `NETT_OLLAMA_FAST_MODEL`, and `NETT_OLLAMA_MODEL`. Open Sources and choose **Refresh index** to build:
 
 - an SQLite FTS5 evidence index over profiles, provenance, memories, and communications;
 - compact local embeddings for hybrid retrieval;

@@ -197,14 +197,14 @@ test("a proposal that would overwrite an existing value is marked as a conflict"
   const result = await intelligentAutofill(id);
 
   assert.equal(result.degraded, false);
-  assert.equal(result.model, "llama3.2:3b");
+  assert.equal(result.model, "qwen3:14b");
   const company = result.suggestions.find((suggestion) => suggestion.field === "company");
   assert.ok(company);
   assert.equal(company.conflict, true);
   assert.equal(company.operation, "replace");
   assert.equal(company.existingValue, "Old Corp");
   assert.match(company.conflictNote ?? "", /Old Corp/);
-  assert.equal(company.provider, "ollama:llama3.2:3b");
+  assert.equal(company.provider, "ollama:qwen3:14b");
 
   handler = modelReturning([
     { field: "company", value: "Old Corp", confidence: 0.9, rationale: "Already known", evidenceIds: [evidenceId] }

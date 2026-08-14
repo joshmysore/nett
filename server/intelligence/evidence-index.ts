@@ -151,12 +151,14 @@ function* profileDocuments(personId?: string): Generator<PendingDocument> {
     const fields = [
       ["name", profile.preferred_name], ["nickname", profile.nickname],
       ["company", profile.company], ["industry", profile.industry],
-      ["location", profile.location],
+      ["location", profile.location], ["headline", profile.headline],
+      ["job title", profile.job_title],
       ["hometown", parse(String(profile.hometown || ""), String(profile.hometown || ""))],
       ["relationship", profile.relationship], ["how met", profile.how_met],
       ["where met", profile.where_met], ["when met", profile.when_met],
       ["interests", parse(String(profile.interests || ""), [])],
       ["skills", parse(String(profile.skills || ""), [])],
+      ["foods", parse(String(profile.foods || ""), [])],
       ["institutions", parse(String(profile.institutions || ""), [])],
       ["mutuals", parse(String(profile.mutuals || ""), [])],
       ["tags", profile.tag_names], ["notes", profile.notes],
@@ -212,7 +214,9 @@ function* communicationDocuments(personId?: string): Generator<PendingDocument> 
       `).all()) as Record<string, unknown>[];
   for (const communication of rows) {
     const body = text(communication.body);
-    if (!body) continue;
+    const evidence = parse(String(communication.evidence_json || "{}"), {}) as Record<string, unknown>;
+    const subject = text(evidence.subject);
+    if (!body && !subject) continue;
     yield {
       id: `communication:${communication.id}:${communication.person_id}`,
       personId: String(communication.person_id),
@@ -221,10 +225,11 @@ function* communicationDocuments(personId?: string): Generator<PendingDocument> 
       sourceRecordId: String(communication.external_id),
       text: [
         communication.direction ? `direction: ${communication.direction}` : "",
+        subject ? `subject: ${subject}` : "",
         body
       ].filter(Boolean).join("\n"),
       occurredAt: String(communication.occurred_at),
-      metadata: parse(String(communication.evidence_json || "{}"), {})
+      metadata: evidence
     };
   }
 }

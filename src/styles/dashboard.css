@@ -589,6 +589,7 @@
 .ask-citations small {
   color: var(--muted);
   font-size: 12px;
+  overflow-wrap: anywhere;
 }
 
 .ask-status {
