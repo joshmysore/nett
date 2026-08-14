@@ -32,6 +32,7 @@ import {
   type ToastKind,
 } from "@/components/Primitives";
 import { api, isAbortError } from "@/lib/api";
+import { displayBirthday } from "@/lib/birthday";
 import {
   defensibleNextAction,
   orderedMemories,
@@ -334,7 +335,7 @@ export function ProfilePage({
       ["Culture", person.culture ? [person.culture] : []],
       ["Personality", person.personality ? [person.personality] : []],
       ["Online personality", asList(person.online_personality)],
-      ["Birthday", person.birthday ? [person.birthday] : []],
+      ["Birthday", person.birthday ? [displayBirthday(person.birthday)] : []],
       ["When met", person.when_met ? [person.when_met] : []],
       ["Where met", person.where_met ? [person.where_met] : []],
       ["How met", person.how_met ? [person.how_met] : []],

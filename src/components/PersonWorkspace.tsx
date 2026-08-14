@@ -21,6 +21,7 @@ import {
   type ToastKind,
 } from "@/components/Primitives";
 import { api, isAbortError } from "@/lib/api";
+import { displayBirthday } from "@/lib/birthday";
 import {
   defensibleNextAction,
   EDITABLE_FIELDS,
@@ -99,7 +100,11 @@ function readRows(person: FullPerson): Record<string, ReadRow> {
     };
   }
   if (text(person.birthday)) {
-    rows.birthday = { key: "birthday", label: "Birthday", display: text(person.birthday) };
+    rows.birthday = {
+      key: "birthday",
+      label: "Birthday",
+      display: displayBirthday(person.birthday),
+    };
   }
   if (text(person.last_contact)) {
     rows.last_contact = {

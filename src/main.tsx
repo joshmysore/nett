@@ -6,6 +6,7 @@ import App from "./App";
 import { applyThemePreference, readThemePreference } from "./lib/theme";
 import "./index.css";
 import "./styles/landing.css";
+import "./styles/transitions.css";
 
 applyThemePreference(readThemePreference());
 

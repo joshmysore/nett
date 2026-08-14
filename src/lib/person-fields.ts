@@ -46,7 +46,7 @@ export const PERSON_FIELDS: PersonField[] = [
     massFill: true,
     display: true,
   },
-  { key: "birthday", label: "Birthday", kind: "text", hint: "as recorded — any format", editable: true, infer: true, massFill: true, display: true },
+  { key: "birthday", label: "Birthday", kind: "date", hint: "month, day, and year", editable: true, infer: true, massFill: true, display: true },
   { key: "relationship_strength", label: "Relationship strength", kind: "number", editable: true, infer: true, massFill: false, display: true },
   { key: "relationship", label: "Relationship", kind: "text", hint: "friend, colleague, sister", editable: true, infer: true, massFill: true, display: true },
   { key: "when_met", label: "When you met", kind: "text", editable: true, infer: true, massFill: true, display: true },

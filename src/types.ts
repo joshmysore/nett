@@ -101,6 +101,7 @@ export type ParsedMemory = {
     followUpDate?: string | null;
     relationship?: string | null;
     interests?: string[];
+    foods?: string[];
   };
   ambiguous: boolean;
 };

@@ -399,6 +399,13 @@ function parseMemory(text: string, people = searchIndexRows()) {
   const tags = tagProposal?.values?.length
     ? tagProposal.values
     : (tagProposal?.value ? tagProposal.value.split(",").map((part) => part.trim()).filter(Boolean) : []);
+  const listValues = (field: string) => {
+    const proposal = valueOf(field);
+    if (!proposal) return [] as string[];
+    if (proposal.values?.length) return proposal.values;
+    return proposal.value.split(",").map((part) => part.trim()).filter(Boolean);
+  };
+  const interestTags = tags.filter((t) => ["policy", "AI", "robotics", "health", "climate"].includes(t));
   return {
     // The transcript is kept verbatim and separately from the editable memory.
     transcript: extraction.transcript,
@@ -410,7 +417,8 @@ function parseMemory(text: string, people = searchIndexRows()) {
       tags,
       followUpDate: valueOf("follow_up_date")?.value ?? null,
       relationship: valueOf("relationship")?.value ?? null,
-      interests: tags.filter((t) => ["policy", "AI", "robotics", "health", "climate"].includes(t)),
+      interests: listValues("interests").length ? listValues("interests") : interestTags,
+      foods: listValues("foods"),
     },
     ambiguous: candidates.length > 1 && candidates[0].score - candidates[1].score < 0.08,
   };

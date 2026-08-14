@@ -12,6 +12,7 @@ import {
 } from "@phosphor-icons/react";
 import { useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { SuccessCheck } from "@/components/transitions/SuccessCheck";
 import { api } from "@/lib/api";
 import type { SetupStatus } from "@/types";
 
@@ -311,7 +312,9 @@ export function SetupPage({
 
         {status.phase === "complete" && (
           <div className="setup-stage">
-            <div className="setup-stage-icon is-complete"><Check weight="bold" /></div>
+            <div className="setup-stage-icon is-complete">
+              <SuccessCheck active size={28} variant="stage" />
+            </div>
             <p className="setup-eyebrow">Workspace ready</p>
             <h1>Your private network is ready to use.</h1>
             <p className="setup-lede">

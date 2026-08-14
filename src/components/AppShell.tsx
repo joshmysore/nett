@@ -40,6 +40,12 @@ export function AppShell({
   const location = useLocation();
   const { preference, cycle } = useTheme();
 
+  useEffect(() => {
+    document.documentElement.classList.remove("on-landing");
+    document.body.classList.remove("on-landing");
+    document.documentElement.style.removeProperty("background");
+  }, []);
+
   useEffect(() => setRailOpen(false), [location.pathname]);
 
   useEffect(() => {
@@ -149,7 +155,7 @@ export function AppShell({
           </button>
           <button className="global-search" onClick={onSearch}>
             <MagnifyingGlass size={17} />
-            <span>Ask or find anything</span>
+            <span>Find a person or run a command</span>
             <kbd>
               <Command size={12} />K
             </kbd>

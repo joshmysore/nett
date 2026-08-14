@@ -55,7 +55,7 @@ Light:
 - `--color-surface`: `oklch(99% 0.004 250)`
 - `--color-ink`: `oklch(19% 0.015 255)`
 - `--color-ink-2`: `oklch(42% 0.014 255)`
-- `--color-muted`: `oklch(52% 0.012 255)`
+- `--color-muted`: `oklch(44% 0.014 255)`
 - `--color-rule`: `oklch(85% 0.012 250)`
 - `--color-rule-strong`: `oklch(74% 0.016 250)`
 - `--color-accent`: `oklch(55% 0.16 255)`
@@ -145,8 +145,8 @@ Glass rules:
 - No busy multi-layer rainbow refraction
 - No neon glow rings
 - Prefer graphite / paper / brand-purple tints over generic lavender washes
-- Basic navigation, tables, standard fields, rows, and ordinary buttons remain
-  paper rather than glass.
+- Basic navigation, tables, standard fields, rows, ordinary buttons, and
+  workbench GlowCards remain paper rather than glass.
 
 ## Motion
 
@@ -196,6 +196,13 @@ People is search-first. The default surface is a recognition card grid (glow
 spotlight on hover). Dense list (`view=list`) and spreadsheet (`view=sheet`)
 remain secondary modes. Multi-value fields use chip entry, not comma-typed
 strings.
+
+Sources uses the same GlowCard primitive in a compact grid: connector name,
+permission, last refresh, and the primary pull or connect action on the card.
+Workbench GlowCards are paper with a pointer spotlight — not glass. In light
+mode they keep a graphite edge and drop shadow, and they drop the outer bloom
+so paper does not pick up a muddy halo. `color-scheme` follows the resolved
+theme so native controls never mix with the opposite appearance.
 
 The public `/` landing is only the Digital Serenity hero (crystal N, slow word
 roll-in, held-thread background paths). Product explanation lives on `/about`.
