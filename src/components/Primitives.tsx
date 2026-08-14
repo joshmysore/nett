@@ -1,7 +1,6 @@
 import { motion, useReducedMotion } from "motion/react";
 import {
   ArrowClockwise,
-  Check,
   CloudSlash,
   Database,
   MagnifyingGlass,
@@ -15,6 +14,7 @@ import {
   useRef,
 } from "react";
 import { format, formatDistanceToNow, isValid, parseISO } from "date-fns";
+import { SuccessCheck } from "@/components/transitions/SuccessCheck";
 import type { Person } from "@/types";
 
 export type Toast = { kind: "success" | "error"; message: string } | null;
@@ -323,7 +323,7 @@ export function ToastMessage({ toast }: { toast: NonNullable<Toast> }) {
       aria-atomic="true"
     >
       {toast.kind === "success" ? (
-        <Check size={17} weight="bold" />
+        <SuccessCheck active size={17} variant="toast" />
       ) : (
         <WarningCircle size={17} />
       )}

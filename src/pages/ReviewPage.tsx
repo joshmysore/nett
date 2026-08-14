@@ -9,6 +9,7 @@ import {
 import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { Avatar, SourceBadge } from "@/components/Primitives";
+import { SuccessCheck } from "@/components/transitions/SuccessCheck";
 import { api, isAbortError } from "@/lib/api";
 import type { ToastKind } from "@/components/Primitives";
 
@@ -131,7 +132,7 @@ export function ReviewPage({
 
       {empty && !error && (
         <section className="review-clear">
-          <Check size={18} />
+          <SuccessCheck active size={22} variant="stage" />
           <div>
             <strong>Inbox is clear</strong>
             <p>Nothing in the current evidence needs a decision.</p>

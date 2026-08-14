@@ -10,6 +10,7 @@ import {
 } from "@phosphor-icons/react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { asChipValues, ChipInput } from "@/components/ChipInput";
+import { BirthdayPicker } from "@/components/BirthdayPicker";
 import { HometownEditor, PlacePicker } from "@/components/PlacePicker";
 import { Modal, sourceLabel } from "@/components/Primitives";
 import { api, isAbortError, type PublicProfileSuggestion } from "@/lib/api";
@@ -27,6 +28,7 @@ type Suggestion = {
 };
 
 const PLACE_FIELDS = new Set(["location", "hometown"]);
+const SPECIAL_FIELDS = new Set(["birthday", "gender"]);
 const CHIP_FIELDS = new Set(
   EDIT_TEXT_FIELDS.filter((field) => field.kind === "list" && !PLACE_FIELDS.has(field.key)).map(
     (field) => field.key,
@@ -39,7 +41,10 @@ const textFields: [string, string][] = [
   ["job_title", "Job title"],
   ["linkedin_url", "LinkedIn profile"],
   ...EDIT_TEXT_FIELDS.filter(
-    (field) => !PLACE_FIELDS.has(field.key) && !CHIP_FIELDS.has(field.key),
+    (field) =>
+      !PLACE_FIELDS.has(field.key) &&
+      !CHIP_FIELDS.has(field.key) &&
+      !SPECIAL_FIELDS.has(field.key),
   ).map((field) => [field.key, field.label] as [string, string]),
   ["follow_up_date", "Follow-up date"],
 ];
@@ -433,24 +438,31 @@ export function EditProfileDialog({
         {textFields.map(([key, label]) => (
           <label key={key}>
             <span>{label}</span>
-            {key === "gender" ? (
-              <select
-                value={displayValue(form.gender)}
-                onChange={(event) => setForm({ ...form, gender: event.target.value })}
-              >
-                <option value="">Not recorded</option>
-                <option value="male">Male</option>
-                <option value="female">Female</option>
-              </select>
-            ) : (
-              <input
-                type={key === "follow_up_date" || key === "last_contact" ? "date" : "text"}
-                value={displayValue(form[key])}
-                onChange={(event) => setForm({ ...form, [key]: event.target.value })}
-              />
-            )}
+            <input
+              type={key === "follow_up_date" || key === "last_contact" ? "date" : "text"}
+              value={displayValue(form[key])}
+              onChange={(event) => setForm({ ...form, [key]: event.target.value })}
+            />
           </label>
         ))}
+        <div className="birthday-field">
+          <span id="edit-birthday-label">Birthday</span>
+          <BirthdayPicker
+            value={displayValue(form.birthday)}
+            onChange={(birthday) => setForm({ ...form, birthday })}
+          />
+        </div>
+        <label>
+          <span>Gender</span>
+          <select
+            value={displayValue(form.gender)}
+            onChange={(event) => setForm({ ...form, gender: event.target.value })}
+          >
+            <option value="">Not recorded</option>
+            <option value="male">Male</option>
+            <option value="female">Female</option>
+          </select>
+        </label>
         {chipFields.map((field) => (
           <div className="full-field" key={field.key}>
             <ChipInput

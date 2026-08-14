@@ -149,7 +149,7 @@ export function AppShell({
           </button>
           <button className="global-search" onClick={onSearch}>
             <MagnifyingGlass size={17} />
-            <span>Ask or find anything</span>
+            <span>Find a person or run a command</span>
             <kbd>
               <Command size={12} />K
             </kbd>

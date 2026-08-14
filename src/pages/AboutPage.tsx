@@ -53,19 +53,21 @@ export function AboutPage() {
 
       <section className="landing-about" aria-labelledby="about-title">
         <div className="landing-about-intro">
-          <p className="landing-about-kicker">About Nett</p>
-          <TextAnimation
-            as="h1"
-            id="about-title"
-            classname="about-scroll-title"
-            text="A private relationship memory for one person on one Mac."
-            direction="up"
-            lineAnime
-          />
-          <p>
-            Nett is for recognition and retrieval — find someone, understand why they
-            matter, and keep the evidence that produced each fact. It is not a CRM.
-          </p>
+          <div className="landing-about-intro-inner">
+            <p className="landing-about-kicker">About Nett</p>
+            <TextAnimation
+              as="h1"
+              id="about-title"
+              classname="about-scroll-title"
+              text="A private relationship memory for one person on one Mac."
+              direction="up"
+              lineAnime
+            />
+            <p>
+              Nett is for recognition and retrieval — find someone, understand why they
+              matter, and keep the evidence that produced each fact. It is not a CRM.
+            </p>
+          </div>
         </div>
 
         <div className="landing-about-block" aria-labelledby="recognition-title">

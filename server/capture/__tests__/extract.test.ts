@@ -92,3 +92,29 @@ test("handles non-ASCII names and places", () => {
 test("extraction is pure and repeatable", () => {
   assert.deepEqual(extractCapture(BRIEF, TODAY), extractCapture(BRIEF, TODAY));
 });
+
+test("extracts person name and food likes into structured foods", () => {
+  const text = "Sam Weil likes red wine from Spain";
+  const result = extractCapture(text, TODAY);
+  assert.equal(result.nameHint, "Sam Weil");
+  const foods = result.proposals.find((proposal) => proposal.field === "foods");
+  assert.deepEqual(foods?.values, ["Spanish red wine"]);
+  assert.equal(result.proposals.find((proposal) => proposal.field === "follow_up_date"), undefined);
+});
+
+test("routes non-food likes to interests", () => {
+  const text = "Maya likes hiking and pottery";
+  const result = extractCapture(text, TODAY);
+  assert.equal(result.nameHint, "Maya");
+  assert.equal(result.proposals.find((proposal) => proposal.field === "foods"), undefined);
+  assert.deepEqual(
+    result.proposals.find((proposal) => proposal.field === "interests")?.values,
+    ["hiking", "pottery"],
+  );
+});
+
+test("does not invent preference structure from infinitives", () => {
+  const result = extractCapture("Sam likes to travel more.", TODAY);
+  assert.equal(result.proposals.find((proposal) => proposal.field === "foods"), undefined);
+  assert.equal(result.proposals.find((proposal) => proposal.field === "interests"), undefined);
+});

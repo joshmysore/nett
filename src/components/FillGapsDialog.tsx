@@ -7,9 +7,11 @@ import {
 } from "@phosphor-icons/react";
 import { useEffect, useId, useRef, useState } from "react";
 import { asChipValues, ChipInput } from "@/components/ChipInput";
+import { BirthdayPicker } from "@/components/BirthdayPicker";
 import { HometownEditor, PlacePicker } from "@/components/PlacePicker";
 import { Avatar, Modal } from "@/components/Primitives";
 import { api, isAbortError } from "@/lib/api";
+import { formatBirthday, parseBirthday } from "@/lib/birthday";
 import {
   fieldLabel,
   isListField,
@@ -358,6 +360,13 @@ export function FillGapsDialog({
                   <option value="male">Male</option>
                   <option value="female">Female</option>
                 </select>
+              ) : field === "birthday" ? (
+                <BirthdayPicker
+                  id={inputId}
+                  value={draft}
+                  onChange={setDraft}
+                  disabled={saving || current.status === "loading"}
+                />
               ) : field === "location" ? (
                 <PlacePicker
                   value={draft}
@@ -409,6 +418,8 @@ export function FillGapsDialog({
                   || current.status === "loading"
                   || (field === "hometown"
                     ? !hometownDraft.some((entry) => entry.trim())
+                    : field === "birthday"
+                      ? !formatBirthday(parseBirthday(draft))
                     : isListField(field)
                       ? !listDraft.some((entry) => entry.trim())
                       : !draft.trim())

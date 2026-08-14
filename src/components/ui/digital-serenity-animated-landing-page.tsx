@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { LandingGlassCta } from "@/components/LandingGlassCta";
+import { TiltCard } from "@/components/transitions/TiltCard";
 import { BackgroundPaths } from "@/components/ui/background-paths";
 import "@/styles/landing.css";
 
@@ -161,16 +162,18 @@ export default function DigitalSerenity() {
             </header>
 
             <div className="landing-serenity-center">
-              <div className="landing-brand-mark" aria-hidden="true">
-                <img
-                  src="/brand/nett-crystal-n-wide.png"
-                  alt=""
-                  width={1024}
-                  height={1024}
-                  decoding="async"
-                  fetchPriority="high"
-                />
-              </div>
+              <TiltCard className="landing-logo-tilt" maxTilt={8}>
+                <div className="landing-brand-mark" aria-hidden="true">
+                  <img
+                    src="/brand/nett-crystal-n-wide.png"
+                    alt=""
+                    width={1024}
+                    height={1024}
+                    decoding="async"
+                    fetchPriority="high"
+                  />
+                </div>
+              </TiltCard>
 
               <h1 id="landing-title" className="landing-serenity-title">
                 <SoftLine as="span" delay={320} className="landing-title-primary">
