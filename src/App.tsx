@@ -156,6 +156,13 @@ function NettApp() {
   }, [refresh]);
 
   useEffect(() => {
+    const landing = location.pathname === "/" || location.pathname === "/about";
+    document.documentElement.classList.toggle("on-landing", landing);
+    document.body.classList.toggle("on-landing", landing);
+    if (!landing) document.documentElement.style.removeProperty("background");
+  }, [location.pathname]);
+
+  useEffect(() => {
     const listener = (event: KeyboardEvent) => {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
         event.preventDefault();
