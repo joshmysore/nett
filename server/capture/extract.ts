@@ -50,6 +50,53 @@ const MONTHS: Record<string, number> = {
   oct: 10, nov: 11, dec: 12,
 };
 
+/** Cue words that mark a preference as food/drink rather than a general interest. */
+const FOOD_CUES = new Set([
+  "pizza", "sushi", "ramen", "pasta", "taco", "tacos", "biryani", "curry", "dosa",
+  "idli", "coffee", "tea", "matcha", "wine", "beer", "whiskey", "whisky", "cocktail",
+  "cocktails", "vegan", "vegetarian", "gluten", "chocolate", "burger", "steak",
+  "seafood", "pho", "kimchi", "falafel", "hummus", "bagel", "croissant", "brunch",
+  "food", "foods", "cuisine", "dish", "dishes", "drink", "drinks", "cheese", "bread",
+  "soup", "salad", "dessert", "desserts", "sake", "champagne", "gin", "vodka", "rum",
+  "latte", "espresso", "cider", "ipa", "ale", "stout", "mezcal", "tequila", "bourbon",
+  "scotch", "port", "sherry", "vermouth", "negroni", "martini", "spritz",
+]);
+
+const ORIGIN_ADJECTIVES: Record<string, string> = {
+  spain: "Spanish", spanish: "Spanish",
+  france: "French", french: "French",
+  italy: "Italian", italian: "Italian",
+  portugal: "Portuguese", portuguese: "Portuguese",
+  germany: "German", german: "German",
+  japan: "Japanese", japanese: "Japanese",
+  china: "Chinese", chinese: "Chinese",
+  korea: "Korean", korean: "Korean",
+  india: "Indian", indian: "Indian",
+  mexico: "Mexican", mexican: "Mexican",
+  greece: "Greek", greek: "Greek",
+  turkey: "Turkish", turkish: "Turkish",
+  lebanon: "Lebanese", lebanese: "Lebanese",
+  thailand: "Thai", thai: "Thai",
+  vietnam: "Vietnamese", vietnamese: "Vietnamese",
+  ethiopia: "Ethiopian", ethiopian: "Ethiopian",
+  morocco: "Moroccan", moroccan: "Moroccan",
+  argentina: "Argentine", argentine: "Argentine",
+  chile: "Chilean", chilean: "Chilean",
+  australia: "Australian", australian: "Australian",
+  scotland: "Scottish", scottish: "Scottish",
+  ireland: "Irish", irish: "Irish",
+  england: "English", english: "English",
+  georgia: "Georgian", georgian: "Georgian",
+};
+
+const PREFERENCE_STOP = new Set([
+  "and", "but", "then", "she", "he", "they", "we", "i", "who", "which", "that",
+  "about", "with", "for", "into", "onto", "after", "before", "while",
+  "her", "his", "their", "our", "my", "the", "a", "an", "also", "plus",
+  "through", "via", "by", "because", "when", "where", "so", "during", "since",
+  "though", "thanks", "now", "still", "again", "to",
+]);
+
 /** Trims a captured phrase at the first connector or clause boundary so
  *  "Lisbon through Maya" yields "Lisbon". */
 function trimPhrase(raw: string): string {
@@ -64,6 +111,50 @@ function trimPhrase(raw: string): string {
     if (kept.length >= 6) break;
   }
   return kept.join(" ").replace(/[.,;!?]+$/u, "").trim();
+}
+
+/** Preference phrases keep "from Spain" so food origin stays attached. */
+function trimPreference(raw: string): string {
+  const cleaned = raw.replace(/[.,;!?]+\s*$/u, "").trim();
+  // "likes to hike" is an activity clause, not a structured preference item.
+  if (!cleaned || /^to\b/iu.test(cleaned)) return "";
+  const words = cleaned.split(/\s+/u);
+  const kept: string[] = [];
+  for (const word of words) {
+    const bare = word.replace(/[.,;!?]+$/u, "");
+    if (!bare) continue;
+    if (kept.length && PREFERENCE_STOP.has(bare.toLowerCase())) break;
+    kept.push(bare);
+    if (kept.length >= 8) break;
+  }
+  return kept.join(" ").replace(/[.,;!?]+$/u, "").trim();
+}
+
+function looksLikeFood(phrase: string): boolean {
+  const lower = phrase.toLowerCase();
+  if (/\bfrom\b/u.test(lower) && /\b(wine|beer|cheese|coffee|tea|whiskey|whisky|sake|gin|vodka|rum|cuisine|food)\b/u.test(lower)) {
+    return true;
+  }
+  return lower.split(/[^a-z0-9+]+/u).some((token) => FOOD_CUES.has(token));
+}
+
+/** "red wine from Spain" → "Spanish red wine" when the origin is known. */
+function normaliseFoodPreference(phrase: string): string {
+  const match = phrase.match(/^(.*?)\s+from\s+([\p{L}][\p{L}\s'’-]{1,30})$/u);
+  if (!match) return phrase;
+  const item = match[1].trim();
+  const origin = match[2].trim();
+  const adjective = ORIGIN_ADJECTIVES[origin.toLowerCase()];
+  if (!item || !adjective) return phrase;
+  if (item.toLowerCase().startsWith(adjective.toLowerCase())) return item;
+  return `${adjective} ${item}`;
+}
+
+function splitPreferenceItems(phrase: string): string[] {
+  return phrase
+    .split(/\s*(?:,|;|&|\band\b)\s*/u)
+    .map((part) => trimPreference(part))
+    .filter(Boolean);
 }
 
 function titleish(value: string): boolean {
@@ -135,7 +226,12 @@ export function extractCapture(transcript: string, today = new Date()): CaptureE
     nameHint = match[1].trim();
   });
   if (!nameHint) {
-    run(/^([\p{Lu}][\p{L}'’-]+(?:\s+[\p{Lu}][\p{L}'’-]+)?)\s+(?:is|works|lives|said|mentioned|runs|joined|speaks)\b/u, (match) => {
+    run(/^([\p{Lu}][\p{L}'’-]+(?:\s+[\p{Lu}][\p{L}'’-]+)?)\s+(?:is|works|lives|said|mentioned|runs|joined|speaks|likes|loves|enjoys|prefers|drinks|eats)\b/u, (match) => {
+      nameHint = match[1].trim();
+    });
+  }
+  if (!nameHint) {
+    run(/\b([\p{Lu}][\p{L}'’-]+(?:\s+[\p{Lu}][\p{L}'’-]+)?)\s+(?:likes|loves|enjoys|prefers|drinks|eats)\b/u, (match) => {
       nameHint = match[1].trim();
     });
   }
@@ -197,6 +293,28 @@ export function extractCapture(transcript: string, today = new Date()): CaptureE
     const label = match[1].toLowerCase();
     push(proposals, text, "relationship", label.charAt(0).toUpperCase() + label.slice(1), match, 0.55);
   });
+
+  // Preferences: "Sam Weil likes red wine from Spain", "favourite food is dosa"
+  run(/\b(?:favourite|favorite)\s+(?:food|foods|dish|dishes|drink|drinks|wine|coffee|tea)\s+(?:is|are)\s+([\p{L}][\p{L}\s'’-]{1,60})/iu, (match) => {
+    const items = splitPreferenceItems(match[1]).map(normaliseFoodPreference);
+    if (items.length) {
+      push(proposals, text, "foods", items.join(", "), match, 0.85, items);
+    }
+  });
+  if (!proposals.some((proposal) => proposal.field === "foods" || proposal.field === "interests")) {
+    run(/\b(?:likes|loves|enjoys|prefers|drinks|eats)\s+([\p{L}][\p{L}\s'’-]{1,60})/iu, (match) => {
+      const items = splitPreferenceItems(match[1]);
+      if (!items.length) return;
+      const foods = items.filter(looksLikeFood).map(normaliseFoodPreference);
+      const interests = items.filter((item) => !looksLikeFood(item));
+      if (foods.length) {
+        push(proposals, text, "foods", foods.join(", "), match, 0.8, foods);
+      }
+      if (interests.length) {
+        push(proposals, text, "interests", interests.join(", "), match, 0.7, interests);
+      }
+    });
+  }
 
   // Follow-up: "follow up in September", "follow up on 2026-09-01"
   run(/\bfollow[ -]?up\b[^.]*?\b(\d{4}-\d{2}-\d{2})\b/iu, (match) => {

@@ -1,0 +1,226 @@
+/* Transitions.dev patterns — Nett-scoped. Tokens follow design.md motion. */
+
+:root {
+  /* Success check */
+  --check-opacity-dur: 420ms;
+  --check-rotate-dur: 420ms;
+  --check-rotate-from: 48deg;
+  --check-bob-dur: 420ms;
+  --check-y-amount: 12px;
+  --check-blur-dur: 420ms;
+  --check-blur-from: 6px;
+  --check-path-dur: 420ms;
+  --check-path-delay: 60ms;
+  --check-ease-out: var(--ease-out, cubic-bezier(0.22, 0.8, 0.24, 1));
+  --check-ease-opacity: var(--ease-out, cubic-bezier(0.22, 0.8, 0.24, 1));
+  --check-ease-rotate: var(--ease-out, cubic-bezier(0.22, 0.8, 0.24, 1));
+  --check-ease-bob: cubic-bezier(0.34, 1.2, 0.64, 1);
+  --check-ease-path: var(--ease-out, cubic-bezier(0.22, 0.8, 0.24, 1));
+
+  /* Avatar group hover */
+  --avatar-lift: -5px;
+  --avatar-dur: 280ms;
+  --avatar-scale: 1.06;
+  --avatar-falloff: 0.45;
+  --avatar-ease-in: var(--ease-out, cubic-bezier(0.22, 0.8, 0.24, 1));
+  --avatar-ease-out: cubic-bezier(0.34, 1.8, 0.64, 1);
+
+  /* Card tilt */
+  --tilt-perspective: 1000px;
+  --tilt-return: 720ms;
+  --tilt-return-ease: var(--ease-out, cubic-bezier(0.22, 0.8, 0.24, 1));
+  --tilt-follow: 280ms;
+  --tilt-follow-ease: var(--ease-out, cubic-bezier(0.22, 0.8, 0.24, 1));
+  --tilt-glare-opacity: 0.28;
+  --tilt-glare-fade: 240ms;
+  --tilt-glare-ease: var(--ease-out, cubic-bezier(0.22, 0.8, 0.24, 1));
+}
+
+/* ── Success check ── */
+
+.t-success-check {
+  display: inline-block;
+  transform-origin: center;
+  opacity: 0;
+  will-change: transform, opacity, filter;
+  color: inherit;
+  line-height: 0;
+}
+
+.t-success-check svg {
+  display: block;
+  overflow: visible;
+}
+
+.t-success-check svg path {
+  stroke-dasharray: var(--check-path-length, 28);
+  stroke-dashoffset: var(--check-path-length, 28);
+}
+
+.t-success-check[data-state="in"] {
+  animation:
+    t-check-fade var(--check-opacity-dur) var(--check-ease-opacity) forwards,
+    t-check-rotate var(--check-rotate-dur) var(--check-ease-rotate) forwards,
+    t-check-blur var(--check-blur-dur) var(--check-ease-out) forwards,
+    t-check-bob var(--check-bob-dur) var(--check-ease-bob) forwards;
+}
+
+.t-success-check[data-state="in"] svg path {
+  animation: t-check-draw var(--check-path-dur) var(--check-ease-path)
+    var(--check-path-delay, 0ms) forwards;
+}
+
+@keyframes t-check-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes t-check-rotate {
+  from {
+    transform: rotate(var(--check-rotate-from));
+  }
+  to {
+    transform: rotate(0deg);
+  }
+}
+
+@keyframes t-check-blur {
+  from {
+    filter: blur(var(--check-blur-from));
+  }
+  to {
+    filter: blur(0);
+  }
+}
+
+@keyframes t-check-bob {
+  from {
+    translate: 0 var(--check-y-amount);
+  }
+  to {
+    translate: 0 0;
+  }
+}
+
+@keyframes t-check-draw {
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+/* Toast / compact variants */
+.t-success-check--toast {
+  --check-y-amount: 8px;
+  --check-rotate-from: 36deg;
+  --check-blur-from: 4px;
+}
+
+.t-success-check--stage {
+  --check-y-amount: 16px;
+  --check-rotate-from: 56deg;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .t-success-check {
+    animation: none !important;
+    opacity: 1;
+    filter: none;
+    transform: none;
+    translate: 0;
+  }
+
+  .t-success-check svg path {
+    animation: none !important;
+    stroke-dashoffset: 0 !important;
+  }
+}
+
+/* ── Avatar group hover ── */
+
+.t-avatar {
+  transform-origin: center;
+  transform: translateY(var(--shift, 0px)) scale(var(--scale-active, 1));
+  transition: transform var(--avatar-dur) var(--avatar-ease-in);
+  will-change: transform;
+}
+
+.t-avatar-group {
+  display: flex;
+  align-items: center;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .t-avatar {
+    transition: none !important;
+    transform: none !important;
+  }
+}
+
+/* ── Card hover tilt ── */
+
+.t-tilt {
+  touch-action: none;
+  display: inline-block;
+  max-width: 100%;
+}
+
+.t-tilt-card {
+  position: relative;
+  border-radius: var(--panel-radius, 16px);
+  overflow: hidden;
+  transform: perspective(var(--tilt-perspective)) rotateX(var(--tilt-rx, 0deg))
+    rotateY(var(--tilt-ry, 0deg));
+  transform-style: preserve-3d;
+  transition: transform var(--tilt-return) var(--tilt-return-ease);
+  will-change: transform;
+}
+
+.t-tilt-card.is-tilting {
+  transition: transform var(--tilt-follow) var(--tilt-follow-ease);
+}
+
+.t-tilt-glare {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0;
+  mix-blend-mode: screen;
+  background:
+    radial-gradient(
+      circle 95px at var(--tilt-gx, 50%) var(--tilt-gy, 50%),
+      rgba(255, 255, 255, 0.48),
+      rgba(255, 255, 255, 0.06) 52%,
+      rgba(255, 255, 255, 0) 84%
+    ),
+    radial-gradient(
+      circle 200px at var(--tilt-gx, 50%) var(--tilt-gy, 50%),
+      rgba(255, 255, 255, 0.22),
+      rgba(255, 255, 255, 0.04) 58%,
+      rgba(255, 255, 255, 0) 78%
+    ),
+    radial-gradient(
+      circle 360px at var(--tilt-gx, 50%) var(--tilt-gy, 50%),
+      rgba(255, 255, 255, 0.1),
+      rgba(255, 255, 255, 0) 88%
+    );
+  transition: opacity var(--tilt-glare-fade) var(--tilt-glare-ease);
+}
+
+.t-tilt.is-hover .t-tilt-glare {
+  opacity: var(--tilt-glare-opacity);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .t-tilt-card {
+    transform: none !important;
+    transition: none !important;
+  }
+
+  .t-tilt-glare {
+    display: none;
+  }
+}

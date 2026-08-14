@@ -81,6 +81,7 @@ test("connector setup states are explicit and local", async ({ page }, testInfo)
   await expect(page.getByRole("heading", { name: "Gmail", exact: true })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Telegram", exact: true })).toBeVisible();
   await expect(page.getByRole("heading", { name: "WhatsApp", exact: true })).toBeVisible();
+  await expect(page.locator("#sources .source-glow-card")).toHaveCount(5);
   await expect(page.getByText("Auto-pull while Nett is open")).toBeVisible();
   await expect(page.getByText(/Needs this Mac awake/i)).toBeVisible();
   // Dark-mode muted chips on tinted surfaces currently sit under WCAG AA for

@@ -31,6 +31,7 @@ import {
 } from "@/components/PeopleFilters";
 import { FillGapsDialog } from "@/components/FillGapsDialog";
 import { PeopleCards } from "@/components/PeopleCards";
+import { PeopleRecentContacts } from "@/components/PeopleRecentContacts";
 import { PeopleSheet } from "@/components/PeopleSheet";
 import {
   asList,
@@ -391,6 +392,8 @@ export function PeoplePage({ onOpen }: { onOpen: (id: string) => void }) {
           <p>Find the person. Recover the context.</p>
         </div>
       </section>
+
+      <PeopleRecentContacts onOpen={onOpen} />
 
       {fillGapsOpen && (
         <FillGapsDialog

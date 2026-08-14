@@ -13,6 +13,7 @@ export const CaptureFieldSchema = z.enum([
   "when_met",
   "mutuals",
   "interests",
+  "foods",
   "tags",
   "follow_up_date",
 ]);

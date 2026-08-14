@@ -2,13 +2,89 @@
    literals. Scoped to .people-page so nothing here leaks into other routes. */
 
 .people-page .page-heading {
-  margin-bottom: var(--space-lg);
+  margin-bottom: var(--space-md);
 }
 
 .people-page .page-heading h1 {
   font-size: clamp(36px, 4vw, 42px);
   font-weight: 600;
   letter-spacing: -0.035em;
+}
+
+.people-recent {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-md);
+  margin: 0 0 var(--space-lg);
+  padding: var(--space-sm) 0;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+
+.people-recent-copy {
+  min-width: 0;
+  flex: 1 1 160px;
+}
+
+.people-recent-copy h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 560;
+  letter-spacing: -0.02em;
+}
+
+.people-recent-copy p {
+  margin: 2px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.people-recent-avatars {
+  display: flex;
+  align-items: center;
+  padding-inline: 4px;
+}
+
+.people-recent-avatar {
+  position: relative;
+  margin-left: -12px;
+  z-index: 1;
+}
+
+.people-recent-avatar:first-child {
+  margin-left: 0;
+}
+
+.people-recent-avatar:hover,
+.people-recent-avatar:focus-within {
+  z-index: 3;
+}
+
+.people-recent-link {
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  outline-offset: 2px;
+}
+
+.people-recent-link:focus-visible {
+  outline: 2px solid var(--focus);
+}
+
+.people-recent-link .avatar {
+  box-shadow: 0 0 0 2px var(--bg);
+}
+
+.people-recent-more {
+  margin-left: auto;
+  color: var(--accent-strong);
+  font-size: 13px;
+  text-decoration: none;
+}
+
+.people-recent-more:hover {
+  text-decoration: underline;
 }
 
 .people-page .people-toolbar {
@@ -423,6 +499,15 @@
 @media (max-width: 800px) {
   .people-page .people-toolbar {
     grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .people-recent {
+    gap: var(--space-sm);
+  }
+
+  .people-recent-more {
+    margin-left: 0;
+    width: 100%;
   }
 
   .people-view-actions {

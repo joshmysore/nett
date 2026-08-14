@@ -12,7 +12,7 @@ test("capture open, structure, and cancel writes nothing", async ({ page, reques
   const before = await personMemoryCount(request, person.id);
   await page.goto("/today");
   await openCapture(page);
-  await page.getByPlaceholder(/Record what happened/i).fill(`Met ${person.name} about climate finance and AI.`);
+  await page.getByPlaceholder(/Capture the person|Record what happened/i).fill(`Met ${person.name} about climate finance and AI.`);
   await page.getByRole("button", { name: "Structure memory" }).click();
   await expect(page.getByRole("heading", { name: "Review the memory" })).toBeVisible({ timeout: 20_000 });
   await page.keyboard.press("Escape");
@@ -25,7 +25,7 @@ test("approve with no person selected stays blocked", async ({ page, request }) 
   const person = await firstPerson(request);
   await page.goto("/today");
   await openCapture(page);
-  await page.getByPlaceholder(/Record what happened/i).fill(`Remember that ${person.name} works on robotics.`);
+  await page.getByPlaceholder(/Capture the person|Record what happened/i).fill(`Remember that ${person.name} works on robotics.`);
   await page.getByRole("button", { name: "Structure memory" }).click();
   await expect(page.getByRole("heading", { name: "Review the memory" })).toBeVisible({ timeout: 20_000 });
   const approve = page.getByRole("button", { name: "Approve and save" });
@@ -40,7 +40,7 @@ test("delayed parse does not crash and can be escaped", async ({ page }) => {
   await delayRoute(page, "**/api/memories/parse", 800);
   await page.goto("/today");
   await openCapture(page);
-  await page.getByPlaceholder(/Record what happened/i).fill("Met someone about product design.");
+  await page.getByPlaceholder(/Capture the person|Record what happened/i).fill("Met someone about product design.");
   await page.getByRole("button", { name: "Structure memory" }).click();
   await expect(page.getByRole("button", { name: "Structure memory" })).toBeDisabled();
   await page.keyboard.press("Escape");
@@ -51,7 +51,7 @@ test("per-proposal reject keeps rejected fields out of save payload path", async
   const before = await personMemoryCount(request, person.id);
   await page.goto("/today");
   await openCapture(page);
-  await page.getByPlaceholder(/Record what happened/i).fill(
+  await page.getByPlaceholder(/Capture the person|Record what happened/i).fill(
     `Met ${person.name} in Lisbon through Maya. She works in climate finance and speaks Portuguese.`,
   );
   await page.getByRole("button", { name: "Structure memory" }).click();

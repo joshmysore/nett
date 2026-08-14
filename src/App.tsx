@@ -6,6 +6,7 @@ import {
   Route,
   Routes,
   useLocation,
+  useNavigate,
 } from "react-router-dom";
 import { AppShell } from "@/components/AppShell";
 import {
@@ -19,6 +20,7 @@ import { api } from "@/lib/api";
 import { AboutPage } from "@/pages/AboutPage";
 import { LandingPage } from "@/pages/LandingPage";
 import type { Overview } from "@/types";
+import type { CommandPaletteAction } from "@/components/Overlays";
 const DashboardPage = lazy(() =>
   import("@/pages/DashboardPage").then((module) => ({
     default: module.DashboardPage,
@@ -99,6 +101,7 @@ type Dialog = "capture" | "import" | null;
 
 function NettApp() {
   const location = useLocation();
+  const navigate = useNavigate();
   const [overview, setOverview] = useState<Overview>(initialOverview);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -125,15 +128,56 @@ function NettApp() {
     [],
   );
 
+  const openCommandPalette = useCallback(() => {
+    // Preload overlays that ⌘K may open so Suspense does not keep the
+    // palette mounted while a lazy drawer/dialog chunk loads.
+    void import("@/components/PersonDrawer");
+    void import("@/components/Overlays");
+    setCommandOpen(true);
+  }, []);
+
+  const runCommandAction = useCallback(
+    (action: CommandPaletteAction) => {
+      setCommandOpen(false);
+      if (action.type === "person") {
+        setDrawerId(action.id);
+        return;
+      }
+      if (action.type === "remember") {
+        setDialog("capture");
+        return;
+      }
+      if (action.type === "import") {
+        setDialog("import");
+        return;
+      }
+      navigate(action.path);
+    },
+    [navigate],
+  );
+
   useEffect(() => {
     void refresh();
   }, [refresh]);
 
   useEffect(() => {
+    const landing = location.pathname === "/" || location.pathname === "/about";
+    document.documentElement.classList.toggle("on-landing", landing);
+    document.body.classList.toggle("on-landing", landing);
+    if (!landing) document.documentElement.style.removeProperty("background");
+  }, [location.pathname]);
+
+  useEffect(() => {
     const listener = (event: KeyboardEvent) => {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
         event.preventDefault();
-        setCommandOpen((open) => !open);
+        setCommandOpen((open) => {
+          if (!open) {
+            void import("@/components/PersonDrawer");
+            void import("@/components/Overlays");
+          }
+          return !open;
+        });
       }
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "m") {
         event.preventDefault();
@@ -196,7 +240,7 @@ function NettApp() {
   return (
     <>
       <AppShell
-        onSearch={() => setCommandOpen(true)}
+        onSearch={openCommandPalette}
         onCapture={() => setDialog("capture")}
       >
         <Suspense fallback={<AppSkeleton />}>
@@ -254,18 +298,19 @@ function NettApp() {
             />
           )}
         </AnimatePresence>
+      </Suspense>
+      <Suspense fallback={null}>
         <AnimatePresence>
           {commandOpen && (
             <CommandPalette
               people={overview.people || []}
               onClose={() => setCommandOpen(false)}
-              onOpen={(id) => {
-                setCommandOpen(false);
-                setDrawerId(id);
-              }}
+              onAction={runCommandAction}
             />
           )}
         </AnimatePresence>
+      </Suspense>
+      <Suspense fallback={null}>
         <AnimatePresence>
           {dialog === "capture" && (
             <CaptureDialog

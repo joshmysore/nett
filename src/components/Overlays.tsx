@@ -2,23 +2,32 @@ import {
   Brain,
   CalendarBlank,
   Check,
+  ClockCounterClockwise,
   Database,
   FileCsv,
+  GearSix,
+  House,
   MagnifyingGlass,
   Microphone,
   MicrophoneSlash,
   Network,
+  Plus,
   SpinnerGap,
   Tag,
+  Tray,
+  Users,
   WarningCircle,
+  type Icon,
 } from "@phosphor-icons/react";
 import {
   type KeyboardEvent as ReactKeyboardEvent,
   useEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
 import { Avatar, asList, Modal } from "@/components/Primitives";
+import { SuccessCheck } from "@/components/transitions/SuccessCheck";
 import { api, isAbortError } from "@/lib/api";
 import {
   createDictationSession,
@@ -28,20 +37,112 @@ import {
 } from "@/lib/dictation";
 import type { ParsedMemory, Person } from "@/types";
 
+export type CommandPaletteAction =
+  | { type: "person"; id: string }
+  | { type: "remember" }
+  | { type: "import" }
+  | { type: "navigate"; path: string };
+
+type CommandDef = {
+  id: string;
+  label: string;
+  hint: string;
+  shortcut?: string;
+  keywords: string[];
+  icon: Icon;
+  action: Exclude<CommandPaletteAction, { type: "person" }>;
+};
+
+type PaletteRow =
+  | { kind: "command"; key: string; command: CommandDef }
+  | { kind: "person"; key: string; person: Person };
+
+const COMMANDS: CommandDef[] = [
+  {
+    id: "remember",
+    label: "Remember…",
+    hint: "Capture a memory or relationship note",
+    shortcut: "⌘M",
+    keywords: ["remember", "memory", "note", "capture", "dictate"],
+    icon: Plus,
+    action: { type: "remember" },
+  },
+  {
+    id: "home",
+    label: "Go to Home",
+    hint: "Today’s desk",
+    keywords: ["home", "today", "desk", "dashboard"],
+    icon: House,
+    action: { type: "navigate", path: "/today" },
+  },
+  {
+    id: "people",
+    label: "Go to People",
+    hint: "Find and open people",
+    keywords: ["people", "contacts", "directory"],
+    icon: Users,
+    action: { type: "navigate", path: "/people" },
+  },
+  {
+    id: "recent",
+    label: "Browse recent contacts",
+    hint: "People with activity in the last 30 days",
+    keywords: ["recent", "recency", "contacted", "last"],
+    icon: ClockCounterClockwise,
+    action: { type: "navigate", path: "/people?recency=30d" },
+  },
+  {
+    id: "review",
+    label: "Go to Review",
+    hint: "Confirm identities and suggested facts",
+    keywords: ["review", "inbox", "merge", "suggestions"],
+    icon: Tray,
+    action: { type: "navigate", path: "/review" },
+  },
+  {
+    id: "sources",
+    label: "Go to Sources",
+    hint: "Connectors and imports on this Mac",
+    keywords: ["sources", "connectors", "settings", "sync"],
+    icon: GearSix,
+    action: { type: "navigate", path: "/settings/connectors" },
+  },
+  {
+    id: "import",
+    label: "Import data…",
+    hint: "LinkedIn archive or spreadsheet",
+    keywords: ["import", "linkedin", "csv", "spreadsheet", "upload"],
+    icon: FileCsv,
+    action: { type: "import" },
+  },
+];
+
+function matchesCommand(command: CommandDef, needle: string) {
+  if (!needle) return true;
+  const haystack = [command.label, command.hint, ...command.keywords]
+    .join(" ")
+    .toLowerCase();
+  return needle
+    .toLowerCase()
+    .split(/\s+/)
+    .filter(Boolean)
+    .every((part) => haystack.includes(part));
+}
+
 export function CommandPalette({
   people,
   onClose,
-  onOpen,
+  onAction,
 }: {
   people: Person[];
   onClose: () => void;
-  onOpen: (id: string) => void;
+  onAction: (action: CommandPaletteAction) => void;
 }) {
   const initial = [...asList(people)]
     .sort((a, b) => (b.priority || 0) - (a.priority || 0))
     .slice(0, 8);
   const [query, setQuery] = useState("");
-  const [results, setResults] = useState<Person[]>(initial);
+  const [peopleResults, setPeopleResults] = useState<Person[]>(initial);
   const [activeIndex, setActiveIndex] = useState(0);
   const [searching, setSearching] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -49,10 +150,27 @@ export function CommandPalette({
   const resultRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const requestId = useRef(0);
 
+  const commandMatches = useMemo(
+    () => COMMANDS.filter((command) => matchesCommand(command, query.trim())),
+    [query],
+  );
+
+  const rows: PaletteRow[] = useMemo(() => {
+    const next: PaletteRow[] = commandMatches.map((command) => ({
+      kind: "command" as const,
+      key: `cmd:${command.id}`,
+      command,
+    }));
+    for (const person of peopleResults) {
+      next.push({ kind: "person", key: `person:${person.id}`, person });
+    }
+    return next;
+  }, [commandMatches, peopleResults]);
+
   useEffect(() => {
     if (!query.trim()) {
       requestId.current += 1;
-      setResults(initial);
+      setPeopleResults(initial);
       setActiveIndex(0);
       setSearching(false);
       setError(null);
@@ -67,12 +185,12 @@ export function CommandPalette({
         .search(query.trim(), controller.signal)
         .then((next) => {
           if (current !== requestId.current) return;
-          setResults(asList(next).slice(0, 30));
+          setPeopleResults(asList(next).slice(0, 24));
           setActiveIndex(0);
         })
         .catch((reason) => {
           if (isAbortError(reason) || current !== requestId.current) return;
-          setResults([]);
+          setPeopleResults([]);
           setError(reason instanceof Error ? reason.message : "Search unavailable");
         })
         .finally(() => {
@@ -83,33 +201,60 @@ export function CommandPalette({
       window.clearTimeout(timeout);
       controller.abort();
     };
-    // Initial results intentionally update when the source list changes.
+    // Initial people intentionally refresh when the priority list changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [people, query]);
+
+  useEffect(() => {
+    setActiveIndex((index) => Math.min(index, Math.max(0, rows.length - 1)));
+  }, [rows.length]);
 
   useEffect(() => {
     resultRefs.current[activeIndex]?.scrollIntoView({ block: "nearest" });
   }, [activeIndex]);
 
+  const runRow = (row: PaletteRow) => {
+    // Close first so the shared overlay tree can commit before another
+    // lazy overlay (drawer / dialog) mounts.
+    onClose();
+    queueMicrotask(() => {
+      if (row.kind === "person") onAction({ type: "person", id: row.person.id });
+      else onAction(row.command.action);
+    });
+  };
+
   const onKeyDown = (event: ReactKeyboardEvent<HTMLInputElement>) => {
     if (event.key === "ArrowDown") {
       event.preventDefault();
-      if (results.length) {
-        setActiveIndex((index) => Math.min(index + 1, results.length - 1));
+      if (rows.length) {
+        setActiveIndex((index) => Math.min(index + 1, rows.length - 1));
       }
     } else if (event.key === "ArrowUp") {
       event.preventDefault();
       setActiveIndex((index) => Math.max(index - 1, 0));
-    } else if (event.key === "Enter" && results[activeIndex]) {
+    } else if (event.key === "Enter" && rows[activeIndex]) {
       event.preventDefault();
-      onOpen(results[activeIndex].id);
+      runRow(rows[activeIndex]);
     } else if (event.key === "Home") {
       event.preventDefault();
       setActiveIndex(0);
     } else if (event.key === "End") {
       event.preventDefault();
-      setActiveIndex(Math.max(0, results.length - 1));
+      setActiveIndex(Math.max(0, rows.length - 1));
     }
+  };
+
+  const active = rows[activeIndex];
+
+  const paintSpot = (
+    event: { currentTarget: HTMLElement; clientX: number; clientY: number },
+    index: number,
+  ) => {
+    setActiveIndex(index);
+    const target = event.currentTarget;
+    const bounds = target.getBoundingClientRect();
+    target.style.setProperty("--spot-x", `${event.clientX - bounds.left}px`);
+    target.style.setProperty("--spot-y", `${event.clientY - bounds.top}px`);
   };
 
   return (
@@ -125,16 +270,14 @@ export function CommandPalette({
           value={query}
           onChange={(event) => setQuery(event.target.value)}
           onKeyDown={onKeyDown}
-          placeholder="Who are you looking for?"
-          aria-label="Ask or find anything"
+          placeholder="Find a person or run a command…"
+          aria-label="Command palette"
           role="combobox"
           aria-expanded="true"
           aria-haspopup="listbox"
           aria-autocomplete="list"
           aria-controls="command-results"
-          aria-activedescendant={
-            results[activeIndex] ? `command-result-${results[activeIndex].id}` : undefined
-          }
+          aria-activedescendant={active ? `command-result-${active.key}` : undefined}
           autoComplete="off"
         />
         <kbd>ESC</kbd>
@@ -143,56 +286,93 @@ export function CommandPalette({
         className="command-results"
         id="command-results"
         role="listbox"
-        aria-label="People search results"
+        aria-label="Commands and people"
       >
-        <span className="result-caption">
-          {searching
-            ? "Searching indexed records"
-            : query
-              ? `${results.length} closest matches`
-              : "Priority people"}
-        </span>
-        {results.map((person, index) => (
-          <button
-            ref={(element) => {
-              resultRefs.current[index] = element;
-            }}
-            id={`command-result-${person.id}`}
-            role="option"
-            aria-selected={index === activeIndex}
-            className={`spotlight-row${index === activeIndex ? " is-active" : ""}`}
-            key={person.id}
-            onMouseMove={(event) => {
-              setActiveIndex(index);
-              const target = event.currentTarget;
-              const bounds = target.getBoundingClientRect();
-              target.style.setProperty("--spot-x", `${event.clientX - bounds.left}px`);
-              target.style.setProperty("--spot-y", `${event.clientY - bounds.top}px`);
-            }}
-            onClick={() => onOpen(person.id)}
-          >
-            <Avatar person={person} size="sm" />
-            <span>
-              <strong>{person.name}</strong>
-              <small>
-                {[person.company, person.location].filter(Boolean).join(" / ") ||
-                  "Context not recorded"}
-              </small>
-            </span>
-            <div>
-              {asList(person.tags)
-                .slice(0, 2)
-                .map((tag) => (
-                  <i key={tag}>{tag}</i>
-                ))}
-            </div>
-            {index === activeIndex && <kbd>↵</kbd>}
-          </button>
-        ))}
-        {!searching && !results.length && (
+        {commandMatches.length > 0 && (
+          <span className="result-caption">
+            {query.trim() ? "Commands" : "Suggested commands"}
+          </span>
+        )}
+        {commandMatches.map((command, commandIndex) => {
+          const index = commandIndex;
+          const Icon = command.icon;
+          const row: PaletteRow = { kind: "command", key: `cmd:${command.id}`, command };
+          return (
+            <button
+              ref={(element) => {
+                resultRefs.current[index] = element;
+              }}
+              id={`command-result-${row.key}`}
+              role="option"
+              aria-selected={index === activeIndex}
+              className={`spotlight-row command-action-row${index === activeIndex ? " is-active" : ""}`}
+              key={row.key}
+              onMouseMove={(event) => paintSpot(event, index)}
+              onClick={() => runRow(row)}
+            >
+              <span className="command-row-icon" aria-hidden="true">
+                <Icon size={18} weight="regular" />
+              </span>
+              <span className="command-row-copy">
+                <strong>{command.label}</strong>
+                <small>{command.hint}</small>
+              </span>
+              {command.shortcut ? (
+                <kbd>{command.shortcut}</kbd>
+              ) : index === activeIndex ? (
+                <kbd>↵</kbd>
+              ) : null}
+            </button>
+          );
+        })}
+        {peopleResults.length > 0 && (
+          <span className="result-caption">
+            {searching
+              ? "Searching indexed records"
+              : query.trim()
+                ? `${peopleResults.length} people`
+                : "Priority people"}
+          </span>
+        )}
+        {peopleResults.map((person, personIndex) => {
+          const index = commandMatches.length + personIndex;
+          const row: PaletteRow = { kind: "person", key: `person:${person.id}`, person };
+          return (
+            <button
+              ref={(element) => {
+                resultRefs.current[index] = element;
+              }}
+              id={`command-result-${row.key}`}
+              role="option"
+              aria-selected={index === activeIndex}
+              className={`spotlight-row${index === activeIndex ? " is-active" : ""}`}
+              key={row.key}
+              onMouseMove={(event) => paintSpot(event, index)}
+              onClick={() => runRow(row)}
+            >
+              <Avatar person={person} size="sm" />
+              <span className="command-row-copy">
+                <strong>{person.name}</strong>
+                <small>
+                  {[person.company, person.location].filter(Boolean).join(" / ") ||
+                    "Context not recorded"}
+                </small>
+              </span>
+              <div className="command-tags">
+                {asList(person.tags)
+                  .slice(0, 2)
+                  .map((tag) => (
+                    <i key={tag}>{tag}</i>
+                  ))}
+              </div>
+              {index === activeIndex && <kbd>↵</kbd>}
+            </button>
+          );
+        })}
+        {!searching && !rows.length && (
           <div className="command-empty">
             <MagnifyingGlass size={24} />
-            <p>No person or memory matches “{query}”.</p>
+            <p>No command or person matches “{query}”.</p>
           </div>
         )}
         {error && (
@@ -207,9 +387,9 @@ export function CommandPalette({
           <kbd>↑↓</kbd> Navigate
         </span>
         <span>
-          <kbd>↵</kbd> Open
+          <kbd>↵</kbd> Run
         </span>
-        <span>Local server search</span>
+        <span>People + commands</span>
       </div>
     </Modal>
   );
@@ -334,7 +514,8 @@ export function CaptureDialog({
           const key = `${proposal.field}-${proposal.evidenceStart}`;
           const edited = proposalEdits[key] ?? (proposal.values?.join(", ") || proposal.value);
           if (proposal.values || proposal.field === "tags" || proposal.field === "languages"
-            || proposal.field === "interests" || proposal.field === "mutuals") {
+            || proposal.field === "interests" || proposal.field === "foods"
+            || proposal.field === "mutuals" || proposal.field === "hometown") {
             return [proposal.field, edited.split(",").map((part) => part.trim()).filter(Boolean)];
           }
           return [proposal.field, edited];
@@ -362,6 +543,9 @@ export function CaptureDialog({
           interests: Array.isArray(proposals.interests)
             ? proposals.interests
             : parsed.extracted.interests,
+          foods: Array.isArray(proposals.foods)
+            ? proposals.foods
+            : asList(parsed.extracted.foods),
           ...proposals,
           transcript: parsed.transcript || text,
         },
@@ -398,7 +582,7 @@ export function CaptureDialog({
               ref={composer}
               value={text}
               onChange={(event) => setText(event.target.value)}
-              placeholder="Record what happened, what matters, and any follow-up you want to remember."
+              placeholder="Sam likes Spanish red wine. Capture the person and the fact — Nett will structure it."
             />
             <button
               className="voice-button"
@@ -436,15 +620,15 @@ export function CaptureDialog({
             </span>
             <span>
               <Tag size={15} />
+              Preferences
+            </span>
+            <span>
+              <Network size={15} />
               Context
             </span>
             <span>
               <CalendarBlank size={15} />
               Follow-up
-            </span>
-            <span>
-              <Network size={15} />
-              Relationship
             </span>
           </div>
           <div className="modal-actions">
@@ -539,7 +723,11 @@ export function CaptureDialog({
                           className={accepted ? "is-accepted" : "is-rejected"}
                         >
                           <div className="capture-proposal-head">
-                            <strong>{proposal.field.replace(/_/g, " ")}</strong>
+                            <strong>
+                              {proposal.field === "foods"
+                                ? "food likes"
+                                : proposal.field.replace(/_/g, " ")}
+                            </strong>
                             <span className="capture-proposal-actions">
                               <button
                                 type="button"
@@ -578,7 +766,11 @@ export function CaptureDialog({
                                 [key]: event.target.value,
                               }))
                             }
-                            aria-label={`Edit ${proposal.field.replace(/_/g, " ")}`}
+                            aria-label={`Edit ${
+                              proposal.field === "foods"
+                                ? "food likes"
+                                : proposal.field.replace(/_/g, " ")
+                            }`}
                           />
                           <small title={proposal.evidence}>
                             {Math.round(proposal.confidence * 100)}% · {proposal.evidence}
@@ -778,7 +970,9 @@ export function ImportDialog({
         </>
       ) : (
         <div className="import-result">
-          <h2><Check size={22} weight="bold" /> {result.rows} rows processed</h2>
+          <h2>
+            <SuccessCheck active size={22} variant="stage" /> {result.rows} rows processed
+          </h2>
           <div>
             <span>
               <strong>{result.merged}</strong>

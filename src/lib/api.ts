@@ -158,7 +158,9 @@ export const api = {
     explanation: Record<string, unknown>;
   }>(`/api/people/${id}/signals`, { signal }),
   intelligenceStatus: () => request<{
-    ok: boolean; version?: string; selectedModel?: string; evidenceDocuments: number;
+    ok: boolean; version?: string; selectedModel?: string;
+    fastModel?: string; reasonModel?: string; embedModel?: string;
+    evidenceDocuments: number;
     embeddedDocuments: number; models: { name: string; size?: number }[];
   }>("/api/intelligence/status"),
   refreshIntelligence: (limit = 250) =>

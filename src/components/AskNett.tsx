@@ -5,12 +5,19 @@ import type { AgentAnswer, Person } from "@/types";
 
 type ModelState =
   | { checked: false }
-  | { checked: true; available: boolean; model?: string; documents?: number };
+  | {
+      checked: true;
+      available: boolean;
+      model?: string;
+      reasonModel?: string;
+      embedModel?: string;
+      documents?: number;
+    };
 
 const examples = [
-  "Who do I know in Paris?",
+  "Who do I know in Paris who like spicy food?",
+  "Who might be interested in legal tech?",
   "What do I know about the people I contacted most recently?",
-  "Which people have I written notes about?",
 ];
 
 /** The server answers either with a local model or, when the model call fails,
@@ -23,6 +30,19 @@ function providerNote(provider: string) {
     return "Answered from your people index in milliseconds — no model wait.";
   }
   return "No model output. These are the stored records that matched the question.";
+}
+
+function runningNote(model: Extract<ModelState, { checked: true }>) {
+  const records = typeof model.documents === "number"
+    ? ` over ${model.documents.toLocaleString()} indexed records`
+    : "";
+  const reason = model.reasonModel && model.reasonModel !== model.model
+    ? ` Inferential questions use ${model.reasonModel}.`
+    : "";
+  const embed = model.embedModel
+    ? ` Semantic search is on with ${model.embedModel}.`
+    : " Install nomic-embed-text in Ollama to match paraphrases.";
+  return `Local model ${model.model || "unnamed"} is running${records}.${reason}${embed} Generated answers are not stored facts.`;
 }
 
 export function AskNett({ onOpen }: { onOpen: (id: string) => void }) {
@@ -43,7 +63,9 @@ export function AskNett({ onOpen }: { onOpen: (id: string) => void }) {
         setModel({
           checked: true,
           available: Boolean(status.ok),
-          model: status.selectedModel,
+          model: status.fastModel || status.selectedModel,
+          reasonModel: status.reasonModel,
+          embedModel: status.embedModel,
           documents: status.evidenceDocuments,
         });
       })
@@ -84,14 +106,14 @@ export function AskNett({ onOpen }: { onOpen: (id: string) => void }) {
             citation,
           ]),
         ).values(),
-      ].slice(0, 6)
+      ].slice(0, 12)
     : [];
 
   return (
     <section className="ask" aria-labelledby="ask-nett-title">
       <h2 id="ask-nett-title">Ask or find anything</h2>
       <p className="ask-note">
-        The same retrieval system as ⌘K — people, places, messages, and notes on this Mac.
+        The same retrieval system as ⌘K — people, notes, messages, and email on this Mac.
       </p>
 
       <form
@@ -108,7 +130,7 @@ export function AskNett({ onOpen }: { onOpen: (id: string) => void }) {
           id="ask-nett-query"
           value={query}
           onChange={(event) => setQuery(event.target.value)}
-          placeholder="Who did I meet in Oxford? Who do I know in Paris?"
+          placeholder="Who do I know in Paris who like spicy food?"
           aria-describedby="ask-nett-provider"
         />
         <button className="ask-send" disabled={loading || !query.trim()}>
@@ -153,6 +175,7 @@ export function AskNett({ onOpen }: { onOpen: (id: string) => void }) {
                     <span>{citation.label}</span>
                     <small>
                       {citation.source} / {citation.field.replace(/_/g, " ")}
+                      {citation.value ? ` — ${citation.value.slice(0, 140)}` : ""}
                     </small>
                   </button>
                 </li>
@@ -184,11 +207,7 @@ export function AskNett({ onOpen }: { onOpen: (id: string) => void }) {
         {!model.checked
           ? "Checking whether a local model is running..."
           : model.available
-            ? `Local model ${model.model || "unnamed"} is running${
-                typeof model.documents === "number"
-                  ? ` over ${model.documents.toLocaleString()} indexed records`
-                  : ""
-              }. Its answers are generated text, not stored facts.`
+            ? runningNote(model)
             : "No local model is running. Nett will return the stored records that match your question instead of a written answer."}
       </p>
     </section>

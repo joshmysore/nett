@@ -518,7 +518,51 @@ export function addMemory(personId: string, rawText: string, structured: Record<
     db.prepare("INSERT OR IGNORE INTO tags (id, name) VALUES (?, ?)").run(tagId, tag);
     db.prepare("INSERT OR IGNORE INTO contact_tags (person_id, tag_id, source) VALUES (?, ?, ?)").run(personId, tagId, source);
   });
-  if (structured.followUpDate) db.prepare("UPDATE nett_metadata SET follow_up_date=?, updated_at=? WHERE person_id=?").run(structured.followUpDate, timestamp, personId);
+  const followUp = structured.followUpDate ?? structured.follow_up_date;
+  if (followUp) db.prepare("UPDATE nett_metadata SET follow_up_date=?, updated_at=? WHERE person_id=?").run(followUp, timestamp, personId);
+
+  // Approved capture proposals become person fields. List values merge; scalars
+  // fill empty slots only so an accepted fact never silently clobbers one.
+  const person = getPerson(personId) as Record<string, any> | null;
+  if (person) {
+    const listFields = [
+      "hometown", "languages", "skills", "interests", "foods", "institutions", "mutuals",
+      "online_personality",
+    ] as const;
+    const scalarFields = [
+      "location", "industry", "company", "spike", "relationship", "when_met", "where_met",
+      "how_met", "gender", "culture", "personality", "birthday",
+    ] as const;
+    const update: Record<string, unknown> = {};
+    for (const field of listFields) {
+      const incoming = structured[field];
+      if (incoming === undefined || incoming === null || incoming === "") continue;
+      const additions = listify(incoming).map((item) => item.trim()).filter(Boolean);
+      if (!additions.length) continue;
+      const current = listify(person[field]);
+      const seen = new Set(current.map((item) => item.toLocaleLowerCase()));
+      const combined = [...current];
+      for (const item of additions) {
+        const key = item.toLocaleLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        combined.push(item);
+      }
+      if (combined.length !== current.length) update[field] = combined;
+    }
+    for (const field of scalarFields) {
+      const incoming = structured[field];
+      if (incoming === undefined || incoming === null) continue;
+      const value = Array.isArray(incoming) ? incoming.map(String).filter(Boolean).join(", ") : String(incoming).trim();
+      if (!value) continue;
+      const current = person[field];
+      if (current == null || current === "" || (Array.isArray(current) && current.length === 0)) {
+        update[field] = value;
+      }
+    }
+    if (Object.keys(update).length) updatePerson(personId, update, source);
+  }
+
   return getPerson(personId);
 }
 
