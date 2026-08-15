@@ -111,21 +111,21 @@ export type ComposerTrigger = {
   end: number;
 };
 
-const TRIGGER = /(^|[\s\u00A0])([@/])([^\s\u00A0]*)$/u;
+const MENTION = /(^|[\s\u00A0])@([^\s\u00A0]*(?:\s[^\s\u00A0]+){0,2})$/u;
+const ABILITY = /(^|[\s\u00A0])\/([^\s\u00A0]*)$/u;
 
 export function detectComposerTrigger(text: string, caret: number): ComposerTrigger | null {
   if (caret < 0 || caret > text.length) return null;
   const before = text.slice(0, caret);
-  const match = before.match(TRIGGER);
-  if (!match) return null;
-  const mark = match[2];
-  const query = match[3] ?? "";
-  return {
-    kind: mark === "@" ? "mention" : "ability",
-    query,
-    start: before.length - mark.length - query.length,
-    end: caret,
-  };
+  const mention = before.match(MENTION);
+  if (mention) {
+    const query = mention[2] ?? "";
+    return { kind: "mention", query, start: before.length - 1 - query.length, end: caret };
+  }
+  const ability = before.match(ABILITY);
+  if (!ability) return null;
+  const query = ability[2] ?? "";
+  return { kind: "ability", query, start: before.length - 1 - query.length, end: caret };
 }
 
 export function replaceTriggerRange(text: string, trigger: ComposerTrigger, insert = ""): string {

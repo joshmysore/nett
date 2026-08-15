@@ -810,8 +810,16 @@
   font-size: 12px;
 }
 
-.ask-composer-hint svg {
-  flex: none;
+.ask-composer-hint kbd {
+  display: inline-block;
+  min-width: 1.4em;
+  padding: 0 4px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--field);
+  color: var(--text-soft);
+  font: 12px/1.5 "JetBrains Mono Variable", ui-monospace, monospace;
+  text-align: center;
 }
 
 .ask-suggest {

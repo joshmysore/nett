@@ -1,4 +1,4 @@
-import { At, PaperPlaneTilt, Stop, X } from "@phosphor-icons/react";
+import { PaperPlaneTilt, Stop, X } from "@phosphor-icons/react";
 import {
   type KeyboardEvent as ReactKeyboardEvent,
   useEffect,
@@ -61,6 +61,12 @@ export function AskComposer({
   const [peopleHits, setPeopleHits] = useState<Person[]>([]);
   const [searching, setSearching] = useState(false);
   const trigger = detectComposerTrigger(value.text, caret);
+
+  useEffect(() => {
+    const field = fieldRef.current;
+    if (!field) return;
+    setCaret(document.activeElement === field ? field.selectionStart ?? value.text.length : value.text.length);
+  }, [value.text]);
 
   useEffect(() => {
     if (trigger?.kind !== "mention") {
@@ -276,8 +282,9 @@ export function AskComposer({
         aria-describedby={describedBy}
         placeholder={composerPlaceholder(value.people, value.abilities)}
         onChange={(event) => {
-          onChange({ ...value, text: event.target.value });
-          setCaret(event.target.selectionStart);
+          const next = event.target.value;
+          onChange({ ...value, text: next });
+          setCaret(event.target.selectionStart ?? next.length);
         }}
         onClick={(event) => setCaret(event.currentTarget.selectionStart)}
         onKeyUp={(event) => setCaret(event.currentTarget.selectionStart)}
@@ -336,10 +343,8 @@ export function AskComposer({
       )}
 
       <p className="ask-composer-hint">
-        <At size={12} aria-hidden="true" />
-        <span>@ person</span>
-        <span className="ask-chip-slash" aria-hidden="true">/</span>
-        <span>/ ability</span>
+        <span><kbd>@</kbd> person</span>
+        <span><kbd>/</kbd> ability</span>
       </p>
 
       {loading ? (

@@ -23,6 +23,12 @@ test("detects @ mentions at the start of a token", () => {
     end: 15,
   });
   assert.equal(detectComposerTrigger("hello@ana", 9), null);
+  assert.deepEqual(detectComposerTrigger("@Abigail Hughes", 15), {
+    kind: "mention",
+    query: "Abigail Hughes",
+    start: 0,
+    end: 15,
+  });
 });
 
 test("detects / abilities only at a word start", () => {

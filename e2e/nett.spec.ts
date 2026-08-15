@@ -40,7 +40,8 @@ test("Ask composer attaches people with @ and abilities with /", async ({ page, 
   await page.goto("/today");
   const field = page.getByRole("combobox", { name: /Ask a question about your records/i });
   await expect(field).toBeVisible();
-  await field.fill(`@${person.name}`);
+  await field.click();
+  await field.pressSequentially(`@${person.name}`, { delay: 15 });
   const peopleBox = page.getByRole("listbox", { name: "People" });
   await expect(peopleBox).toBeVisible();
   const personOption = peopleBox.getByRole("option").filter({ hasText: person.name }).first();
