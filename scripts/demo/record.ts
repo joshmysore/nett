@@ -259,15 +259,8 @@ async function walkthrough(page: Page, mark: (id: string) => void) {
   await sleep(5600);
 
   mark("workbench");
-  const openNett = page.getByRole("link", { name: /Open Nett/ }).first();
-  await openNett.waitFor({ state: "attached", timeout: 5000 });
-  await moveTo(page, openNett);
-  await zoomTo(page, openNett, 1.42);
-  await page.evaluate(() => window.__nettDemo.clickPulse());
-  await sleep(280);
-  await page.goto(`${BASE}/today`, { waitUntil: "domcontentloaded" });
+  await page.goto(`${BASE}/today`, { waitUntil: "domcontentloaded", timeout: 15_000 });
   await page.locator("#ask-nett-query").waitFor({ state: "visible", timeout: 20_000 });
-  await zoomReset(page);
   await sleep(1600);
 
   const rail = (label: string) => page.locator(".rail-link", { hasText: label }).first();
@@ -452,6 +445,8 @@ async function main() {
       reducedMotion: "no-preference",
       recordVideo: { dir: RAW_DIR, size: { width: 1440, height: 900 } },
     });
+    context.setDefaultTimeout(12_000);
+    context.setDefaultNavigationTimeout(15_000);
     await context.addInitScript(OVERLAY);
     const page = await context.newPage();
     page.on("pageerror", (error) => console.warn("pageerror", error.message));
