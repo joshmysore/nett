@@ -1396,7 +1396,7 @@ export function formatAskAnswer(retrieval: AskRetrieval): string {
   if (intent.wantsGroups && groups.length) {
     return formatGroupAnswer(groups, people[0]?.name || intent.namedPerson);
   }
-  if (intent.personBrief || intent.wantsMessages || people[0]?.groups.has("name")) {
+  if (people[0]?.groups.has("name") && (intent.personBrief || intent.wantsMessages || intent.namedPerson || intent.pronounRef)) {
     return formatPersonBrief(people, intent.namedPerson);
   }
   const required = requiredGroups(intent);

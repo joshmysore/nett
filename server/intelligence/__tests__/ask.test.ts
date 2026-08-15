@@ -209,10 +209,17 @@ test("unmatched questions do not dump unrelated recent evidence", async () => {
 
 test("recent-contact questions prefer last_contact over the rest of the network", async () => {
   seedPerson("Jules Today", { location: "Madrid", last_contact: new Date().toISOString() });
+  seedPerson("Ivo This Week", { location: "Madrid", last_contact: new Date(Date.now() - 2 * 86_400_000).toISOString() });
   seedPerson("Kim Years", { location: "Madrid", last_contact: "2020-01-01T00:00:00.000Z" });
   const retrieval = await retrieveAskMatches("What do I know about the people I contacted most recently?");
-  assert.ok(peopleNames(retrieval).includes("Jules Today"));
-  assert.ok(formatAskAnswer(retrieval).includes("Jules Today"));
+  const names = peopleNames(retrieval);
+  assert.ok(names.includes("Jules Today"));
+  assert.ok(names.includes("Ivo This Week"));
+  assert.ok(!names.includes("Kim Years"));
+  const answer = formatAskAnswer(retrieval);
+  assert.match(answer, /Jules Today/);
+  assert.match(answer, /Ivo This Week/);
+  assert.doesNotMatch(answer, /Kim Years/);
 });
 
 test("hybrid retrieval finds a paraphrase via profile embeddings", async () => {
