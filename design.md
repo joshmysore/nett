@@ -192,10 +192,11 @@ into fields on a person, after review. Recording a memory is a written note on
 that person’s page — it is not structured.
 
 Home **is** Ask. The page is a local agent: a live thinking trace of real
-retrieval stages, a cited answer, and a composer. It does not write. It must
-not lead with follow-up, contact-frequency, “going quiet,” or
-database-completeness metrics. People, Review, and Sources stay on their own
-routes.
+retrieval stages, a cited answer, and a composer. The composer attaches people
+with `@` and retrieval abilities with `/` — those are context chips, not a
+second page. It does not write. It must not lead with follow-up,
+contact-frequency, “going quiet,” or database-completeness metrics. People,
+Review, and Sources stay on their own routes.
 
 People is search-first. The default surface is a recognition card grid (glow
 spotlight on hover). Dense list (`view=list`) and spreadsheet (`view=sheet`)

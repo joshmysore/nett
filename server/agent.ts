@@ -2,13 +2,20 @@ import Fuse from "fuse.js";
 import { randomUUID } from "node:crypto";
 import { db, getPeople } from "./db.js";
 import { answerRelationshipQuestion } from "./intelligence/service.js";
+import type { AskAbilityId } from "./intelligence/ask.js";
 
 export type Citation = { personId: string; label: string; field: string; value: string; source: string };
 export type AgentAnswer = { answer: string; citations: Citation[]; provider: string };
 
+export type AgentQueryScope = {
+  personIds?: readonly string[];
+  ability?: AskAbilityId | null;
+  contextPersonIds?: readonly string[];
+};
+
 export interface LlmProvider {
   id: string;
-  answer(query: string, signal?: AbortSignal): Promise<AgentAnswer>;
+  answer(query: string, signal?: AbortSignal, scope?: AgentQueryScope): Promise<AgentAnswer>;
 }
 
 const daysSince = (date?: string) => date ? Math.floor((Date.now() - Date.parse(date)) / 86400000) : 9999;
@@ -59,8 +66,13 @@ export class LocalEvidenceProvider implements LlmProvider {
 export function getProvider(): LlmProvider {
   return {
     id: "local-relationship-intelligence",
-    async answer(query, signal) {
-      const result = await answerRelationshipQuestion(query, { signal });
+    async answer(query, signal, scope) {
+      const result = await answerRelationshipQuestion(query, {
+        signal,
+        personIds: scope?.personIds,
+        ability: scope?.ability,
+        contextPersonIds: scope?.contextPersonIds,
+      });
       db.prepare("INSERT INTO ai_queries (id, query, response, citations_json, provider, created_at) VALUES (?, ?, ?, ?, ?, datetime('now'))")
         .run(randomUUID(), query, result.answer, JSON.stringify(result.citations), result.provider);
       return result;

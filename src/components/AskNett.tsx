@@ -2,13 +2,17 @@ import {
   ArrowRight,
   CaretDown,
   Copy,
-  PaperPlaneTilt,
-  Stop,
   WarningCircle,
 } from "@phosphor-icons/react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { AskComposer, type AskComposerValue, type AskPersonRef } from "@/components/AskComposer";
 import { Avatar } from "@/components/Primitives";
+import {
+  abilityById,
+  composeAskQuestion,
+  primaryAskAbility,
+} from "@/lib/ask-composer";
 import { api, isAbortError } from "@/lib/api";
 import type { AgentAnswer, Citation, Person } from "@/types";
 
@@ -41,11 +45,15 @@ type Stage = {
 type Turn = {
   id: number;
   question: string;
+  people: AskPersonRef[];
+  abilities: AskComposerValue["abilities"];
   answer: AgentAnswer | null;
   stages: Stage[];
   error: string | null;
   loading: boolean;
 };
+
+const emptyComposer = (): AskComposerValue => ({ text: "", people: [], abilities: [] });
 
 const examples = [
   "What do I know about Serena?",
@@ -373,14 +381,13 @@ function SelectionActions({ root }: { root: HTMLElement | null }) {
 
 export function AskNett({ onOpen }: { onOpen: (id: string) => void }) {
   const navigate = useNavigate();
-  const [query, setQuery] = useState("");
+  const [draft, setDraft] = useState<AskComposerValue>(emptyComposer);
   const [turns, setTurns] = useState<Turn[]>([]);
   const [model, setModel] = useState<ModelState>({ checked: false });
   const [evidenceOpen, setEvidenceOpen] = useState(false);
   const [copied, setCopied] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
   const requestId = useRef(0);
-  const fieldRef = useRef<HTMLTextAreaElement>(null);
   const threadRef = useRef<HTMLDivElement>(null);
   const answerRef = useRef<HTMLElement | null>(null);
   const loading = turns.some((turn) => turn.loading);
@@ -431,17 +438,36 @@ export function AskNett({ onOpen }: { onOpen: (id: string) => void }) {
     );
   };
 
-  const ask = async (value = query) => {
-    const next = value.trim();
+  const ask = async (
+    value = draft.text,
+    attached: Pick<AskComposerValue, "people" | "abilities"> = draft,
+  ) => {
+    const ability = attached.abilities.length
+      ? abilityById(primaryAskAbility(attached.abilities) ?? attached.abilities[0])
+      : null;
+    const next = composeAskQuestion(value, attached.people, ability);
     if (!next) return;
-    setQuery("");
+    setDraft(emptyComposer());
     abortRef.current?.abort();
     const abort = new AbortController();
     abortRef.current = abort;
     const id = ++requestId.current;
+    const contextPersonIds = turns
+      .flatMap((item) => (item.answer?.citations || []).map((citation) => citation.personId))
+      .filter(Boolean)
+      .filter((personId, index, all) => all.indexOf(personId) === index)
+      .slice(-3);
+    const payload = {
+      query: next,
+      personIds: attached.people.map((person) => person.id),
+      ability: primaryAskAbility(attached.abilities),
+      contextPersonIds,
+    };
     const turn: Turn = {
       id,
       question: next,
+      people: attached.people,
+      abilities: attached.abilities,
       answer: { answer: "", citations: [], provider: "local-evidence" },
       stages: [{ id: "search", label: "Searching records", done: false }],
       error: null,
@@ -450,15 +476,10 @@ export function AskNett({ onOpen }: { onOpen: (id: string) => void }) {
     setTurns((current) => [...current, turn]);
     setEvidenceOpen(false);
     setCopied(false);
-    const contextPersonIds = turns
-      .flatMap((item) => (item.answer?.citations || []).map((citation) => citation.personId))
-      .filter(Boolean)
-      .filter((personId, index, all) => all.indexOf(personId) === index)
-      .slice(-3);
     try {
       let streamed = false;
       try {
-        for await (const event of api.queryStream(next, abort.signal, contextPersonIds)) {
+        for await (const event of api.queryStream(payload, abort.signal)) {
           if (id !== requestId.current || abort.signal.aborted) return;
           streamed = true;
           if (event.type === "stage") {
@@ -521,7 +542,7 @@ export function AskNett({ onOpen }: { onOpen: (id: string) => void }) {
       } catch (reason) {
         if (isAbortError(reason) || abort.signal.aborted) return;
         if (streamed) throw reason;
-        const result = await api.query(next, abort.signal, contextPersonIds);
+        const result = await api.query(payload, abort.signal);
         if (id !== requestId.current || abort.signal.aborted) return;
         patchTurn(id, {
           loading: false,
@@ -590,16 +611,22 @@ export function AskNett({ onOpen }: { onOpen: (id: string) => void }) {
 
       <div className="ask-thread" ref={threadRef}>
         {!turns.length && (
-          <ul className="ask-examples">
-            {examples.map((example) => (
-              <li key={example}>
-                <button type="button" onClick={() => void ask(example)}>
-                  {example}
-                  <ArrowRight size={13} aria-hidden="true" />
-                </button>
-              </li>
-            ))}
-          </ul>
+          <div className="ask-empty">
+            <p className="ask-empty-lead">
+              Point at a person with <kbd>@</kbd>, or pick an ability with <kbd>/</kbd>.
+              Ask still only reads stored records.
+            </p>
+            <ul className="ask-examples">
+              {examples.map((example) => (
+                <li key={example}>
+                  <button type="button" onClick={() => void ask(example, emptyComposer())}>
+                    {example}
+                    <ArrowRight size={13} aria-hidden="true" />
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </div>
         )}
 
         {turns.map((turn) => {
@@ -610,6 +637,27 @@ export function AskNett({ onOpen }: { onOpen: (id: string) => void }) {
             <article key={turn.id} className="ask-turn">
               <p className="ask-asked">
                 <span>You asked</span>
+                {(turn.people.length > 0 || turn.abilities.length > 0) && (
+                  <span className="ask-asked-refs">
+                    {turn.people.map((person) => (
+                      <button
+                        key={person.id}
+                        type="button"
+                        className="ask-chip"
+                        onClick={() => openPerson(person.id)}
+                      >
+                        <Avatar person={person} size="sm" />
+                        {person.name}
+                      </button>
+                    ))}
+                    {turn.abilities.map((id) => (
+                      <span key={id} className="ask-chip ask-chip-ability">
+                        <span className="ask-chip-slash" aria-hidden="true">/</span>
+                        {abilityById(id).label}
+                      </span>
+                    ))}
+                  </span>
+                )}
                 {turn.question}
               </p>
               <ThinkingTrace stages={turn.stages} loading={turn.loading} elapsed={turn.loading ? elapsed : ""} />
@@ -702,9 +750,12 @@ export function AskNett({ onOpen }: { onOpen: (id: string) => void }) {
                         type="button"
                         className="text-button"
                         onClick={() => {
-                          setQuery(turn.question);
-                          fieldRef.current?.focus();
-                          void ask(turn.question);
+                          setDraft({
+                            text: turn.question,
+                            people: turn.people,
+                            abilities: turn.abilities,
+                          });
+                          void ask(turn.question, turn);
                         }}
                       >
                         Retry
@@ -718,7 +769,7 @@ export function AskNett({ onOpen }: { onOpen: (id: string) => void }) {
                 <p className="inline-error" role="alert">
                   <WarningCircle size={15} aria-hidden="true" />
                   {turn.error}
-                  <button className="text-button" onClick={() => void ask(turn.question)}>
+                  <button className="text-button" onClick={() => void ask(turn.question, turn)}>
                     Try again
                   </button>
                 </p>
@@ -740,46 +791,14 @@ export function AskNett({ onOpen }: { onOpen: (id: string) => void }) {
         )}
       </div>
 
-      <form
-        className="ask-form"
-        onSubmit={(event) => {
-          event.preventDefault();
-          void ask();
-        }}
-      >
-        <label className="sr-only" htmlFor="ask-nett-query">
-          Ask a question about your records
-        </label>
-        <textarea
-          id="ask-nett-query"
-          ref={fieldRef}
-          value={query}
-          onChange={(event) => setQuery(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === "Enter" && !event.shiftKey) {
-              event.preventDefault();
-              void ask();
-            }
-          }}
-          placeholder="Ask anything about someone you know…"
-          aria-describedby="ask-nett-provider"
-        />
-        {loading ? (
-          <button
-            type="button"
-            className="ask-send"
-            onClick={() => abortRef.current?.abort()}
-            aria-label="Stop asking"
-          >
-            <Stop size={16} aria-hidden="true" />
-          </button>
-        ) : (
-          <button className="ask-send" disabled={!query.trim()}>
-            <PaperPlaneTilt size={16} aria-hidden="true" />
-            <span className="sr-only">Ask</span>
-          </button>
-        )}
-      </form>
+      <AskComposer
+        value={draft}
+        loading={loading}
+        describedBy="ask-nett-provider"
+        onChange={setDraft}
+        onSubmit={() => void ask()}
+        onStop={() => abortRef.current?.abort()}
+      />
 
       <p className="ask-provider" id="ask-nett-provider">
         {!model.checked

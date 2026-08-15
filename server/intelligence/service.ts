@@ -29,6 +29,7 @@ import {
   retrieveAskMatches,
   retrievalPathNote,
   scoreEmbeddedRows,
+  type AskAbilityId,
 } from "./ask.js";
 import {
   defaultCloudModel,
@@ -384,6 +385,8 @@ function answerLooksThin(answer: string, retrieval: Awaited<ReturnType<typeof re
 
 export type AskQueryOptions = {
   signal?: AbortSignal;
+  personIds?: readonly string[];
+  ability?: AskAbilityId | null;
   contextPersonIds?: readonly string[];
 };
 
@@ -391,6 +394,8 @@ async function retrieveForAsk(question: string, options: AskQueryOptions = {}) {
   const models = await resolveModels(options.signal).catch(() => null);
   const retrieval = await retrieveAskMatches(question, {
     signal: options.signal,
+    personIds: options.personIds,
+    ability: options.ability,
     contextPersonIds: options.contextPersonIds,
     embedQuery: models?.embed
       ? async (text, signal) => {

@@ -34,6 +34,7 @@ import {
 import { getAskWriterSettings, setAskWriterSettings } from "./intelligence/ask-writer.js";
 import { answerRelationshipQuestion } from "./intelligence/service.js";
 import { generateRelationshipInsights } from "./intelligence/insights.js";
+import { isAskAbilityId } from "./intelligence/ask.js";
 import { parsePersonPatch } from "../src/lib/contracts.js";
 import {
   applyLinkedInPublicProfile,
@@ -1106,6 +1107,10 @@ app.post("/api/import/csv", upload.single("file"), (req, res) => {
 app.post("/api/agent/query", async (req, res) => {
   const query = String(req.body.query || "").trim();
   if (!query) return res.status(400).json({ error: "Ask a question about your network" });
+  const personIds = Array.isArray(req.body.personIds)
+    ? req.body.personIds.filter((id: unknown): id is string => typeof id === "string" && id.length > 0).slice(0, 12)
+    : [];
+  const ability = isAskAbilityId(req.body.ability) ? req.body.ability : null;
   const contextPersonIds = Array.isArray(req.body.contextPersonIds)
     ? req.body.contextPersonIds.map((id: unknown) => String(id || "")).filter(Boolean).slice(0, 4)
     : [];
@@ -1122,6 +1127,8 @@ app.post("/api/agent/query", async (req, res) => {
       res.flushHeaders();
       for await (const event of streamRelationshipQuestion(query, {
         signal: controller.signal,
+        personIds,
+        ability,
         contextPersonIds,
       })) {
         if (res.writableEnded) return;
@@ -1138,6 +1145,8 @@ app.post("/api/agent/query", async (req, res) => {
     }
     const result = await answerRelationshipQuestion(query, {
       signal: controller.signal,
+      personIds,
+      ability,
       contextPersonIds,
     });
     if (res.writableEnded) return;

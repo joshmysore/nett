@@ -315,19 +315,34 @@ export const api = {
     Object.entries(input).forEach(([key, value]) => { if (value) body.append(key, value); });
     return request<{ recordsSeen: number; bundles: number; message: string }>("/api/platform/whatsapp/import", { method: "POST", body });
   },
-  query: (query: string, signal?: AbortSignal, contextPersonIds?: string[]) =>
-    request<AgentAnswer>("/api/agent/query", { method: "POST", body: JSON.stringify({ query, contextPersonIds }), signal }),
-  queryStream: async function* (query: string, signal?: AbortSignal, contextPersonIds?: string[]): AsyncGenerator<
+  query: (
+    input: string | { query: string; personIds?: string[]; ability?: string | null; contextPersonIds?: string[] },
+    signal?: AbortSignal,
+    contextPersonIds?: string[],
+  ) => {
+    const body = typeof input === "string"
+      ? { query: input, contextPersonIds }
+      : { ...input, contextPersonIds: input.contextPersonIds ?? contextPersonIds };
+    return request<AgentAnswer>("/api/agent/query", { method: "POST", body: JSON.stringify(body), signal });
+  },
+  queryStream: async function* (
+    input: string | { query: string; personIds?: string[]; ability?: string | null; contextPersonIds?: string[] },
+    signal?: AbortSignal,
+    contextPersonIds?: string[],
+  ): AsyncGenerator<
     | { type: "stage"; id: string; label: string; detail?: string }
     | { type: "meta"; path: string; provider: string; citations: AgentAnswer["citations"]; note?: string }
     | { type: "token"; text: string }
     | { type: "reset" }
     | { type: "done"; answer: string; citations: AgentAnswer["citations"]; provider: string; note?: string }
   > {
+    const body = typeof input === "string"
+      ? { query: input, contextPersonIds }
+      : { ...input, contextPersonIds: input.contextPersonIds ?? contextPersonIds };
     const response = await fetch("/api/agent/query?stream=1", {
       method: "POST",
       headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
-      body: JSON.stringify({ query, contextPersonIds }),
+      body: JSON.stringify(body),
       signal,
     });
     if (!response.ok || !response.body) {
