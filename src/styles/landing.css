@@ -220,6 +220,10 @@ body.on-landing {
   background: transparent;
 }
 
+.landing-hero-stack:has(.landing-hero-body.has-scene) {
+  width: min(100% - 40px, 1320px);
+}
+
 .landing-nav {
   flex: none;
   min-height: 72px;
@@ -395,6 +399,19 @@ body.on-landing {
   }
 }
 
+.landing-hero-body {
+  flex: 1;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  min-height: 0;
+}
+
+.landing-hero-body.has-scene {
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 1fr);
+  gap: var(--space-lg);
+  align-items: stretch;
+}
+
 .landing-serenity-stage {
   flex: 1;
   display: flex;
@@ -403,6 +420,48 @@ body.on-landing {
   align-items: center;
   padding: clamp(28px, 5vh, 56px) 0 clamp(36px, 6vh, 64px);
   text-align: center;
+  min-width: 0;
+}
+
+.landing-hero-body.has-scene .landing-serenity-stage {
+  align-items: flex-start;
+  text-align: left;
+  padding-inline-end: var(--space-sm);
+}
+
+.landing-hero-body.has-scene .landing-serenity-top,
+.landing-hero-body.has-scene .landing-serenity-center,
+.landing-hero-body.has-scene .landing-serenity-bottom {
+  align-items: flex-start;
+}
+
+.landing-hero-body.has-scene .landing-rule-fade {
+  margin-inline: 0;
+}
+
+.landing-hero-body.has-scene .landing-cta-wrap {
+  justify-content: flex-start;
+}
+
+.landing-spline-scene {
+  position: relative;
+  min-width: 0;
+  min-height: 280px;
+  height: 100%;
+}
+
+.landing-spline-scene > div,
+.landing-spline-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.landing-spline-scene canvas {
+  display: block;
+  width: 100% !important;
+  height: 100% !important;
 }
 
 .landing-serenity-top,
@@ -436,37 +495,20 @@ body.on-landing {
 
 .landing-brand-mark {
   width: min(42vw, 220px);
-  aspect-ratio: 1;
-  display: grid;
-  place-items: center;
-  opacity: 1;
-  /* No blur / scale settle — those read as flashing on the crystal. */
-}
-
-.landing-logo-tilt {
   display: block;
-  margin: 0 auto;
+  opacity: 1;
 }
 
-.landing-logo-tilt .t-tilt-card {
-  border-radius: 20px;
-  border: 1px solid oklch(86% 0.02 250 / 0.18);
-  background: oklch(22% 0.02 250 / 0.35);
-  padding: 18px 22px;
-  box-shadow: inset 0 1px 0 oklch(92% 0.02 250 / 0.08);
-}
-
-.landing-logo-tilt .landing-brand-mark {
-  width: min(38vw, 188px);
+.landing-hero-body.has-scene .landing-brand-mark {
+  width: min(28vw, 168px);
 }
 
 .landing-brand-mark img {
+  display: block;
   width: 100%;
-  height: 100%;
+  height: auto;
   object-fit: contain;
   mix-blend-mode: screen;
-  -webkit-mask-image: radial-gradient(circle at center, #000 42%, transparent 74%);
-  mask-image: radial-gradient(circle at center, #000 42%, transparent 74%);
 }
 
 .landing-serenity-title {
@@ -1198,14 +1240,6 @@ body.on-landing {
     width: min(48vw, 168px);
   }
 
-  .landing-logo-tilt .landing-brand-mark {
-    width: min(42vw, 148px);
-  }
-
-  .landing-logo-tilt .t-tilt-card {
-    padding: 12px 14px;
-  }
-
   .crystal-mark {
     max-width: 420px;
     margin-inline: auto;
@@ -1255,6 +1289,16 @@ body.on-landing {
   }
 }
 
+@media (max-width: 899px) {
+  .landing-hero-body.has-scene {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .landing-spline-scene {
+    display: none;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .soft-line,
   .floating-element-animate {
@@ -1266,6 +1310,10 @@ body.on-landing {
   .ripple-effect {
     animation: none;
     opacity: 0;
+  }
+
+  .landing-spline-scene {
+    display: none;
   }
 }
 

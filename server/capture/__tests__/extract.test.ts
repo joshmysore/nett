@@ -118,3 +118,47 @@ test("does not invent preference structure from infinitives", () => {
   assert.equal(result.proposals.find((proposal) => proposal.field === "foods"), undefined);
   assert.equal(result.proposals.find((proposal) => proposal.field === "interests"), undefined);
 });
+
+const FIXTURES: Array<{
+  text: string;
+  name?: string;
+  fields: Partial<Record<CaptureField, string | string[]>>;
+}> = [
+  { text: "Sam Weil likes red wine from Spain", name: "Sam Weil", fields: { foods: ["Spanish red wine"] } },
+  { text: "Maya likes hiking and pottery", name: "Maya", fields: { interests: ["hiking", "pottery"] } },
+  { text: "She grew up in Porto.", fields: { hometown: "Porto" } },
+  { text: "Ada is from Lisbon originally.", name: "Ada", fields: { hometown: "Lisbon" } },
+  { text: "Jules lives in Philadelphia.", name: "Jules", fields: { location: "Philadelphia" } },
+  { text: "Ken works at Stripe.", name: "Ken", fields: { company: "Stripe" } },
+  { text: "Priya is a product designer at Notion.", name: "Priya", fields: { job_title: "product designer" } },
+  { text: "She speaks Portuguese and French.", fields: { languages: ["Portuguese", "French"] } },
+  { text: "Met Ana in Lisbon through Maya.", name: "Ana", fields: { where_met: "Lisbon", how_met: "Introduced by Maya" } },
+  { text: "We met in June at the Berlin conference.", fields: { when_met: "June" } },
+  { text: "Her birthday is March 4.", fields: { birthday: "03-04" } },
+  { text: "Born on 1991-11-18.", fields: { birthday: "1991-11-18" } },
+  { text: "Favourite food is dosa and filter coffee.", fields: { foods: ["dosa", "filter coffee"] } },
+  { text: "He works in climate finance.", fields: { industry: "climate finance" } },
+  {
+    text: "Met Zoë in München. She speaks German, works at DeepL, and likes Riesling.",
+    name: "Zoë",
+    fields: { where_met: "München", company: "DeepL", foods: ["Riesling"] },
+  },
+];
+
+test("fifteen capture fixtures produce reviewable field operations", () => {
+  assert.equal(FIXTURES.length, 15);
+  for (const fixture of FIXTURES) {
+    const result = extractCapture(fixture.text, TODAY);
+    if (fixture.name) assert.equal(result.nameHint, fixture.name, fixture.text);
+    for (const [field, expected] of Object.entries(fixture.fields)) {
+      const proposal = result.proposals.find((item) => item.field === field);
+      assert.ok(proposal, `${fixture.text} missing ${field}`);
+      if (Array.isArray(expected)) {
+        assert.deepEqual(proposal?.values ?? proposal?.value.split(",").map((part) => part.trim()), expected);
+      } else {
+        assert.equal(proposal?.value, expected, `${fixture.text} ${field}`);
+      }
+      assert.ok(fixture.text.includes(proposal!.evidence));
+    }
+  }
+});

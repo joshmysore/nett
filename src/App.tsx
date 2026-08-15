@@ -151,7 +151,8 @@ function NettApp() {
         setDialog("import");
         return;
       }
-      navigate(action.path);
+      const [pathname, hash] = action.path.split("#");
+      navigate({ pathname, hash: hash ? `#${hash}` : undefined });
     },
     [navigate],
   );
@@ -181,7 +182,16 @@ function NettApp() {
       }
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "m") {
         event.preventDefault();
+        setCommandOpen(false);
         setDialog("capture");
+      }
+      if (event.key === "/" && !event.metaKey && !event.ctrlKey && !event.altKey) {
+        const target = event.target;
+        if (target instanceof HTMLElement && target.closest("input, textarea, select, [contenteditable='true']")) {
+          return;
+        }
+        event.preventDefault();
+        openCommandPalette();
       }
       if (event.key === "Escape") {
         // Modals consume Escape in the capture phase. Only clear the drawer
@@ -192,7 +202,7 @@ function NettApp() {
     };
     window.addEventListener("keydown", listener);
     return () => window.removeEventListener("keydown", listener);
-  }, [dialog, commandOpen]);
+  }, [dialog, commandOpen, openCommandPalette]);
 
   useEffect(() => {
     if (!toast) return;
@@ -242,18 +252,13 @@ function NettApp() {
       <AppShell
         onSearch={openCommandPalette}
         onCapture={() => setDialog("capture")}
+        ownerName={overview.setup.ownerDisplayName}
       >
         <Suspense fallback={<AppSkeleton />}>
           <Routes>
               <Route
                 path="/today"
-                element={
-                  <DashboardPage
-                    overview={overview}
-                    onOpen={setDrawerId}
-                    onCapture={() => setDialog("capture")}
-                  />
-                }
+                element={<DashboardPage onOpen={setDrawerId} />}
               />
               <Route
                 path="/people"
@@ -319,7 +324,7 @@ function NettApp() {
               onSaved={() => {
                 setDialog(null);
                 void refresh();
-                notify("success", "Memory added to the relationship record");
+                notify("success", "Saved to the person");
               }}
             />
           )}

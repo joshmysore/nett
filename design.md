@@ -161,8 +161,9 @@ Glass rules:
   never delay the Open Nett CTA.
 - Crystal intro video is ceremonial (landing close only). Everyday chrome keeps
   the continuous-line monogram with a one-shot stroke draw into the wordmark.
-- Reduced motion removes spatial transitions, freezes path drift, swaps video
-  for the static crystal mark, and caps fades at 150 ms.
+- Reduced motion removes spatial transitions, freezes path drift, hides the
+  ceremonial 3D stand-in, swaps video for the static crystal mark, and caps
+  fades at 150 ms.
 
 ## Microinteractions
 
@@ -182,15 +183,19 @@ Glass rules:
 
 ## Navigation
 
-Primary: **Home · People · Review · Sources**. The route remains `/today` for
-deep-link compatibility. Desktop rail shows labels, not icon-only mystery
-links. Review uses a quiet unresolved mark; the exact counts live on the Review
-page. Import lives in Sources. The header contains global search and Remember.
+Primary chrome is a **workspace sidebar**: Ask · Review · People · Sources.
+The Ask route remains `/today` for deep-link compatibility. The rail shows
+labels, a gliding hover mark, Find (⌘K or `/`), and Remember (⌘M). Review
+uses a count when items are unresolved; exact queues live on Review. Import
+lives in Sources. Find jumps to a person or command. Remember turns a sentence
+into fields on a person, after review. Recording a memory is a written note on
+that person’s page — it is not structured.
 
-Home answers: **What is worth remembering right now?** It surfaces recently
-relevant people, new memories, unresolved identities/provenance, and retrieval
-opportunities. It must not lead with follow-up, contact-frequency, “going
-quiet,” or database-completeness metrics.
+Home **is** Ask. The page is a local agent: a live thinking trace of real
+retrieval stages, a cited answer, and a composer. It does not write. It must
+not lead with follow-up, contact-frequency, “going quiet,” or
+database-completeness metrics. People, Review, and Sources stay on their own
+routes.
 
 People is search-first. The default surface is a recognition card grid (glow
 spotlight on hover). Dense list (`view=list`) and spreadsheet (`view=sheet`)
@@ -204,8 +209,12 @@ mode they keep a graphite edge and drop shadow, and they drop the outer bloom
 so paper does not pick up a muddy halo. `color-scheme` follows the resolved
 theme so native controls never mix with the opposite appearance.
 
-The public `/` landing is only the Digital Serenity hero (crystal N, slow word
-roll-in, held-thread background paths). Product explanation lives on `/about`.
+The public `/` landing is the Digital Serenity hero (unboxed crystal N, slow
+word roll-in, held-thread background paths). A local ceremonial 3D stand-in may
+sit beside the hero on wide viewports. It is hidden when motion is reduced, the
+viewport is narrow, or WebGL is unavailable. The scene file lives in `public/`
+and is not fetched from a remote host at runtime. Product explanation lives on
+`/about`.
 
 Person pages prioritise identity, why the person matters, recent evidence, and
 provenance. A continuous vertical thread may connect timeline evidence. Every
@@ -219,8 +228,9 @@ and optional imports. Every step can be skipped and revisited in Sources.
 
 ## Per-page allowances
 
-- Landing may use full-page grid and path animation, pointer light, and click
-  ripples. These effects remain decorative and never delay navigation.
+- Landing may use full-page grid and path animation, pointer light, click
+  ripples, and a local ceremonial 3D stand-in beside the hero. These effects
+  remain decorative and never delay navigation.
 - Setup and welcome may use decorative brand enrichment.
 - App workbench pages stay content-led; glass is sparse.
 - Evidence-heavy views may increase density, but never reduce readable type.

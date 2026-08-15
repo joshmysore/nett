@@ -162,7 +162,17 @@ export const api = {
     fastModel?: string; reasonModel?: string; embedModel?: string;
     evidenceDocuments: number;
     embeddedDocuments: number; models: { name: string; size?: number }[];
+    indexedAt?: string | null;
+    communicationsAt?: string | null;
+    interactionIndexedAt?: string | null;
+    stale?: boolean;
+    staleSources?: string[];
   }>("/api/intelligence/status"),
+  searchEvidence: (query: string, signal?: AbortSignal) =>
+    request<Array<{ id: string; person_id: string | null; kind: string; source: string; text: string; occurred_at: string | null; score: number }>>(
+      `/api/evidence/search?q=${encodeURIComponent(query)}`,
+      { signal },
+    ),
   refreshIntelligence: (limit = 250) =>
     request<{ indexed: number; embedded: number; model?: string }>("/api/intelligence/index", { method: "POST", body: JSON.stringify({ limit }) }),
   search: (query: string, signal?: AbortSignal) => request<Person[]>(`/api/search?q=${encodeURIComponent(query)}`, { signal }),
@@ -288,6 +298,40 @@ export const api = {
   },
   query: (query: string, signal?: AbortSignal) =>
     request<AgentAnswer>("/api/agent/query", { method: "POST", body: JSON.stringify({ query }), signal }),
+  queryStream: async function* (query: string, signal?: AbortSignal): AsyncGenerator<
+    | { type: "stage"; id: string; label: string; detail?: string }
+    | { type: "meta"; path: string; provider: string; citations: AgentAnswer["citations"]; note?: string }
+    | { type: "token"; text: string }
+    | { type: "reset" }
+    | { type: "done"; answer: string; citations: AgentAnswer["citations"]; provider: string; note?: string }
+  > {
+    const response = await fetch("/api/agent/query?stream=1", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
+      body: JSON.stringify({ query }),
+      signal,
+    });
+    if (!response.ok || !response.body) {
+      const body = await response.json().catch(() => ({}));
+      throw new Error((body as { error?: string }).error || `Request failed (${response.status})`);
+    }
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let boundary = buffer.indexOf("\n\n");
+      while (boundary >= 0) {
+        const chunk = buffer.slice(0, boundary).trim();
+        buffer = buffer.slice(boundary + 2);
+        const line = chunk.startsWith("data:") ? chunk.slice(5).trim() : chunk;
+        if (line) yield JSON.parse(line);
+        boundary = buffer.indexOf("\n\n");
+      }
+    }
+  },
   importCsv: (file: File) => {
     const body = new FormData();
     body.append("file", file);
@@ -364,6 +408,7 @@ export const api = {
         rationale: string;
         confidence: number | null;
         createdAt: string;
+        source?: string;
       }[];
     }>(`/api/review${query ? `?${query}` : ""}`, { signal });
   },

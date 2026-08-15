@@ -6,6 +6,7 @@ export const CaptureFieldSchema = z.enum([
   "hometown",
   "industry",
   "company",
+  "job_title",
   "languages",
   "relationship",
   "how_met",
@@ -16,6 +17,7 @@ export const CaptureFieldSchema = z.enum([
   "foods",
   "tags",
   "follow_up_date",
+  "birthday",
 ]);
 export type CaptureField = z.infer<typeof CaptureFieldSchema>;
 

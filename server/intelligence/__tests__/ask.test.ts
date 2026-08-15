@@ -20,7 +20,7 @@ globalThis.fetch = ((input: unknown, init?: RequestInit) => handler(String(input
 const { addMemory, createPerson, db, updatePerson } = await import("../../db.js");
 const { refreshEvidenceIndex } = await import("../evidence-index.js");
 const { parseAskIntent, retrieveAskMatches, formatAskAnswer, cosine, reciprocalRankFusion } = await import("../ask.js");
-const { answerRelationshipQuestion, refreshEvidenceEmbeddings, resetIntelligenceModelCache } = await import("../service.js");
+const { answerRelationshipQuestion, refreshEvidenceEmbeddings, resetIntelligenceModelCache, streamRelationshipQuestion } = await import("../service.js");
 
 after(() => {
   db.close();
@@ -144,6 +144,35 @@ test("legal tech finds industry and notes, not an unrelated climate contact", as
   assert.doesNotMatch(answer.answer, /Fay Climate/);
 });
 
+test("tell-me-about resolves the named person and writes a brief", async () => {
+  seedPerson("Serena Pellegrino", {
+    location: "Milan",
+    company: "Studio Luce",
+    job_title: "Designer",
+    relationship: "friend from school",
+    notes: "Met through architecture studio.",
+  });
+  seedPerson("Serena Pei", { location: "Taipei", notes: "Different Serena." });
+  const intent = parseAskIntent("Tell me about Serena Pellegrino");
+  assert.equal(intent.personBrief, true);
+  assert.equal(intent.namedPerson?.toLocaleLowerCase(), "serena pellegrino");
+  assert.ok(!intent.topics.includes("serena"));
+  const retrieval = await retrieveAskMatches("Tell me about Serena Pellegrino");
+  assert.deepEqual(peopleNames(retrieval), ["Serena Pellegrino"]);
+  const answer = formatAskAnswer(retrieval);
+  assert.match(answer, /Serena Pellegrino/);
+  assert.match(answer, /Studio Luce|Designer|friend from school|Milan/);
+  assert.doesNotMatch(answer, /2 people match/i);
+  assert.doesNotMatch(answer, /Serena Pei/);
+});
+
+test("what-else-about does not treat else as a topic", () => {
+  const intent = parseAskIntent("What else do I know about Ada Fong?");
+  assert.equal(intent.personBrief, true);
+  assert.equal(intent.namedPerson?.toLocaleLowerCase(), "ada fong");
+  assert.ok(!intent.topics.includes("else"));
+});
+
 test("a place-only question still answers from the people index without a model", async () => {
   seedPerson("Giselle Paris", { location: "Paris", job_title: "Editor" });
   seedPerson("Hugo Lyon", { location: "Lyon" });
@@ -202,7 +231,36 @@ test("cosine and reciprocal rank fusion score as expected", () => {
   assert.equal(fused.get("a"), fused.get("b"));
 });
 
-test("inferential questions use the stronger local chat model", async () => {
+test("tell-me-about uses the local chat model when it is available", async () => {
+  seedPerson("Nora Brief", { location: "Lisbon", company: "Atelier Nora", relationship: "collaborator" });
+  refreshEvidenceIndex();
+  resetIntelligenceModelCache();
+  let generateModel = "";
+  handler = async (url, init) => {
+    if (url.endsWith("/api/version")) return json({ version: "test" });
+    if (url.endsWith("/api/tags")) {
+      return json({ models: [{ name: "llama3.2:3b" }, { name: "qwen3:14b" }] });
+    }
+    if (url.endsWith("/api/generate")) {
+      generateModel = JSON.parse(String(init?.body || "{}")).model;
+      return json({
+        response: JSON.stringify({
+          answer: "Nora Brief is a collaborator at Atelier Nora in Lisbon.",
+          citations: [],
+        }),
+      });
+    }
+    throw new Error(`unexpected ${url}`);
+  };
+  const answer = await answerRelationshipQuestion("Tell me about Nora Brief");
+  assert.equal(generateModel, "llama3.2:3b");
+  assert.equal(answer.provider, "ollama:llama3.2:3b");
+  assert.match(answer.answer, /Nora Brief/);
+  handler = offline;
+  resetIntelligenceModelCache();
+});
+
+test("inferential questions use the fast local chat model first", async () => {
   seedPerson("Dana Legal Model", { location: "Berlin", industry: "Legal technology" });
   refreshEvidenceIndex();
   resetIntelligenceModelCache();
@@ -225,7 +283,41 @@ test("inferential questions use the stronger local chat model", async () => {
     throw new Error(`unexpected ${url}`);
   };
   const answer = await answerRelationshipQuestion("Who might be interested in legal tech?");
-  assert.equal(generateModel, "qwen3:14b");
+  assert.equal(generateModel, "llama3.2:3b");
+  assert.equal(answer.provider, "ollama:llama3.2:3b");
+  handler = offline;
+  resetIntelligenceModelCache();
+});
+
+test("inferential questions escalate when the fast model is thin", async () => {
+  seedPerson("Dana Legal Escalate", { location: "Berlin", industry: "Legal technology" });
+  refreshEvidenceIndex();
+  resetIntelligenceModelCache();
+  const modelsUsed: string[] = [];
+  handler = async (url, init) => {
+    if (url.endsWith("/api/version")) return json({ version: "test" });
+    if (url.endsWith("/api/tags")) {
+      return json({ models: [{ name: "llama3.2:3b" }, { name: "qwen3:14b" }] });
+    }
+    if (url.endsWith("/api/generate")) {
+      const model = JSON.parse(String(init?.body || "{}")).model;
+      modelsUsed.push(model);
+      if (model === "llama3.2:3b") {
+        return json({
+          response: JSON.stringify({ answer: "No.", citations: [] }),
+        });
+      }
+      return json({
+        response: JSON.stringify({
+          answer: "Dana Legal Escalate works in legal technology.",
+          citations: [],
+        }),
+      });
+    }
+    throw new Error(`unexpected ${url}`);
+  };
+  const answer = await answerRelationshipQuestion("Who might be interested in legal tech?");
+  assert.deepEqual(modelsUsed, ["llama3.2:3b", "qwen3:14b"]);
   assert.equal(answer.provider, "ollama:qwen3:14b");
   handler = offline;
   resetIntelligenceModelCache();
@@ -248,6 +340,19 @@ test("factual questions do not wait on a chat model", async () => {
   assert.equal(answer.provider, "local-evidence");
   handler = offline;
   resetIntelligenceModelCache();
+});
+
+test("stream emits search and match stages before the answer", async () => {
+  seedPerson("Stage Fixture", { location: "Lisbon, Portugal" });
+  await refreshEvidenceIndex();
+  const events: Array<{ type: string; id?: string }> = [];
+  for await (const event of streamRelationshipQuestion("Who do I know in Lisbon?")) {
+    events.push(event);
+  }
+  assert.equal(events[0]?.type, "stage");
+  assert.equal(events[0]?.id, "search");
+  assert.ok(events.some((event) => event.type === "stage" && event.id === "match"));
+  assert.ok(events.some((event) => event.type === "done"));
 });
 
 test("embeddings are never written with a chat model", async () => {

@@ -1,8 +1,13 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { LandingGlassCta } from "@/components/LandingGlassCta";
-import { TiltCard } from "@/components/transitions/TiltCard";
 import { BackgroundPaths } from "@/components/ui/background-paths";
+import {
+  LANDING_SPLINE_SCENE,
+  SPLINE_MIN_WIDTH_QUERY,
+  SplineScene,
+  canShowSplineScene,
+} from "@/components/ui/spline-scene";
 import "@/styles/landing.css";
 
 type Ripple = { id: number; x: number; y: number };
@@ -55,6 +60,9 @@ export default function DigitalSerenity() {
   const [reduceMotion] = useState(() =>
     typeof window !== "undefined" ? prefersReducedMotion() : false,
   );
+  const [showScene, setShowScene] = useState(() =>
+    typeof window !== "undefined" ? canShowSplineScene() : false,
+  );
   const [ripples, setRipples] = useState<Ripple[]>([]);
 
   useEffect(() => {
@@ -67,6 +75,19 @@ export default function DigitalSerenity() {
           document.body.classList.remove("on-landing");
         }
       });
+    };
+  }, []);
+
+  useEffect(() => {
+    const motion = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const width = window.matchMedia(SPLINE_MIN_WIDTH_QUERY);
+    const update = () => setShowScene(canShowSplineScene());
+    motion.addEventListener("change", update);
+    width.addEventListener("change", update);
+    update();
+    return () => {
+      motion.removeEventListener("change", update);
+      width.removeEventListener("change", update);
     };
   }, []);
 
@@ -153,16 +174,16 @@ export default function DigitalSerenity() {
             </div>
           </nav>
 
-          <div className="landing-serenity-stage">
-            <header className="landing-serenity-top">
-              <SoftLine delay={80} className="landing-mono-line">
-                Private. Local. Yours.
-              </SoftLine>
-              <div className="landing-rule-fade" aria-hidden="true" />
-            </header>
+          <div className={`landing-hero-body${showScene ? " has-scene" : ""}`}>
+            <div className="landing-serenity-stage">
+              <header className="landing-serenity-top">
+                <SoftLine delay={80} className="landing-mono-line">
+                  Private. Local. Yours.
+                </SoftLine>
+                <div className="landing-rule-fade" aria-hidden="true" />
+              </header>
 
-            <div className="landing-serenity-center">
-              <TiltCard className="landing-logo-tilt" maxTilt={8}>
+              <div className="landing-serenity-center">
                 <div className="landing-brand-mark" aria-hidden="true">
                   <img
                     src="/brand/nett-crystal-n-wide.png"
@@ -173,27 +194,41 @@ export default function DigitalSerenity() {
                     fetchPriority="high"
                   />
                 </div>
-              </TiltCard>
 
-              <h1 id="landing-title" className="landing-serenity-title">
-                <SoftLine as="span" delay={320} className="landing-title-primary">
-                  Remember everyone.
+                <h1 id="landing-title" className="landing-serenity-title">
+                  <SoftLine as="span" delay={320} className="landing-title-primary">
+                    Remember everyone.
+                  </SoftLine>
+                  <SoftLine as="span" delay={620} className="landing-title-secondary">
+                    Find the person. Recover the context.
+                  </SoftLine>
+                </h1>
+              </div>
+
+              <footer className="landing-serenity-bottom">
+                <div className="landing-rule-fade" aria-hidden="true" />
+                <SoftLine delay={960} className="landing-mono-line">
+                  Ask. Remember. Find.
                 </SoftLine>
-                <SoftLine as="span" delay={620} className="landing-title-secondary">
-                  Find the person. Recover the context.
+                <SoftLine delay={1240} as="div" className="landing-cta-wrap">
+                  <LandingGlassCta to="/today" primary onClick={stopNav} />
                 </SoftLine>
-              </h1>
+              </footer>
             </div>
 
-            <footer className="landing-serenity-bottom">
-              <div className="landing-rule-fade" aria-hidden="true" />
-              <SoftLine delay={960} className="landing-mono-line">
-                Ask. Remember. Find.
-              </SoftLine>
-              <SoftLine delay={1240} as="div" className="landing-cta-wrap">
-                <LandingGlassCta to="/today" primary onClick={stopNav} />
-              </SoftLine>
-            </footer>
+            {showScene ? (
+              <div
+                className="landing-spline-scene"
+                aria-hidden="true"
+                onClick={(event) => event.stopPropagation()}
+              >
+                <SplineScene
+                  scene={LANDING_SPLINE_SCENE}
+                  className="landing-spline-canvas"
+                  onUnavailable={() => setShowScene(false)}
+                />
+              </div>
+            ) : null}
           </div>
         </div>
 

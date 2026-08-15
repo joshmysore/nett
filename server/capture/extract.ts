@@ -60,6 +60,7 @@ const FOOD_CUES = new Set([
   "soup", "salad", "dessert", "desserts", "sake", "champagne", "gin", "vodka", "rum",
   "latte", "espresso", "cider", "ipa", "ale", "stout", "mezcal", "tequila", "bourbon",
   "scotch", "port", "sherry", "vermouth", "negroni", "martini", "spritz",
+  "riesling", "pinot", "cabernet", "chardonnay", "malbec",
 ]);
 
 const ORIGIN_ADJECTIVES: Record<string, string> = {
@@ -249,11 +250,17 @@ export function extractCapture(transcript: string, today = new Date()): CaptureE
     if (place && titleish(place)) push(proposals, text, "location", place, match, 0.75);
   });
 
-  // Hometown: "grew up in Porto", "originally from Porto", "from Porto"
+  // Hometown: "grew up in Porto", "originally from Porto", "from Porto originally"
   run(/\b(?:[Gg]rew up in|[Oo]riginally from|[Hh]ometown is|[Cc]omes from)\s+([\p{L}][\p{L}\s'’-]{1,40})/u, (match) => {
     const place = trimPhrase(match[1]);
     if (place && titleish(place)) push(proposals, text, "hometown", place, match, 0.75);
   });
+  if (!proposals.some((proposal) => proposal.field === "hometown")) {
+    run(/\bfrom\s+([\p{Lu}][\p{L}\s'’-]{1,40})\s+originally\b/u, (match) => {
+      const place = trimPhrase(match[1]);
+      if (place) push(proposals, text, "hometown", place, match, 0.7);
+    });
+  }
 
   // Introduction path: "through Maya", "via Maya", "introduced by Maya"
   run(/\b(?:[Tt]hrough|[Vv]ia|[Ii]ntroduced by|[Ii]ntro'?d by|[Tt]hanks to)\s+([\p{Lu}][\p{L}'’-]+(?:\s+[\p{Lu}][\p{L}'’-]+)?)/u, (match) => {
@@ -275,6 +282,31 @@ export function extractCapture(transcript: string, today = new Date()): CaptureE
     const company = trimPhrase(match[1]);
     if (company) push(proposals, text, "company", company, match, 0.7);
   });
+
+  // Role: "is a designer", "works as a product manager", "title is Counsel"
+  run(/\b(?:is an?|works as(?: an?)?|title is)\s+([\p{L}][\p{L}\s&/'’-]{1,40})/u, (match) => {
+    const title = trimPhrase(match[1]);
+    if (
+      title
+      && !/^(from|in|at|the|close|best|old|friend|colleague|coworker|partner)\b/i.test(title)
+    ) {
+      push(proposals, text, "job_title", title.replace(/\s+at\s+.*$/u, "").trim(), match, 0.65);
+    }
+  });
+
+  // Birthday: "birthday is March 4", "born on 1990-03-04"
+  run(/\b(?:birthday is|born on|date of birth is)\s+(\d{4}-\d{2}-\d{2})\b/iu, (match) => {
+    push(proposals, text, "birthday", match[1], match, 0.85);
+  });
+  if (!proposals.some((proposal) => proposal.field === "birthday")) {
+    run(new RegExp(`\\b(?:birthday is|born on|turns)\\s+(${Object.keys(MONTHS).join("|")})\\s+(\\d{1,2})(?:st|nd|rd|th)?\\b`, "iu"), (match) => {
+      const month = MONTHS[match[1].toLowerCase()];
+      const day = Number(match[2]);
+      if (month && day >= 1 && day <= 31) {
+        push(proposals, text, "birthday", `${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`, match, 0.7);
+      }
+    });
+  }
 
   // Languages: "speaks Portuguese, Spanish and English"
   run(/\b(?:[Ss]peaks?|[Ff]luent in|[Bb]ilingual in|[Tt]alks)\s+([\p{L}\s,&]+?)(?:[.;]|$)/u, (match) => {

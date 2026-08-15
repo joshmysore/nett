@@ -1,44 +1,92 @@
 import {
   Circle,
   Command,
-  GearSix,
-  House,
-  MagnifyingGlass,
-  Tray,
   Moon,
   Plus,
   SidebarSimple,
   Sun,
-  Users,
   X,
 } from "@phosphor-icons/react";
-import { type ReactNode, useEffect, useState } from "react";
+import { type ReactNode, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { NavLink, useLocation } from "react-router-dom";
 import { IconButton } from "@/components/Primitives";
 import { api, isAbortError } from "@/lib/api";
 import { useTheme } from "@/lib/theme";
 
-const navigation = [
-  { to: "/today", label: "Home", icon: House, end: true },
-  { to: "/people", label: "People", icon: Users, end: false },
-  { to: "/review", label: "Review", icon: Tray, end: false },
-  { to: "/settings/connectors", label: "Sources", icon: GearSix, end: false },
-];
+const ITEMS = [
+  { key: "ask", to: "/today", label: "Ask", section: "Workspace", end: true },
+  { key: "review", to: "/review", label: "Review", section: "Workspace", count: true, end: true },
+  { key: "people", to: "/people", label: "People", section: "Records", plus: true, end: false },
+  { key: "sources", to: "/settings/connectors", label: "Sources", section: "Records", end: false },
+] as const;
+
+const SECTIONS = ["Workspace", "Records"] as const;
+
+function NavIcon({ kind }: { kind: string }) {
+  const paths: Record<string, ReactNode> = {
+    ask: <path d="M22 12h-4l-3 9L9 3l-3 9H2" />,
+    review: (
+      <g>
+        <path d="M9 11l3 3L22 4" />
+        <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" />
+      </g>
+    ),
+    people: (
+      <g>
+        <path d="M12 2L2 7l10 5 10-5-10-5z" />
+        <path d="M2 17l10 5 10-5M2 12l10 5 10-5" />
+      </g>
+    ),
+    sources: (
+      <g>
+        <rect x="3" y="3" width="7" height="7" rx="1.5" />
+        <rect x="14" y="3" width="7" height="7" rx="1.5" />
+        <rect x="3" y="14" width="7" height="7" rx="1.5" />
+        <rect x="14" y="14" width="7" height="7" rx="1.5" />
+      </g>
+    ),
+  };
+  return (
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      {paths[kind]}
+    </svg>
+  );
+}
+
+function itemKeyFromPath(pathname: string) {
+  if (pathname === "/today" || pathname === "/") return "ask";
+  if (pathname.startsWith("/review")) return "review";
+  if (pathname.startsWith("/people")) return "people";
+  if (pathname.startsWith("/settings") || pathname.startsWith("/connectors") || pathname.startsWith("/sources")) {
+    return "sources";
+  }
+  return "ask";
+}
 
 export function AppShell({
   children,
   onSearch,
   onCapture,
+  ownerName,
 }: {
   children: ReactNode;
   onSearch: () => void;
   onCapture: () => void;
+  ownerName?: string | null;
 }) {
   const [railOpen, setRailOpen] = useState(false);
   const [reviewCount, setReviewCount] = useState(0);
   const [freshLabel, setFreshLabel] = useState("Ready");
+  const [hovered, setHovered] = useState<string | null>(null);
+  const [box, setBox] = useState<{ top: number; height: number } | null>(null);
+  const navRef = useRef<HTMLDivElement>(null);
+  const itemRefs = useRef<Record<string, HTMLAnchorElement | null>>({});
   const location = useLocation();
   const { preference, cycle } = useTheme();
+  const active = itemKeyFromPath(location.pathname);
+  const askHome = location.pathname === "/today";
+  const workspaceName = ownerName?.trim() || "Nett";
+  const workspaceInitial = workspaceName.slice(0, 1).toLocaleUpperCase();
 
   useEffect(() => {
     document.documentElement.classList.remove("on-landing");
@@ -47,6 +95,18 @@ export function AppShell({
   }, []);
 
   useEffect(() => setRailOpen(false), [location.pathname]);
+
+  useLayoutEffect(() => {
+    const container = navRef.current;
+    const target = itemRefs.current[hovered ?? active];
+    if (!container || !target) return;
+    const containerRect = container.getBoundingClientRect();
+    const targetRect = target.getBoundingClientRect();
+    setBox({
+      top: targetRect.top - containerRect.top,
+      height: targetRect.height,
+    });
+  }, [hovered, active, reviewCount, railOpen]);
 
   useEffect(() => {
     let cancelled = false;
@@ -88,7 +148,7 @@ export function AppShell({
   const ThemeIcon = preference === "light" ? Sun : preference === "dark" ? Moon : Circle;
 
   return (
-    <div className={`app-frame ${railOpen ? "rail-open" : ""}`}>
+    <div className={`app-frame ${railOpen ? "rail-open" : ""} ${askHome ? "is-ask-home" : ""}`}>
       <a className="skip-link" href="#main-content">Skip to content</a>
       {railOpen && (
         <button
@@ -98,30 +158,113 @@ export function AppShell({
         />
       )}
       <aside className="side-rail" aria-label="Primary navigation">
-        <NavLink className="brand-mark" to="/" title="Nett home">
-          <svg className="brand-mark-glyph" viewBox="0 0 30 30" aria-hidden="true">
-            <path d="M5 25V7.2C5 3.6 8.8 3.1 10.6 6.2L19.6 22.7C21.6 26.4 25 25.6 25 21.5V5" />
+        <NavLink className="workspace-switch" to="/setup" title="Local workspace">
+          <span className="workspace-mark" aria-hidden="true">{workspaceInitial}</span>
+          <span className="workspace-copy">
+            <span className="workspace-name">{workspaceName}</span>
+            <span className="workspace-meta">Local workspace</span>
+          </span>
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M7 15l5 5 5-5M7 9l5-5 5 5" />
           </svg>
-          <span>Nett</span>
         </NavLink>
-        <nav className="rail-nav">
-          {navigation.map(({ to, label, icon: Icon, end }) => (
-            <NavLink
-              key={to}
-              to={to}
-              end={end}
-              className={({ isActive }) =>
-                `rail-link ${isActive ? "is-active" : ""}`
-              }
-            >
-              <Icon size={20} weight="regular" />
-              <span>{label}</span>
-              {label === "Review" && reviewCount > 0 && (
-                <i className="nav-badge" aria-label={`${reviewCount} unresolved review items`} />
-              )}
-            </NavLink>
+
+        <button
+          type="button"
+          className="rail-search"
+          onClick={onSearch}
+          aria-label="Find a person or command"
+          aria-keyshortcuts="Meta+K Control+K Slash"
+        >
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
+            <circle cx="11" cy="11" r="7" />
+            <path d="M21 21l-4.3-4.3" />
+          </svg>
+          <span>Quick search</span>
+          <kbd>
+            <Command size={10} />K
+          </kbd>
+        </button>
+
+        <button
+          type="button"
+          className="rail-remember"
+          onClick={onCapture}
+          aria-label="Remember — turn a sentence into fields on a person"
+          aria-keyshortcuts="Meta+M Control+M"
+        >
+          <span>Remember</span>
+          <span className="rail-remember-plus" aria-hidden="true">
+            <Plus size={10} weight="bold" />
+          </span>
+        </button>
+
+        <nav
+          className="rail-nav"
+          ref={navRef}
+          onMouseLeave={() => setHovered(null)}
+        >
+          <span
+            aria-hidden
+            className="rail-glide"
+            style={{
+              top: box?.top ?? 0,
+              height: box?.height ?? 0,
+              opacity: box ? 1 : 0,
+            }}
+          />
+          {SECTIONS.map((section) => (
+            <div key={section} className="rail-section">
+              <p className="rail-section-label">{section}</p>
+              <div className="rail-section-items">
+                {ITEMS.filter((item) => item.section === section).map((item) => (
+                  <div
+                    key={item.key}
+                    className="rail-row"
+                    onMouseEnter={() => setHovered(item.key)}
+                    onMouseLeave={() => setHovered(null)}
+                  >
+                    <NavLink
+                      to={item.to}
+                      end={item.end}
+                      ref={(el) => {
+                        itemRefs.current[item.key] = el;
+                      }}
+                      className={({ isActive }) => `rail-link ${isActive ? "is-active" : ""}`}
+                      onFocus={() => setHovered(item.key)}
+                      onBlur={() => setHovered(null)}
+                      aria-current={item.key === active ? "page" : undefined}
+                    >
+                      <span className="rail-link-icon">
+                        <NavIcon kind={item.key} />
+                      </span>
+                      <span className="rail-link-label">{item.label}</span>
+                      {"count" in item && item.count && reviewCount > 0 && (
+                        <span
+                          className="rail-count"
+                          aria-label={`${reviewCount} unresolved review items`}
+                        >
+                          {reviewCount > 99 ? "99+" : reviewCount}
+                        </span>
+                      )}
+                    </NavLink>
+                    {"plus" in item && item.plus && (
+                      <button
+                        type="button"
+                        className="rail-plus"
+                        aria-label="Remember someone"
+                        onClick={onCapture}
+                      >
+                        <Plus size={10} weight="bold" />
+                      </button>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
           ))}
         </nav>
+
         <div className="rail-bottom">
           <span className="local-status">
             <i aria-hidden="true" />
@@ -153,17 +296,33 @@ export function AppShell({
           >
             <SidebarSimple size={21} />
           </button>
-          <button className="global-search" onClick={onSearch}>
-            <MagnifyingGlass size={17} />
-            <span>Find a person or run a command</span>
+          <button
+            className="global-search"
+            onClick={onSearch}
+            aria-label="Find a person or command"
+            aria-keyshortcuts="Meta+K Control+K"
+          >
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
+              <circle cx="11" cy="11" r="7" />
+              <path d="M21 21l-4.3-4.3" />
+            </svg>
+            <span>Find a person or command</span>
             <kbd>
               <Command size={12} />K
             </kbd>
           </button>
           <div className="top-actions">
-            <button className="capture-action" onClick={onCapture} aria-label="Remember relationship context">
+            <button
+              className="capture-action"
+              onClick={onCapture}
+              aria-label="Remember — turn a sentence into fields on a person"
+              aria-keyshortcuts="Meta+M Control+M"
+            >
               <Plus size={17} weight="bold" />
               <span>Remember</span>
+              <kbd className="desktop-only">
+                <Command size={12} />M
+              </kbd>
             </button>
           </div>
         </header>
@@ -171,19 +330,15 @@ export function AppShell({
           {children}
         </main>
         <nav className="mobile-nav" aria-label="Mobile navigation">
-          {navigation.map(({ to, label, icon: Icon, end }) => (
-            <NavLink key={to} to={to} end={end}>
-              <Icon size={20} />
-              <span>{label}</span>
-              {label === "Review" && reviewCount > 0 && (
+          {ITEMS.map((item) => (
+            <NavLink key={item.to} to={item.to} end={item.end}>
+              <NavIcon kind={item.key} />
+              <span>{item.label}</span>
+              {"count" in item && item.count && reviewCount > 0 && (
                 <i className="nav-badge" aria-label={`${reviewCount} unresolved review items`} />
               )}
             </NavLink>
           ))}
-          <button onClick={onCapture}>
-            <Plus size={20} />
-            <span>Remember</span>
-          </button>
         </nav>
       </div>
     </div>

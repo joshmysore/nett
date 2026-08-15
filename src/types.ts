@@ -94,7 +94,28 @@ export type SetupStatus = {
   };
   nextAction: { step: string; label: string; route: string } | null;
 };
-export type Overview = { total: number; strongTies: number; cold: number; due: number; locations: [string, number][]; industries: [string, number][]; people: Person[]; coldPeople: Person[]; duePeople: Person[]; connectors: ConnectorState[]; setup: SetupStatus };
+export type OverviewTease = {
+  personId: string;
+  name: string;
+  source: string;
+  excerpt: string;
+  occurredAt: string | null;
+};
+export type Overview = {
+  total: number;
+  strongTies: number;
+  cold: number;
+  due: number;
+  locations: [string, number][];
+  industries: [string, number][];
+  people: Person[];
+  coldPeople: Person[];
+  duePeople: Person[];
+  resurfacedPeople?: Person[];
+  tease?: OverviewTease | null;
+  connectors: ConnectorState[];
+  setup: SetupStatus;
+};
 export type ParsedMemory = {
   transcript?: string;
   nameHint?: string | null;
@@ -111,4 +132,4 @@ export type ParsedMemory = {
   ambiguous: boolean;
 };
 export type Citation = { personId: string; label: string; field: string; value: string; source: string };
-export type AgentAnswer = { answer: string; citations: Citation[]; provider: string };
+export type AgentAnswer = { answer: string; citations: Citation[]; provider: string; note?: string };

@@ -30,6 +30,12 @@ export type AskPerson = {
   interests: string | null;
   skills: string | null;
   notes: string | null;
+  headline: string | null;
+  relationship: string | null;
+  howMet: string | null;
+  whenMet: string | null;
+  whereMet: string | null;
+  quickMemories: string | null;
   lastContact: string | null;
   score: number;
   groups: Set<string>;
@@ -45,6 +51,8 @@ export type AskIntent = {
   recencyDays: number | null;
   foodIntent: boolean;
   inferential: boolean;
+  personBrief: boolean;
+  namedPerson: string | null;
 };
 
 export type AskRetrieval = {
@@ -75,6 +83,7 @@ const STOPWORDS = new Set([
   "that", "this", "these", "those", "there", "here",
   "have", "has", "had", "having", "please", "something", "anything",
   "who", "working", "work", "works", "based",
+  "else", "talked", "talk", "talking", "tell",
 ]);
 
 const GENERIC_FOOD_WORDS = new Set([
@@ -106,7 +115,7 @@ const PLACE_STOP = /^(who|that|which|with|and|or|to|for|about|like|likes|interes
 
 const PERSON_LIMIT = 12;
 const CANDIDATE_LIMIT = 48;
-const EVIDENCE_PER_PERSON = 3;
+const EVIDENCE_PER_PERSON = 6;
 
 function sanitizeNeedle(value: string): string {
   return value.replace(/[%_]/g, " ").replace(/\s+/g, " ").trim().toLocaleLowerCase();
@@ -152,9 +161,29 @@ function expandTerm(term: string): string[] {
 }
 
 const INFERENTIAL_PATTERN = /\b(might|maybe|perhaps|would|could|should|interested|recommend|suggest|introduc(?:e|tion)?|relevant|good fit|who would|who might|likely|probably)\b/i;
+const PERSON_BRIEF_PATTERN = /^(?:tell me about|what(?: else)? do i know about|who is|who'?s|about)\s+(.+?)\s*[.?!]*$/i;
 
 export function isInferentialQuestion(question: string): boolean {
+  if (/\bfollow[ -]?up\b/i.test(question)) return false;
   return INFERENTIAL_PATTERN.test(question);
+}
+
+export function isPersonBriefQuestion(question: string): boolean {
+  return PERSON_BRIEF_PATTERN.test(question.trim());
+}
+
+export function extractNamedPerson(question: string): string | null {
+  const trimmed = question.trim().replace(/[.?!]+$/, "").trim();
+  const brief = trimmed.match(PERSON_BRIEF_PATTERN);
+  if (brief?.[1]) {
+    const name = brief[1].replace(/^(the|my|our)\s+/i, "").trim();
+    return name.length >= 2 ? name : null;
+  }
+  const words = trimmed.split(/\s+/);
+  if (words.length < 2 || words.length > 4) return null;
+  if (words.some((word) => STOPWORDS.has(word.toLocaleLowerCase()))) return null;
+  if (/\d/.test(trimmed)) return null;
+  return trimmed;
 }
 
 /** Text handed to the embedding model — constraints, not question syntax. */
@@ -217,13 +246,13 @@ export function scoreEmbeddedRows(
     .slice(0, limit);
 }
 
-/** Profile and memory vectors only — not 286k messages. */
+/** Profile, memory, and conversation summaries — not raw message bodies. */
 export function loadEmbeddableDocuments(limit = 2_000): EmbeddedRow[] {
   return db.prepare(`
     SELECT id, person_id, kind, source, text, occurred_at, embedding_json
     FROM evidence_documents
     WHERE embedding_json IS NOT NULL
-      AND kind IN ('profile-field', 'memory')
+      AND kind IN ('profile-field', 'memory', 'conversation-summary')
     ORDER BY kind ASC, occurred_at DESC
     LIMIT ?
   `).all(limit) as EmbeddedRow[];
@@ -277,6 +306,11 @@ export function parseAskIntent(question: string): AskIntent {
   for (const place of places) {
     topicSource = topicSource.replace(new RegExp(`\\b${place.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "ig"), " ");
   }
+  const namedPerson = extractNamedPerson(question);
+  if (namedPerson) {
+    for (const token of tokenize(namedPerson)) consumed.add(token);
+  }
+
   const topics = tokenize(topicSource)
     .filter((token) => !consumed.has(token))
     .filter((token) => !(foodIntent && GENERIC_FOOD_WORDS.has(token)))
@@ -298,6 +332,8 @@ export function parseAskIntent(question: string): AskIntent {
     recencyDays,
     foodIntent,
     inferential: isInferentialQuestion(question),
+    personBrief: Boolean(namedPerson) || isPersonBriefQuestion(question),
+    namedPerson,
   };
 }
 
@@ -354,8 +390,18 @@ type ProfileRow = {
   notes: string | null;
   quick_memories: string | null;
   headline: string | null;
+  relationship: string | null;
+  how_met: string | null;
+  when_met: string | null;
+  where_met: string | null;
   last_contact: string | null;
 };
+
+const PROFILE_SELECT = `
+  SELECT p.id, p.preferred_name AS name, m.location, m.hometown, m.company, m.job_title,
+    m.industry, m.foods, m.interests, m.skills, m.notes, m.quick_memories, m.headline,
+    m.relationship, m.how_met, m.when_met, m.where_met, m.last_contact
+`;
 
 function emptyPerson(row: ProfileRow): AskPerson {
   return {
@@ -370,6 +416,12 @@ function emptyPerson(row: ProfileRow): AskPerson {
     interests: listText(row.interests) || null,
     skills: listText(row.skills) || null,
     notes: row.notes,
+    headline: row.headline,
+    relationship: row.relationship,
+    howMet: row.how_met,
+    whenMet: row.when_met,
+    whereMet: row.where_met,
+    quickMemories: listText(row.quick_memories) || null,
     lastContact: row.last_contact,
     score: 0,
     groups: new Set(),
@@ -381,9 +433,7 @@ function profilesByIds(ids: readonly string[]): Map<string, ProfileRow> {
   const unique = [...new Set(ids.filter(Boolean))].slice(0, 80);
   if (!unique.length) return new Map();
   const rows = db.prepare(`
-    SELECT p.id, p.preferred_name AS name, m.location, m.hometown, m.company, m.job_title,
-      m.industry, m.foods, m.interests, m.skills, m.notes, m.quick_memories, m.headline,
-      m.last_contact
+    ${PROFILE_SELECT}
     FROM people p
     LEFT JOIN nett_metadata m ON m.person_id = p.id
     WHERE p.id IN (${unique.map(() => "?").join(",")})
@@ -413,9 +463,7 @@ function structuredPlacePeople(places: readonly string[]): Map<string, AskPerson
   for (const place of places) {
     const needle = `%${sanitizeNeedle(place)}%`;
     const rows = db.prepare(`
-      SELECT p.id, p.preferred_name AS name, m.location, m.hometown, m.company, m.job_title,
-        m.industry, m.foods, m.interests, m.skills, m.notes, m.quick_memories, m.headline,
-        m.last_contact
+      ${PROFILE_SELECT}
       FROM people p
       JOIN nett_metadata m ON m.person_id = p.id
       WHERE lower(COALESCE(m.location, '')) LIKE ?
@@ -453,9 +501,7 @@ function structuredTopicPeople(terms: readonly string[]): Map<string, AskPerson>
   if (!terms.length) return found;
   const where = TOPIC_SQL_COLUMNS.map((column) => `lower(COALESCE(m.${column}, '')) LIKE ?`).join(" OR ");
   const select = `
-    SELECT p.id, p.preferred_name AS name, m.location, m.hometown, m.company, m.job_title,
-      m.industry, m.foods, m.interests, m.skills, m.notes, m.quick_memories, m.headline,
-      m.last_contact
+    ${PROFILE_SELECT}
     FROM people p
     JOIN nett_metadata m ON m.person_id = p.id
     WHERE ${where}
@@ -505,9 +551,7 @@ function structuredTopicPeople(terms: readonly string[]): Map<string, AskPerson>
 function recentPeople(days: number): Map<string, AskPerson> {
   const found = new Map<string, AskPerson>();
   const rows = db.prepare(`
-    SELECT p.id, p.preferred_name AS name, m.location, m.hometown, m.company, m.job_title,
-      m.industry, m.foods, m.interests, m.skills, m.notes, m.quick_memories, m.headline,
-      m.last_contact
+    ${PROFILE_SELECT}
     FROM people p
     JOIN nett_metadata m ON m.person_id = p.id
     WHERE m.last_contact IS NOT NULL
@@ -661,11 +705,148 @@ function attachEvidenceForPeople(people: AskPerson[], intent: AskIntent): void {
     interests: person.interests,
     skills: person.skills,
     notes: person.notes,
-    quick_memories: null,
-    headline: null,
+    quick_memories: person.quickMemories,
+    headline: person.headline,
+    relationship: person.relationship,
+    how_met: person.howMet,
+    when_met: person.whenMet,
+    where_met: person.whereMet,
     last_contact: person.lastContact,
   } satisfies ProfileRow]));
   applyEvidenceHits(byPerson, hits, intent.topics.length ? "topic" : "place", profiles);
+}
+
+function humanDate(iso: string | null | undefined): string | null {
+  if (!iso) return null;
+  const ms = Date.parse(iso);
+  if (!Number.isFinite(ms)) return null;
+  const diff = Date.now() - ms;
+  if (diff < 36_000_000) return "today";
+  if (diff < 90_000_000) return "yesterday";
+  if (diff < 14 * 86_400_000) return `${Math.max(2, Math.round(diff / 86_400_000))} days ago`;
+  return new Date(ms).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+}
+
+function usefulExcerpt(person: AskPerson, excerpt: string): boolean {
+  const clean = excerpt.replace(/\s+/g, " ").trim();
+  if (clean.length < 8) return false;
+  if (/^name:\s*/i.test(clean)) return false;
+  if (/^last recorded contact /i.test(clean)) return false;
+  const lower = clean.toLocaleLowerCase();
+  if (lower === person.name.toLocaleLowerCase()) return false;
+  const parts = person.name.split(/\s+/);
+  const last = parts[parts.length - 1]?.toLocaleLowerCase();
+  if (last && lower === last) return false;
+  return true;
+}
+
+function nameScore(row: ProfileRow, query: string): number {
+  const needle = query.toLocaleLowerCase();
+  const name = row.name.toLocaleLowerCase();
+  if (name === needle) return 100;
+  const parts = needle.split(/\s+/);
+  if (name.startsWith(needle)) return 85;
+  if (parts.length >= 2 && name.endsWith(parts[parts.length - 1]) && name.startsWith(parts[0])) return 80;
+  if (parts.length === 1 && (name.startsWith(parts[0]) || name.split(/\s+/)[0] === parts[0])) return 45;
+  return 20;
+}
+
+function loadNamedPeople(query: string): AskPerson[] {
+  const trimmed = query.trim();
+  if (trimmed.length < 2) return [];
+  const parts = trimmed.split(/\s+/);
+  const first = parts[0];
+  const last = parts.slice(1).join(" ");
+  const like = `${trimmed.replace(/[%_]/g, "")}%`;
+  const rows = db.prepare(`
+    ${PROFILE_SELECT}
+    FROM people p
+    LEFT JOIN nett_metadata m ON m.person_id = p.id
+    WHERE p.preferred_name = ? COLLATE NOCASE
+       OR p.nickname = ? COLLATE NOCASE
+       OR (p.first_name = ? COLLATE NOCASE AND (? = '' OR p.last_name = ? COLLATE NOCASE))
+       OR p.preferred_name LIKE ? COLLATE NOCASE
+       OR p.nickname LIKE ? COLLATE NOCASE
+       OR (? != '' AND p.last_name = ? COLLATE NOCASE AND p.first_name LIKE ? COLLATE NOCASE)
+    LIMIT 16
+  `).all(
+    trimmed, trimmed, first, last, last || first, like, like, last, last, `${first}%`,
+  ) as ProfileRow[];
+  const ranked = [...new Map(rows.map((row) => [row.id, row])).values()]
+    .map((row) => ({ row, score: nameScore(row, trimmed) }))
+    .sort((a, b) => b.score - a.score);
+  if (!ranked.length) return [];
+  const best = ranked[0].score;
+  const chosen = best >= 80
+    ? ranked.filter((item) => item.score >= 80)
+    : ranked.filter((item) => item.score >= 40).slice(0, 3);
+  return (chosen.length ? chosen : ranked.slice(0, 1)).map((item) => {
+    const person = emptyPerson(item.row);
+    person.score = item.score;
+    person.groups.add("name");
+    return person;
+  });
+}
+
+function attachPersonBriefEvidence(people: AskPerson[]): void {
+  for (const person of people) {
+    const facts: Array<[string, string | null]> = [
+      ["relationship", person.relationship],
+      ["job_title", person.jobTitle && person.company ? `${person.jobTitle} at ${person.company}` : person.jobTitle],
+      ["company", person.company],
+      ["headline", person.headline],
+      ["location", person.location],
+      ["hometown", listText(person.hometown)],
+      ["how_met", [person.howMet, person.whenMet, person.whereMet].filter(Boolean).join(" · ") || null],
+      ["interests", person.interests],
+      ["foods", person.foods],
+      ["notes", person.notes],
+      ["quick_memories", person.quickMemories],
+    ];
+    for (const [field, value] of facts) {
+      if (!value || !usefulExcerpt(person, value)) continue;
+      addMatch(person, "profile", { field, source: "nett", excerpt: value.slice(0, 240) }, 5);
+    }
+    if (person.lastContact) {
+      addMatch(person, "profile", {
+        field: "last_contact",
+        source: "nett",
+        excerpt: `Last talked ${humanDate(person.lastContact)}`,
+        occurredAt: person.lastContact,
+      }, 2);
+    }
+    const docs = db.prepare(`
+      SELECT id, source, kind, text, occurred_at
+      FROM evidence_documents
+      WHERE person_id = ?
+        AND kind IN ('memory', 'conversation-summary', 'interaction', 'profile')
+      ORDER BY CASE kind
+        WHEN 'memory' THEN 0
+        WHEN 'conversation-summary' THEN 1
+        WHEN 'profile' THEN 2
+        ELSE 3
+      END, occurred_at DESC
+      LIMIT 10
+    `).all(person.personId) as Array<{
+      id: string;
+      source: string;
+      kind: string;
+      text: string;
+      occurred_at: string | null;
+    }>;
+    for (const doc of docs) {
+      const excerpt = doc.text.replace(/\s+/g, " ").trim().slice(0, 240);
+      if (!usefulExcerpt(person, excerpt)) continue;
+      addMatch(person, "evidence", {
+        field: doc.kind === "memory" ? "memory" : doc.kind === "conversation-summary" ? "conversation" : "profile",
+        source: doc.source,
+        excerpt,
+        evidenceId: doc.id,
+        occurredAt: doc.occurred_at,
+      }, doc.kind === "memory" ? 4 : 3);
+    }
+    person.matches = person.matches.slice(0, EVIDENCE_PER_PERSON + 2);
+  }
 }
 
 export async function retrieveAskMatches(
@@ -673,6 +854,13 @@ export async function retrieveAskMatches(
   options: AskRetrieveOptions = {},
 ): Promise<AskRetrieval> {
   const intent = parseAskIntent(question);
+  if (intent.namedPerson) {
+    const named = loadNamedPeople(intent.namedPerson);
+    if (named.length) {
+      attachPersonBriefEvidence(named);
+      return { intent, people: named, provider: "local-evidence" };
+    }
+  }
   const structuredTerms = distinctiveTopicTerms([...intent.topics, ...intent.expansions]);
   const topicMatch = topicFtsMatch(intent);
   const placePeople = intent.places.length ? structuredPlacePeople(intent.places) : new Map<string, AskPerson>();
@@ -712,7 +900,11 @@ export async function retrieveAskMatches(
           const profile = vectorProfiles.get(row.person_id);
           if (!profile) continue;
           const person = fromVector.get(row.person_id) ?? emptyPerson(profile);
-          const field = row.kind === "memory" ? "memory" : "profile";
+          const field = row.kind === "memory"
+            ? "memory"
+            : row.kind === "conversation-summary"
+              ? "conversation"
+              : "profile";
           addMatch(person, "topic", {
             field,
             source: row.source,
@@ -757,22 +949,59 @@ export async function retrieveAskMatches(
   };
 }
 
-function dossierLine(person: AskPerson): string {
-  const facts = [
-    person.location ? `location ${person.location}` : "",
-    person.hometown ? `hometown ${listText(person.hometown)}` : "",
-    person.jobTitle || person.company
-      ? [person.jobTitle, person.company].filter(Boolean).join(" at ")
-      : "",
-    person.industry ? `industry ${person.industry}` : "",
-    person.foods ? `foods ${person.foods}` : "",
-    person.interests ? `interests ${person.interests}` : "",
-  ].filter(Boolean);
-  const evidence = person.matches
-    .filter((match) => match.excerpt)
-    .slice(0, 3)
-    .map((match) => `  ${match.source} / ${match.field.replaceAll("_", " ")}: ${match.excerpt}`);
-  return [`• ${person.name}${facts.length ? ` — ${facts.join(" · ")}` : ""}`, ...evidence].join("\n");
+function personFact(person: AskPerson): string {
+  return [
+    person.relationship,
+    person.jobTitle && person.company ? `${person.jobTitle} at ${person.company}` : person.company || person.headline,
+    person.location,
+    person.interests,
+    person.foods,
+    person.industry,
+  ].find(Boolean) || "";
+}
+
+function formatPersonBrief(people: AskPerson[], named: string | null): string {
+  if (people.length > 1 && named && named.trim().split(/\s+/).length < 2) {
+    const lines = people.map((person) => {
+      const fact = personFact(person);
+      return fact ? `${person.name} — ${fact}` : person.name;
+    });
+    return `${people.length} people match ${named}: ${lines.join("; ")}.`;
+  }
+  const person = people[0];
+  const others = people.slice(1);
+  const role = person.jobTitle && person.company
+    ? `${person.jobTitle} at ${person.company}`
+    : person.company || person.headline;
+  const sentences: string[] = [];
+  if (person.relationship && role) {
+    sentences.push(`${person.name} is ${person.relationship}, ${role}.`);
+  } else if (person.relationship) {
+    sentences.push(`${person.name} is ${person.relationship}.`);
+  } else if (role) {
+    sentences.push(`${person.name} — ${role}.`);
+  } else {
+    sentences.push(`${person.name} is in your stored record.`);
+  }
+  if (person.location) sentences.push(`Based in ${person.location}.`);
+  const hometown = listText(person.hometown);
+  if (hometown) sentences.push(`Hometown: ${hometown}.`);
+  const met = [person.howMet, person.whenMet, person.whereMet].filter(Boolean).join(", ");
+  if (met) sentences.push(`You met ${met}.`);
+  if (person.interests) sentences.push(`Interests include ${person.interests}.`);
+  if (person.foods) sentences.push(`Foods: ${person.foods}.`);
+  if (person.notes) sentences.push(person.notes.replace(/\s+/g, " ").trim().slice(0, 220));
+  if (person.quickMemories) sentences.push(person.quickMemories.replace(/\s+/g, " ").trim().slice(0, 180));
+  const when = humanDate(person.lastContact);
+  if (when) sentences.push(`Last recorded contact ${when}.`);
+  const quote = person.matches.find((match) =>
+    match.field !== "last_contact" && match.source !== "nett" && usefulExcerpt(person, match.excerpt)
+  );
+  if (quote) sentences.push(`From ${quote.source}: “${quote.excerpt.slice(0, 160)}”`);
+  if (others.length) {
+    sentences.push(`Also in the record: ${others.map((item) => item.name).join(", ")}.`);
+  }
+  return sentences.join(" ");
 }
 
 export function formatAskAnswer(retrieval: AskRetrieval): string {
@@ -780,34 +1009,33 @@ export function formatAskAnswer(retrieval: AskRetrieval): string {
   if (!people.length) {
     return "Nothing stored in people, notes, messages, or email matched that question.";
   }
+  if (intent.personBrief) return formatPersonBrief(people, intent.namedPerson);
   const required = requiredGroups(intent);
   const complete = required.length
     ? people.filter((person) => required.every((group) => person.groups.has(group)))
     : people;
+  const shown = complete.length ? complete : people;
   const constraints = [
     intent.places.length ? intent.places.join(", ") : "",
     intent.topics.length ? intent.topics.join(" ") : "",
   ].filter(Boolean).join(" and ");
 
-  if (complete.length) {
-    const heading = constraints
-      ? `People who match ${constraints} from stored records (${complete.length}):`
-      : intent.recencyDays
-        ? `People with a recorded contact in the last ${intent.recencyDays} days:`
-        : "Closest stored matches:";
-    return `${heading}\n\n${complete.map(dossierLine).join("\n\n")}`;
+  if (!complete.length && required.length) {
+    const names = shown.slice(0, 6).map((person) => person.name);
+    return `No one matched every part of ${constraints || "that question"}. Closest stored people: ${names.join(", ")}.`;
   }
 
-  const parts = [`No one matched every part of ${constraints || "that question"}. Partial matches:`];
-  const byPlace = people.filter((person) => person.groups.has("place"));
-  const byTopic = people.filter((person) => person.groups.has("topic"));
-  if (byPlace.length) {
-    parts.push(`Place (${intent.places.join(", ")}):\n${byPlace.slice(0, 6).map(dossierLine).join("\n\n")}`);
+  if (shown.length === 1) {
+    const person = shown[0];
+    const fact = personFact(person);
+    return fact ? `${person.name} — ${fact}.` : `${person.name} is in the stored record.`;
   }
-  if (byTopic.length) {
-    parts.push(`Topic (${intent.topics.join(" ")}):\n${byTopic.slice(0, 6).map(dossierLine).join("\n\n")}`);
-  }
-  return parts.join("\n\n");
+
+  const names = shown.slice(0, 6).map((person) => person.name);
+  const extra = shown.length - names.length;
+  const topic = constraints
+    || (intent.recencyDays ? `a recorded contact in the last ${intent.recencyDays} days` : "that question");
+  return `${shown.length} people match ${topic}: ${names.join(", ")}${extra > 0 ? `, and ${extra} more` : ""}.`;
 }
 
 export function askEvidenceBlocks(retrieval: AskRetrieval): Array<{
@@ -815,30 +1043,59 @@ export function askEvidenceBlocks(retrieval: AskRetrieval): Array<{
   title: string;
   text: string;
 }> {
-  return retrieval.people.map((person) => {
+  const blocks: Array<{ id: string; title: string; text: string }> = [];
+  for (const person of retrieval.people) {
     const profile = [
+      person.relationship && `relationship: ${person.relationship}`,
       person.location && `location: ${person.location}`,
       person.hometown && `hometown: ${listText(person.hometown)}`,
       person.company && `company: ${person.company}`,
       person.jobTitle && `job title: ${person.jobTitle}`,
+      person.headline && `headline: ${person.headline}`,
       person.industry && `industry: ${person.industry}`,
+      person.howMet && `how met: ${person.howMet}`,
+      person.whenMet && `when met: ${person.whenMet}`,
+      person.whereMet && `where met: ${person.whereMet}`,
       person.foods && `foods: ${person.foods}`,
       person.interests && `interests: ${person.interests}`,
       person.skills && `skills: ${person.skills}`,
       person.notes && `notes: ${person.notes.slice(0, 400)}`,
+      person.quickMemories && `memories: ${person.quickMemories.slice(0, 240)}`,
+      person.lastContact && `last contact: ${humanDate(person.lastContact)}`,
     ].filter(Boolean).join("\n");
-    const evidence = person.matches
-      .map((match, index) => {
-        const id = match.evidenceId || `${person.personId}:${match.field}:${index}`;
-        return `[${id}] ${match.source} ${match.field}: ${match.excerpt}`;
-      })
-      .join("\n");
-    return {
+    blocks.push({
       id: person.personId,
       title: person.name,
-      text: `${profile}\n${evidence}`.trim().slice(0, 1_800),
-    };
-  });
+      text: profile || person.name,
+    });
+    for (const match of person.matches.slice(0, EVIDENCE_PER_PERSON)) {
+      if (!match.excerpt) continue;
+      const id = match.evidenceId || `${person.personId}:${match.field}:${blocks.length}`;
+      blocks.push({
+        id,
+        title: `${person.name} · ${match.source}`,
+        text: [match.occurredAt, match.excerpt].filter(Boolean).join("\n").slice(0, 900),
+      });
+    }
+  }
+  return blocks.slice(0, 16);
+}
+
+export function retrievalPathNote(retrieval: AskRetrieval): string {
+  const sources = [...new Set(
+    retrieval.people.flatMap((person) => person.matches.map((match) => match.source)).filter(Boolean),
+  )];
+  const threads = retrieval.people.reduce(
+    (count, person) => count + person.matches.filter((match) => match.field === "conversation").length,
+    0,
+  );
+  if (!sources.length) return "";
+  const comms = sources.filter((source) => ["messages", "whatsapp", "gmail", "telegram"].includes(source));
+  if (comms.length) {
+    const labels = comms.map((source) => source === "messages" ? "Messages" : source === "whatsapp" ? "WhatsApp" : source);
+    return `From ${labels.join(" and ")}${threads ? ` · ${threads} cited span${threads === 1 ? "" : "s"}` : ""}.`;
+  }
+  return `Matched from stored ${sources.slice(0, 3).join(", ")} records.`;
 }
 
 export function askCitations(retrieval: AskRetrieval): AskCitation[] {

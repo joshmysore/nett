@@ -54,6 +54,11 @@
   font: 13px/1 "JetBrains Mono Variable", ui-monospace, monospace;
   color: var(--muted);
 }
+.review-batch {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
 .review-list {
   list-style: none;
   margin: 0;

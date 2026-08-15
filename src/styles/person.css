@@ -350,6 +350,7 @@
   color: var(--bg);
   font-size: 14px;
   font-weight: 600;
+  white-space: nowrap;
   cursor: pointer;
 }
 .person-capture-shell button:disabled { opacity: .4; cursor: not-allowed; }

@@ -8,7 +8,7 @@ test.beforeEach(async ({ request }) => {
 
 const overflowPaths = [
   { path: "/", heading: /Remember\s+everyone/i },
-  { path: "/today", heading: "Home" },
+  { path: "/today", heading: "Ask Nett" },
   { path: "/people", heading: "People" },
   { path: "/settings/connectors", heading: "Sources" },
 ] as const;

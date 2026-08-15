@@ -29,6 +29,9 @@ export type EvidenceIndexResult = {
 
 /** How many of a person's most recent communications a per-person refresh indexes. */
 export const PERSON_COMMUNICATION_WINDOW = 400;
+/** Raw one-message docs kept for precise quotes. The rest become chunks/summaries. */
+export const PERSON_RAW_MESSAGE_WINDOW = 80;
+const CHUNK_CHARS = 900;
 
 type PendingDocument = {
   id: string;
@@ -99,23 +102,34 @@ function createStatements() {
     deleteFtsRow: db.prepare("DELETE FROM evidence_fts WHERE document_id=?"),
     insertFtsRow: db.prepare("INSERT INTO evidence_fts (document_id, person_id, source, kind, text) VALUES (?, ?, ?, ?, ?)"),
     markSeen: db.prepare("INSERT OR IGNORE INTO temp.evidence_seen (id) VALUES (?)"),
-    // A per-person refresh only walks the recent communication window, so it
-    // must not delete older interaction documents it deliberately skipped. A
-    // full refresh still prunes everything.
+    // Communication refreshes only walk a recent window, so interaction and
+    // conversation-summary docs outside that window must stay. Never prune them
+    // away — a full refresh that only saw the latest 400 messages would otherwise
+    // delete hundreds of thousands of rows and lock the API for minutes.
     prunePersonFts: db.prepare(`
       DELETE FROM evidence_fts WHERE document_id IN (
         SELECT id FROM evidence_documents
-        WHERE person_id=? AND kind<>'interaction'
+        WHERE person_id=? AND kind NOT IN ('interaction', 'conversation-summary')
           AND id NOT IN (SELECT id FROM temp.evidence_seen)
       )
     `),
     prunePersonDocuments: db.prepare(`
       DELETE FROM evidence_documents
-      WHERE person_id=? AND kind<>'interaction'
+      WHERE person_id=? AND kind NOT IN ('interaction', 'conversation-summary')
         AND id NOT IN (SELECT id FROM temp.evidence_seen)
     `),
-    pruneAllFts: db.prepare("DELETE FROM evidence_fts WHERE document_id NOT IN (SELECT id FROM temp.evidence_seen)"),
-    pruneAllDocuments: db.prepare("DELETE FROM evidence_documents WHERE id NOT IN (SELECT id FROM temp.evidence_seen)"),
+    pruneAllFts: db.prepare(`
+      DELETE FROM evidence_fts WHERE document_id IN (
+        SELECT id FROM evidence_documents
+        WHERE kind NOT IN ('interaction', 'conversation-summary')
+          AND id NOT IN (SELECT id FROM temp.evidence_seen)
+      )
+    `),
+    pruneAllDocuments: db.prepare(`
+      DELETE FROM evidence_documents
+      WHERE kind NOT IN ('interaction', 'conversation-summary')
+        AND id NOT IN (SELECT id FROM temp.evidence_seen)
+    `),
     clearSeen: db.prepare("DELETE FROM temp.evidence_seen")
   };
 }
@@ -194,43 +208,180 @@ function* memoryDocuments(personId?: string): Generator<PendingDocument> {
   }
 }
 
+type CommunicationRow = Record<string, unknown> & {
+  id: string;
+  person_id: string;
+  connector_id: string;
+  external_id: string;
+  body?: string;
+  occurred_at: string;
+  direction?: string;
+  evidence_json?: string;
+  thread_external_id?: string;
+};
+
+function communicationText(row: CommunicationRow): string {
+  const evidence = parse(String(row.evidence_json || "{}"), {}) as Record<string, unknown>;
+  const subject = text(evidence.subject);
+  const body = text(row.body);
+  return [row.direction ? `direction: ${row.direction}` : "", subject ? `subject: ${subject}` : "", body]
+    .filter(Boolean)
+    .join("\n");
+}
+
+function weekKey(iso: string): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return "unknown";
+  const day = date.getUTCDay() || 7;
+  date.setUTCDate(date.getUTCDate() - day + 1);
+  return date.toISOString().slice(0, 10);
+}
+
+function loadCommunicationRows(personId?: string): CommunicationRow[] {
+  if (personId) {
+    return db.prepare(`
+      SELECT c.*, cp.person_id
+      FROM communications c
+      JOIN communication_people cp ON cp.communication_id=c.id
+      WHERE cp.person_id=?
+      ORDER BY c.occurred_at DESC
+      LIMIT ${PERSON_COMMUNICATION_WINDOW}
+    `).all(personId) as CommunicationRow[];
+  }
+  // Full refresh must not pull the whole communications table into one query.
+  // Index a bounded set of recently contacted people; per-connector sync uses
+  // refreshStaleCommunicationIndex for the rest.
+  const personIds = db.prepare(`
+    SELECT person_id AS id FROM (
+      SELECT cp.person_id, MAX(c.occurred_at) AS latest
+      FROM communications c
+      JOIN communication_people cp ON cp.communication_id = c.id
+      GROUP BY cp.person_id
+      ORDER BY latest DESC
+      LIMIT 120
+    )
+  `).all() as { id: string }[];
+  const rows: CommunicationRow[] = [];
+  const perPerson = db.prepare(`
+    SELECT c.*, cp.person_id
+    FROM communications c
+    JOIN communication_people cp ON cp.communication_id=c.id
+    WHERE cp.person_id=?
+    ORDER BY c.occurred_at DESC
+    LIMIT ${PERSON_COMMUNICATION_WINDOW}
+  `);
+  for (const person of personIds) {
+    rows.push(...(perPerson.all(person.id) as CommunicationRow[]));
+  }
+  return rows;
+}
+
 function* communicationDocuments(personId?: string): Generator<PendingDocument> {
-  // A person with 25k messages does not need 25k evidence documents: retrieval
-  // only ever reads a small recent window, and indexing the whole history is
-  // what made a per-person refresh cost minutes.
-  const rows = (personId
-    ? db.prepare(`
-        SELECT c.*, cp.person_id
-        FROM communications c
-        JOIN communication_people cp ON cp.communication_id=c.id
-        WHERE cp.person_id=?
-        ORDER BY c.occurred_at DESC
-        LIMIT ${PERSON_COMMUNICATION_WINDOW}
-      `).all(personId)
-    : db.prepare(`
-        SELECT c.*, cp.person_id
-        FROM communications c
-        JOIN communication_people cp ON cp.communication_id=c.id
-      `).all()) as Record<string, unknown>[];
-  for (const communication of rows) {
-    const body = text(communication.body);
-    const evidence = parse(String(communication.evidence_json || "{}"), {}) as Record<string, unknown>;
-    const subject = text(evidence.subject);
-    if (!body && !subject) continue;
-    yield {
-      id: `communication:${communication.id}:${communication.person_id}`,
-      personId: String(communication.person_id),
-      kind: "interaction",
-      source: String(communication.connector_id),
-      sourceRecordId: String(communication.external_id),
-      text: [
-        communication.direction ? `direction: ${communication.direction}` : "",
-        subject ? `subject: ${subject}` : "",
-        body
-      ].filter(Boolean).join("\n"),
-      occurredAt: String(communication.occurred_at),
-      metadata: evidence
+  const rows = loadCommunicationRows(personId);
+  const byPerson = new Map<string, CommunicationRow[]>();
+  for (const row of rows) {
+    const id = String(row.person_id);
+    const list = byPerson.get(id) ?? [];
+    list.push(row);
+    byPerson.set(id, list);
+  }
+
+  for (const [pid, messages] of byPerson) {
+    const raw = messages.slice(0, PERSON_RAW_MESSAGE_WINDOW);
+    for (const communication of raw) {
+      const body = communicationText(communication);
+      if (!body) continue;
+      yield {
+        id: `communication:${communication.id}:${pid}`,
+        personId: pid,
+        kind: "interaction",
+        source: String(communication.connector_id),
+        sourceRecordId: String(communication.external_id),
+        text: body,
+        occurredAt: String(communication.occurred_at),
+        metadata: parse(String(communication.evidence_json || "{}"), {}),
+      };
+    }
+
+    const chronological = [...messages].reverse();
+    let chunk: CommunicationRow[] = [];
+    let chunkChars = 0;
+    let chunkIndex = 0;
+    const flushChunk = function* () {
+      if (!chunk.length) return;
+      const first = chunk[0];
+      const last = chunk[chunk.length - 1];
+      const textBody = chunk.map((row) => communicationText(row)).filter(Boolean).join("\n---\n");
+      if (!textBody) {
+        chunk = [];
+        chunkChars = 0;
+        return;
+      }
+      yield {
+        id: `chunk:${pid}:${first.connector_id}:${first.id}:${chunkIndex}`,
+        personId: pid,
+        kind: "interaction",
+        source: String(first.connector_id),
+        sourceRecordId: String(first.external_id),
+        text: textBody.slice(0, CHUNK_CHARS * 2),
+        occurredAt: String(last.occurred_at),
+        metadata: {
+          chunk: true,
+          messages: chunk.length,
+          thread: first.thread_external_id || null,
+        },
+      } satisfies PendingDocument;
+      chunkIndex += 1;
+      chunk = [];
+      chunkChars = 0;
     };
+    let lastThread = "";
+    for (const row of chronological) {
+      const thread = String(row.thread_external_id || row.connector_id);
+      const next = communicationText(row);
+      if (!next) continue;
+      if (chunk.length && (thread !== lastThread || chunkChars + next.length > CHUNK_CHARS)) {
+        yield* flushChunk();
+      }
+      lastThread = thread;
+      chunk.push(row);
+      chunkChars += next.length;
+    }
+    yield* flushChunk();
+
+    const buckets = new Map<string, CommunicationRow[]>();
+    for (const row of messages) {
+      const key = `${row.connector_id}:${weekKey(String(row.occurred_at))}`;
+      const list = buckets.get(key) ?? [];
+      list.push(row);
+      buckets.set(key, list);
+    }
+    for (const [key, group] of buckets) {
+      const [source, week] = key.split(":");
+      const samples = group.slice(0, 3).map((row) => communicationText(row).replace(/\s+/g, " ").trim().slice(0, 160)).filter(Boolean);
+      const tokens = new Map<string, number>();
+      for (const row of group) {
+        for (const token of communicationText(row).toLowerCase().split(/[^a-z0-9+]+/)) {
+          if (token.length < 4 || token.length > 24) continue;
+          tokens.set(token, (tokens.get(token) ?? 0) + 1);
+        }
+      }
+      const themes = [...tokens.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8).map(([word]) => word);
+      yield {
+        id: `summary:${pid}:${key}`,
+        personId: pid,
+        kind: "conversation-summary",
+        source,
+        sourceRecordId: `${pid}:${key}`,
+        text: [
+          `${source} · week of ${week} · ${group.length} messages`,
+          themes.length ? `themes: ${themes.join(", ")}` : "",
+          ...samples,
+        ].filter(Boolean).join("\n"),
+        occurredAt: String(group[0]?.occurred_at || week),
+        metadata: { week, messages: group.length, themes },
+      };
+    }
   }
 }
 
@@ -325,11 +476,11 @@ function prunePerson(personId: string, seen: ReadonlySet<string>): number {
   db.prepare(`
     DELETE FROM evidence_fts WHERE document_id IN (
       SELECT id FROM evidence_documents
-      WHERE person_id=? AND kind<>'interaction'${clause}
+      WHERE person_id=? AND kind NOT IN ('interaction', 'conversation-summary')${clause}
     )
   `).run(personId, ...ids);
   return db.prepare(`
-    DELETE FROM evidence_documents WHERE person_id=? AND kind<>'interaction'${clause}
+    DELETE FROM evidence_documents WHERE person_id=? AND kind NOT IN ('interaction', 'conversation-summary')${clause}
   `).run(personId, ...ids).changes;
 }
 
@@ -399,6 +550,79 @@ export function personEvidenceDocuments(personId: string, limit: number): Eviden
   if (rows.some((row) => row.id === `profile:${personId}`)) return rows;
   const profile = sql().documentById.get(`profile:${personId}`) as EvidenceDocument | undefined;
   return profile ? [profile, ...rows.slice(0, Math.max(0, limit - 1))] : rows;
+}
+
+export type EvidenceFreshness = {
+  indexedAt: string | null;
+  communicationsAt: string | null;
+  interactionIndexedAt: string | null;
+  stale: boolean;
+  staleSources: string[];
+};
+
+export function evidenceFreshness(): EvidenceFreshness {
+  const indexedAt = (db.prepare("SELECT MAX(updated_at) AS at FROM evidence_documents").get() as { at: string | null }).at;
+  const communicationsAt = (db.prepare("SELECT MAX(occurred_at) AS at FROM communications").get() as { at: string | null }).at;
+  const interactionIndexedAt = (db.prepare(`
+    SELECT MAX(occurred_at) AS at FROM evidence_documents
+    WHERE kind IN ('interaction', 'conversation-summary')
+  `).get() as { at: string | null }).at;
+  // Compare per-connector maxima — never scan every communication row.
+  const commMax = db.prepare(`
+    SELECT connector_id AS source, MAX(occurred_at) AS at
+    FROM communications
+    GROUP BY connector_id
+  `).all() as { source: string; at: string | null }[];
+  const indexedMax = new Map(
+    (db.prepare(`
+      SELECT source, MAX(occurred_at) AS at
+      FROM evidence_documents
+      WHERE kind IN ('interaction', 'conversation-summary')
+      GROUP BY source
+    `).all() as { source: string; at: string | null }[]).map((row) => [row.source, row.at]),
+  );
+  const staleSources = commMax
+    .filter((row) => row.at && row.at > (indexedMax.get(row.source) || ""))
+    .map((row) => row.source);
+  return {
+    indexedAt,
+    communicationsAt,
+    interactionIndexedAt,
+    stale: staleSources.length > 0,
+    staleSources,
+  };
+}
+
+/** Index people whose latest message on this connector is newer than their indexed interactions. */
+export function refreshStaleCommunicationIndex(
+  connectorId: string,
+  limit = 80,
+): { people: number; indexed: number; written: number } {
+  const rows = db.prepare(`
+    SELECT person_id AS id FROM (
+      SELECT cp.person_id, MAX(c.occurred_at) AS latest
+      FROM communications c
+      JOIN communication_people cp ON cp.communication_id = c.id
+      WHERE c.connector_id = ?
+      GROUP BY cp.person_id
+    ) recent
+    WHERE recent.latest > COALESCE((
+      SELECT MAX(d.occurred_at) FROM evidence_documents d
+      WHERE d.person_id = recent.person_id
+        AND d.kind IN ('interaction', 'conversation-summary')
+        AND d.source = ?
+    ), '')
+    ORDER BY recent.latest DESC
+    LIMIT ?
+  `).all(connectorId, connectorId, limit) as { id: string }[];
+  let indexed = 0;
+  let written = 0;
+  for (const row of rows) {
+    const result = refreshEvidenceIndex(row.id);
+    indexed += result.indexed;
+    written += result.written;
+  }
+  return { people: rows.length, indexed, written };
 }
 
 /** Hydrates a bounded set of documents chosen by a ranking stage. */

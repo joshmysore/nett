@@ -123,12 +123,13 @@ node scripts/measure.mjs <label>   # browser latency, CLS, overflow, screenshots
 
 ## Component and route conventions
 
-- Routes: `/` landing, `/about`, `/today` desk, `/people`, `/people/:id`,
+- Routes: `/` landing, `/about`, `/today` Ask, `/people`, `/people/:id`,
   `/review`, `/settings/connectors` (Sources), `/setup`. `/connectors` and
   `/settings` redirect. **These are deep links — preserve them and their query
   parameters.**
-- Primary nav: Home · People · Review · Sources. `/today` remains the Home
-  route for deep-link compatibility.
+- Primary nav is a workspace sidebar: Ask · Review · People · Sources.
+  `/today` remains the Ask/Home route for deep-link compatibility. Find and
+  Remember live in the rail.
 - People list state (`q`, `filter`, `page`, `view`, facet params) lives in the
   URL, not in component state. Deep links must survive reload and back/forward.
   Cards is the default People surface; dense list uses `view=list`, and

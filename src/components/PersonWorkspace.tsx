@@ -172,7 +172,7 @@ export function NextActionBlock({
       {onCapture && (
         <button type="button" className="secondary-button" onClick={onCapture}>
           <NotePencil size={16} aria-hidden="true" />
-          Record what happened
+          Record a memory
         </button>
       )}
     </section>
@@ -797,7 +797,7 @@ export function PersonCapture({
   };
   return (
     <div className="person-capture">
-      <label htmlFor={id}>Record something about {person.first_name || person.name}</label>
+      <label htmlFor={id}>Record a memory about {person.first_name || person.name}</label>
       <div className="person-capture-shell">
         <textarea
           id={id}
@@ -807,13 +807,16 @@ export function PersonCapture({
           onKeyDown={(event) => {
             if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) void save();
           }}
+          placeholder="A note on this person, stored as written."
         />
         <button type="button" onClick={() => void save()} disabled={saving || !value.trim()}>
           {saving ? <SpinnerGap className="spin" size={15} /> : <PaperPlaneTilt size={15} />}
-          Save
+          Save as written
         </button>
       </div>
-      <p className="person-capture-note">Stored word for word. ⌘ + Enter saves.</p>
+      <p className="person-capture-note">
+        Not turned into fields. Use Remember (⌘M) to structure a sentence onto someone.
+      </p>
     </div>
   );
 }

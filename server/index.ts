@@ -13,11 +13,14 @@ import {
   prepareWhatsAppArchive,
   whatsappDesktopStatus
 } from "./connectors.js";
-import { addMemory, connectorStates, createPerson, db, findExactPerson, getPeople, getPeoplePage, getPerson, getPersonCommunications, listify, mergeReviewQueue, mergeReviewQueuePage, normalizeEmail, normalizePhone, overview, pendingInferenceSuggestions, peopleFacets, resolveMerge, reviewCounts, searchIndexRows, unmergeIdentity, updatePerson } from "./db.js";
+import { addMemory, connectorStates, createPerson, db, findExactPerson, getPeople, getPeoplePage, getPerson, getPersonCommunications, listify, mergeReviewQueue, mergeReviewQueuePage, normalizeEmail, normalizePhone, overview, pendingInferenceSuggestions, peopleFacets, resolveMerge, reviewCounts, unmergeIdentity, updatePerson } from "./db.js";
 import type { PeopleFilters } from "./db.js";
-import { extractCapture } from "./capture/extract.js";
+import type { CaptureExtraction } from "./capture/extract.js";
+import { extractCaptureWithModel } from "./capture/llm.js";
 import { extractOwnerContext } from "./capture/owner-context.js";
 import { getProvider } from "./agent.js";
+import { refreshStaleCommunicationIndex } from "./intelligence/evidence-index.js";
+import { searchPeopleFromEvidence, searchPersonIds } from "./intelligence/people-search.js";
 import {
   calculateRelationshipSignals,
   intelligenceStatus,
@@ -25,7 +28,9 @@ import {
   refreshEvidenceEmbeddings,
   refreshEvidenceIndex,
   refreshPersonEvidenceIndex,
-  reviewInferenceSuggestion
+  reviewInferenceSuggestion,
+  searchEvidence,
+  streamRelationshipQuestion,
 } from "./intelligence/service.js";
 import { generateRelationshipInsights } from "./intelligence/insights.js";
 import { parsePersonPatch } from "../src/lib/contracts.js";
@@ -96,11 +101,6 @@ function webAppUrl(pathname: string): string {
   return origin ? `${origin}${pathname}` : pathname;
 }
 const activeConnectorSyncs = new Set<string>();
-let peopleSearchCache: {
-  revision: string;
-  people: ReturnType<typeof searchIndexRows>;
-  fuse: Fuse<ReturnType<typeof searchIndexRows>[number]>;
-} | null = null;
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 const communicationUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 64 * 1024 * 1024 } });
 const messagesUploadDir = path.resolve(process.cwd(), "data", "imports", "uploads");
@@ -200,14 +200,26 @@ function peopleFiltersFromQuery(query: Record<string, unknown>): PeopleFilters {
 }
 
 app.get("/api/people/page", (req, res) => {
+  const filters = peopleFiltersFromQuery(req.query as Record<string, unknown>);
+  const query = String(filters.query || "").trim();
+  const matchedIds = query ? searchPersonIds(query, 200) : undefined;
   res.json(getPeoplePage({
-    ...peopleFiltersFromQuery(req.query as Record<string, unknown>),
+    ...filters,
+    query: matchedIds ? "" : filters.query,
+    evidencePersonIds: query && matchedIds && !matchedIds.length ? ["__none__"] : matchedIds,
     page: Number(req.query.page || 1),
     limit: Number(req.query.limit || 50)
   }));
 });
 app.get("/api/people/facets", (req, res) => {
-  res.json(peopleFacets(peopleFiltersFromQuery(req.query as Record<string, unknown>)));
+  const filters = peopleFiltersFromQuery(req.query as Record<string, unknown>);
+  const query = String(filters.query || "").trim();
+  const matchedIds = query ? searchPersonIds(query, 200) : undefined;
+  res.json(peopleFacets({
+    ...filters,
+    query: matchedIds ? "" : filters.query,
+    evidencePersonIds: query && matchedIds && !matchedIds.length ? ["__none__"] : matchedIds,
+  }));
 });
 app.get("/api/people/:id", (req, res) => {
   const person = getPerson(req.params.id);
@@ -364,47 +376,81 @@ app.post("/api/intelligence/index", async (req, res) => {
 app.get("/api/search", (req, res) => {
   const query = String(req.query.q || "").trim();
   if (!query) return res.json(getPeoplePage({ limit: 8 }).people);
-  const revisionRow = db.prepare(`
-    SELECT
-      (SELECT COUNT(*) || ':' || COALESCE(MAX(updated_at), '') FROM people) || '|' ||
-      (SELECT COUNT(*) || ':' || COALESCE(MAX(updated_at), '') FROM nett_metadata) || '|' ||
-      (SELECT COUNT(*) || ':' || COALESCE(MAX(created_at), '') FROM memories) || '|' ||
-      (SELECT COUNT(*) FROM contact_tags) AS revision
-  `).get() as { revision: string };
-  if (!peopleSearchCache || peopleSearchCache.revision !== revisionRow.revision) {
-    const people = searchIndexRows();
-    peopleSearchCache = {
-      revision: revisionRow.revision,
-      people,
-      fuse: new Fuse(people, {
-        threshold: 0.35,
-        ignoreLocation: true,
-        includeMatches: true,
-        keys: ["name", "nickname", "company", "headline", "job_title", "industry", "institutions", "hometown", "location", "tags", "mutuals", "quick_memories", "notes", "interests"]
-      })
-    };
+  res.json(searchPeopleFromEvidence(query, 12));
+});
+app.get("/api/evidence/search", async (req, res) => {
+  const query = String(req.query.q || "").trim();
+  if (!query) return res.json([]);
+  const controller = new AbortController();
+  req.on("close", () => controller.abort());
+  try {
+    res.json(await searchEvidence(query, Math.min(Number(req.query.limit) || 12, 24), {
+      signal: controller.signal,
+      skipVector: req.query.vector === "0",
+    }));
+  } catch (error) {
+    if (error instanceof Error && error.name === "AbortError") return;
+    res.status(500).json({ error: error instanceof Error ? error.message : "Evidence search failed" });
   }
-  res.json(peopleSearchCache.fuse.search(query).slice(0, 12).map((result) => ({
-    ...result.item,
-    searchMatches: result.matches?.map((match) => match.key)
-  })));
 });
 
-function parseMemory(text: string, people = searchIndexRows()) {
-  const extraction = extractCapture(text);
-  // Match on the name mentioned in the text when there is one; fall back to the
-  // whole transcript. Matching on the transcript alone let unrelated words
-  // score people highly.
-  const personFuse = new Fuse(people, { threshold: 0.28, includeScore: true, keys: ["name", "nickname"] });
-  const candidates = personFuse
-    .search(extraction.nameHint || text)
-    .slice(0, 4)
-    .map((r) => ({
-      id: (r.item as any).id,
-      name: (r.item as any).name,
-      company: (r.item as any).company,
-      score: 1 - (r.score || 0),
+function emailsFrom(text: string): string[] {
+  return [...text.matchAll(/[\w.+-]+@[\w.-]+\.[a-z]{2,}/gi)].map((match) => match[0]);
+}
+
+function phonesFrom(text: string): string[] {
+  return [...text.matchAll(/\+?\d[\d\s().-]{7,}\d/g)].map((match) => match[0]);
+}
+
+function parseMemoryFromExtraction(text: string, extraction: CaptureExtraction) {
+  const contactHit = findExactPerson(emailsFrom(text), phonesFrom(text));
+  const contactPerson = contactHit ? getPerson(contactHit.person_id) as { id: string; name: string; company?: string } | null : null;
+  const needle = (extraction.nameHint || "").trim().toLowerCase();
+  const pool = searchPeopleFromEvidence(extraction.nameHint || text, 12);
+  const exact = needle
+    ? pool.filter((person) => {
+      const name = String(person.name || "").toLowerCase();
+      const nick = String(person.nickname || "").toLowerCase();
+      return name === needle || nick === needle;
+    })
+    : [];
+  let candidates: { id: string; name: string; company?: string; score: number }[] = [];
+  let ambiguous = false;
+  if (contactPerson) {
+    candidates = [{
+      id: contactPerson.id,
+      name: contactPerson.name,
+      company: contactPerson.company,
+      score: 1,
+    }];
+  } else if (exact.length === 1) {
+    candidates = [{
+      id: exact[0].id,
+      name: exact[0].name,
+      company: exact[0].company,
+      score: 1,
+    }];
+  } else if (exact.length > 1) {
+    candidates = exact.slice(0, 4).map((person) => ({
+      id: person.id,
+      name: person.name,
+      company: person.company,
+      score: 0.92,
     }));
+    ambiguous = true;
+  } else {
+    const personFuse = new Fuse(pool, { threshold: 0.28, includeScore: true, keys: ["name", "nickname"] });
+    candidates = personFuse
+      .search(extraction.nameHint || text)
+      .slice(0, 4)
+      .map((result) => ({
+        id: result.item.id,
+        name: result.item.name,
+        company: result.item.company,
+        score: 1 - (result.score || 0),
+      }));
+    ambiguous = candidates.length > 1 && candidates[0].score - candidates[1].score < 0.08;
+  }
   const valueOf = (field: string) => extraction.proposals.find((proposal) => proposal.field === field);
   const tagProposal = valueOf("tags");
   const tags = tagProposal?.values?.length
@@ -416,9 +462,8 @@ function parseMemory(text: string, people = searchIndexRows()) {
     if (proposal.values?.length) return proposal.values;
     return proposal.value.split(",").map((part) => part.trim()).filter(Boolean);
   };
-  const interestTags = tags.filter((t) => ["policy", "AI", "robotics", "health", "climate"].includes(t));
+  const interestTags = tags.filter((tag) => ["policy", "AI", "robotics", "health", "climate"].includes(tag));
   return {
-    // The transcript is kept verbatim and separately from the editable memory.
     transcript: extraction.transcript,
     nameHint: extraction.nameHint,
     proposals: extraction.proposals,
@@ -431,14 +476,17 @@ function parseMemory(text: string, people = searchIndexRows()) {
       interests: listValues("interests").length ? listValues("interests") : interestTags,
       foods: listValues("foods"),
     },
-    ambiguous: candidates.length > 1 && candidates[0].score - candidates[1].score < 0.08,
+    ambiguous,
   };
 }
 
-app.post("/api/memories/parse", (req, res) => {
+app.post("/api/memories/parse", async (req, res) => {
   const text = String(req.body.text || "").trim();
   if (!text) return res.status(400).json({ error: "Memory text is required" });
-  res.json(parseMemory(text));
+  const controller = new AbortController();
+  req.on("close", () => controller.abort());
+  const extraction = await extractCaptureWithModel(text, { signal: controller.signal });
+  res.json(parseMemoryFromExtraction(text, extraction));
 });
 app.post("/api/people/:id/memories", (req, res) => {
   const text = String(req.body.text || "").trim();
@@ -465,8 +513,12 @@ async function performConnectorSync(
     ? Math.min(Math.max(Number(options.maxBatches) || 10, 1), 100)
     : undefined;
   const result = await connector.sync({ maxBatches, signal: options.signal });
-  if (result.done !== false && connectorId !== "messages" && connectorId !== "whatsapp") {
-    refreshEvidenceIndex();
+  if (result.done !== false) {
+    if (connectorId === "messages" || connectorId === "whatsapp") {
+      refreshStaleCommunicationIndex(connectorId);
+    } else {
+      refreshEvidenceIndex();
+    }
   }
   return result;
 }
@@ -1040,7 +1092,28 @@ app.post("/api/agent/query", async (req, res) => {
   if (!query) return res.status(400).json({ error: "Ask a question about your network" });
   const controller = new AbortController();
   req.on("close", () => { if (!res.writableEnded) controller.abort(); });
+  const wantsStream = req.query.stream === "1"
+    || String(req.headers.accept || "").includes("text/event-stream");
   try {
+    if (wantsStream) {
+      res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+      res.setHeader("Cache-Control", "no-cache");
+      res.setHeader("Connection", "keep-alive");
+      res.setHeader("X-Accel-Buffering", "no");
+      res.flushHeaders();
+      for await (const event of streamRelationshipQuestion(query, { signal: controller.signal })) {
+        if (res.writableEnded) return;
+        res.write(`data: ${JSON.stringify(event)}\n\n`);
+        const flushable = res as typeof res & { flush?: () => void };
+        flushable.flush?.();
+        if (event.type === "done") {
+          db.prepare("INSERT INTO ai_queries (id, query, response, citations_json, provider, created_at) VALUES (?, ?, ?, ?, ?, datetime('now'))")
+            .run(randomUUID(), query, event.answer, JSON.stringify(event.citations), event.provider);
+        }
+      }
+      if (!res.writableEnded) res.end();
+      return;
+    }
     const result = await getProvider().answer(query, controller.signal);
     if (res.writableEnded) return;
     res.json(result);

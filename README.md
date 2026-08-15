@@ -132,8 +132,10 @@ Email and phone columns are also accepted for matching. Exact contact methods me
 
 ## Keyboard and capture
 
-- `Cmd+K`: fuzzy search names, companies, places, tags, institutions, mutuals, notes, and memories.
-- `Cmd+M`: open quick memory capture.
+- `Cmd+K`: Find — jump to a person or run a command.
+- `Cmd+M`: Remember — turn a sentence into fields on a person (reviewed before save).
+- On a person page, Record saves a written memory as-is. It does not structure fields.
+- Ask Nett is Home. It questions stored records and does not write. People, Review, and Sources live in the sidebar.
 - Voice capture uses the browser Speech Recognition API when available. The transcript is always shown for approval before saving.
 
 ## Local intelligence with Ollama

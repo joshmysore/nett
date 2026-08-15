@@ -2,6 +2,7 @@ import { AnimatePresence } from "motion/react";
 import {
   ArrowRight,
   Clock,
+  NotePencil,
   Plus,
   Quotes,
   SlidersHorizontal,
@@ -10,7 +11,7 @@ import {
   WarningCircle,
 } from "@phosphor-icons/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { useLocation, useNavigate, useParams } from "react-router-dom";
 import { EditProfileDialog } from "@/components/EditProfileDialog";
 import { HometownDisplay } from "@/components/PlacePicker";
 import {
@@ -49,7 +50,8 @@ type Signals = Awaited<ReturnType<typeof api.relationshipSignals>>;
 type TimelineItem =
   | { kind: "memory"; date: string; record: MemoryRecord }
   | { kind: "interaction"; date: string; record: Interaction }
-  | { kind: "communication"; date: string; record: Communication };
+  | { kind: "communication"; date: string; record: Communication }
+  | { kind: "provenance"; date: string; record: FullPerson["provenance"][number] };
 
 const MESSAGE_CONNECTORS = ["messages", "gmail", "telegram", "whatsapp"];
 
@@ -90,6 +92,7 @@ export function ProfilePage({
   notify: (kind: ToastKind, message: string) => void;
 }) {
   const { id = "" } = useParams();
+  const location = useLocation();
   const navigate = useNavigate();
   const [person, setPerson] = useState<FullPerson | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -185,8 +188,16 @@ export function ProfilePage({
       ...communications.map(
         (record): TimelineItem => ({ kind: "communication", date: record.occurred_at, record }),
       ),
+      ...asList(person.provenance).map(
+        (record): TimelineItem => ({ kind: "provenance", date: record.observed_at, record }),
+      ),
     ].sort((a, b) => String(b.date).localeCompare(String(a.date)));
   }, [communications, person]);
+
+  useEffect(() => {
+    if (location.hash !== "#recent" || !timeline.length) return;
+    document.getElementById("held-thread")?.scrollIntoView({ block: "start" });
+  }, [location.hash, timeline.length]);
 
   const brief = useMemo(() => (person ? recordedBrief(person) : null), [person]);
   const nextAction = useMemo(() => (person ? defensibleNextAction(person) : null), [person]);
@@ -374,8 +385,8 @@ export function ProfilePage({
             Edit profile
           </button>
           <button className="primary-button" onClick={() => captureRef.current?.focus()}>
-            <Plus size={17} aria-hidden="true" />
-            Add memory
+            <NotePencil size={17} aria-hidden="true" />
+            Record a memory
           </button>
         </div>
       </section>
@@ -431,11 +442,11 @@ export function ProfilePage({
             />
           </section>
 
-          <section className="profile-section">
+          <section className="profile-section" id="held-thread">
             <div className="section-heading">
               <div>
-                <h2>Recent</h2>
-                <p>Messages, notes, and moments connected by their source.</p>
+                <h2>Held thread</h2>
+                <p>Memories, messages, and field evidence on one rail.</p>
               </div>
             </div>
             {timeline.length ? (
@@ -443,17 +454,27 @@ export function ProfilePage({
                 {timeline.map((item) => {
                   const isMemory = item.kind === "memory";
                   const isCommunication = item.kind === "communication";
+                  const isProvenance = item.kind === "provenance";
                   const key = `${item.kind}:${item.record.id}`;
                   const source = isMemory
                     ? item.record.source
                     : isCommunication
                       ? item.record.connector_id
-                      : item.record.source_connector;
+                      : isProvenance
+                        ? item.record.connector_id
+                        : item.record.source_connector;
                   const body = isMemory
                     ? item.record.raw_text
                     : isCommunication
                       ? item.record.body || `${item.record.kind} communication`
-                      : item.record.summary || `${item.record.kind} interaction`;
+                      : isProvenance
+                        ? `${item.record.field_name.replace(/_/g, " ")}: ${item.record.field_value || "Cleared"}`
+                        : item.record.summary || `${item.record.kind} interaction`;
+                  const kindLabel = isMemory
+                    ? "Memory"
+                    : isProvenance
+                      ? "Field evidence"
+                      : item.record.kind;
                   const tags =
                     isMemory && Array.isArray(item.record.structured?.tags)
                       ? (item.record.structured.tags as string[])
@@ -468,7 +489,7 @@ export function ProfilePage({
                         <p>{body}</p>
                         <div className="timeline-meta">
                           <SourceBadge source={source} />
-                          <small>{isMemory ? "Memory" : item.record.kind}</small>
+                          <small>{kindLabel}</small>
                           {isCommunication && item.record.thread_title && (
                             <small>{item.record.thread_title}</small>
                           )}

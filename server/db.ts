@@ -188,6 +188,8 @@ export function countryFromLocation(location: unknown): string {
 
 export type PeopleFilters = {
   query?: string;
+  /** When set, restrict to these people (FTS / evidence search already ran). */
+  evidencePersonIds?: string[];
   filter?: "all" | "strong" | "due" | "cold";
   country?: string;
   industry?: string;
@@ -223,22 +225,17 @@ function emptyFieldPredicate(column: string) {
 function buildPeoplePredicate(options: PeopleFilters) {
   const where: string[] = [];
   const values: unknown[] = [];
-  const query = String(options.query || "").trim();
-  if (query) {
-    const like = `%${query}%`;
-    where.push(`(
-      p.preferred_name LIKE ? OR p.nickname LIKE ? OR m.company LIKE ? OR m.industry LIKE ?
-      OR m.location LIKE ? OR m.hometown LIKE ? OR m.notes LIKE ? OR m.quick_memories LIKE ?
-      OR m.institutions LIKE ? OR m.interests LIKE ? OR m.mutuals LIKE ?
-      OR EXISTS (
-        SELECT 1 FROM memories mm WHERE mm.person_id=p.id AND mm.raw_text LIKE ?
-      )
-      OR EXISTS (
-        SELECT 1 FROM contact_tags ct JOIN tags t ON t.id=ct.tag_id
-        WHERE ct.person_id=p.id AND t.name LIKE ?
-      )
-    )`);
-    values.push(...Array(13).fill(like));
+  const evidenceIds = (options.evidencePersonIds || []).filter(Boolean).slice(0, 200);
+  if (evidenceIds.length) {
+    where.push(`p.id IN (${evidenceIds.map(() => "?").join(",")})`);
+    values.push(...evidenceIds);
+  } else {
+    const query = String(options.query || "").trim();
+    if (query) {
+      const like = `${query.replace(/[%_]/g, "")}%`;
+      where.push("(p.preferred_name LIKE ? COLLATE NOCASE OR p.nickname LIKE ? COLLATE NOCASE OR m.company LIKE ? COLLATE NOCASE)");
+      values.push(like, like, like);
+    }
   }
   const filter = options.filter || "all";
   if (filter === "strong") where.push("COALESCE(m.relationship_strength, 0) >= 75");
@@ -530,7 +527,7 @@ export function addMemory(personId: string, rawText: string, structured: Record<
       "online_personality",
     ] as const;
     const scalarFields = [
-      "location", "industry", "company", "spike", "relationship", "when_met", "where_met",
+      "location", "industry", "company", "job_title", "spike", "relationship", "when_met", "where_met",
       "how_met", "gender", "culture", "personality", "birthday",
     ] as const;
     const update: Record<string, unknown> = {};
@@ -811,7 +808,7 @@ export function autofillSuggestions(personId: string) {
 export function pendingInferenceSuggestions(limit = 80) {
   const rows = db.prepare(`
     SELECT s.id, s.person_id, s.field_name, s.proposed_value_json, s.current_value_json,
-           s.rationale, s.confidence, s.created_at, p.preferred_name AS person_name
+           s.rationale, s.confidence, s.created_at, s.model, p.preferred_name AS person_name
     FROM inference_suggestions s
     JOIN people p ON p.id = s.person_id
     WHERE s.status = 'pending'
@@ -828,6 +825,7 @@ export function pendingInferenceSuggestions(limit = 80) {
     rationale: String(row.rationale || ""),
     confidence: typeof row.confidence === "number" ? row.confidence : Number(row.confidence) || null,
     createdAt: String(row.created_at || ""),
+    source: String(row.model || "nett"),
   }));
 }
 
@@ -1021,42 +1019,45 @@ export function overview() {
     LIMIT 20
   `).all().map((row: any) => [row.label, row.count] as [string, number]);
   const ids = (sql: string) => (db.prepare(sql).all() as { id: string }[]).map((row) => row.id);
-  const topIds = ids(`
-    SELECT p.id FROM people p LEFT JOIN nett_metadata m ON m.person_id=p.id
-    ORDER BY COALESCE(m.priority, 0) DESC, COALESCE(m.relationship_strength, 0) DESC,
-      p.preferred_name ASC LIMIT 140
-  `);
   const dueIds = ids(`
     SELECT p.id FROM people p JOIN nett_metadata m ON m.person_id=p.id
     WHERE m.follow_up_date IS NOT NULL AND date(m.follow_up_date) <= date('now')
-    ORDER BY date(m.follow_up_date) ASC, COALESCE(m.priority, 0) DESC LIMIT 50
-  `);
-  const coldIds = ids(`
-    SELECT p.id FROM people p JOIN nett_metadata m ON m.person_id=p.id
-    WHERE m.last_contact IS NOT NULL AND julianday('now') - julianday(m.last_contact) > 90
-    ORDER BY datetime(m.last_contact) ASC, COALESCE(m.relationship_strength, 0) DESC LIMIT 50
-  `);
-  const birthdayIds = ids(`
-    SELECT p.id FROM people p JOIN nett_metadata m ON m.person_id=p.id
-    WHERE NULLIF(m.birthday, '') IS NOT NULL
-    ORDER BY
-      CASE WHEN strftime('%m-%d', m.birthday) >= strftime('%m-%d', 'now') THEN 0 ELSE 1 END,
-      strftime('%m-%d', m.birthday) ASC LIMIT 40
+    ORDER BY date(m.follow_up_date) ASC, COALESCE(m.priority, 0) DESC LIMIT 8
   `);
   const recentIds = ids(`
     SELECT p.id FROM people p JOIN nett_metadata m ON m.person_id=p.id
-    WHERE m.last_contact IS NOT NULL ORDER BY datetime(m.last_contact) DESC LIMIT 40
+    WHERE m.last_contact IS NOT NULL ORDER BY datetime(m.last_contact) DESC LIMIT 8
   `);
-  const gapIds = ids(`
+  const rememberedIds = ids(`
     SELECT p.id FROM people p LEFT JOIN nett_metadata m ON m.person_id=p.id
-    WHERE NULLIF(TRIM(m.location), '') IS NULL
-      OR NULLIF(TRIM(m.company), '') IS NULL
-      OR NULLIF(TRIM(m.industry), '') IS NULL
-    ORDER BY COALESCE(m.priority, 0) DESC, p.preferred_name ASC LIMIT 40
+    WHERE NULLIF(TRIM(m.quick_memories), '') IS NOT NULL
+       OR NULLIF(TRIM(m.notes), '') IS NOT NULL
+       OR EXISTS (SELECT 1 FROM memories mm WHERE mm.person_id=p.id)
+    ORDER BY COALESCE(m.last_contact, p.updated_at) DESC LIMIT 8
   `);
-  const orderedIds = [...new Set([...topIds, ...dueIds, ...coldIds, ...birthdayIds, ...recentIds, ...gapIds])];
+  // Prefer people metadata for Home — evidence_documents is huge and must stay
+  // off the bootstrap critical path.
+  const resurfacedIds = recentIds;
+  const orderedIds = [...new Set([...recentIds, ...rememberedIds, ...dueIds])];
   const people = summarizePeople(orderedIds);
   const byId = new Map(people.map((person) => [person.id, person]));
+  const teaseRow = (db.prepare(`
+    SELECT m.person_id AS personId, p.preferred_name AS name, m.source, m.raw_text AS text, m.occurred_at AS occurredAt
+    FROM memories m
+    JOIN people p ON p.id = m.person_id
+    WHERE LENGTH(TRIM(m.raw_text)) > 40
+    ORDER BY m.occurred_at DESC
+    LIMIT 1
+  `).get()
+    || db.prepare(`
+      SELECT d.person_id AS personId, p.preferred_name AS name, d.source, d.text, d.occurred_at AS occurredAt
+      FROM evidence_documents d
+      JOIN people p ON p.id = d.person_id
+      WHERE d.kind = 'memory'
+        AND LENGTH(TRIM(d.text)) > 40
+      ORDER BY d.occurred_at DESC
+      LIMIT 1
+    `).get()) as { personId: string; name: string; source: string; text: string; occurredAt: string | null } | undefined;
   return {
     total: stats.total,
     strongTies: stats.strong_ties ?? 0,
@@ -1065,8 +1066,18 @@ export function overview() {
     locations: grouped("location"),
     industries: grouped("industry"),
     people,
-    coldPeople: coldIds.flatMap((id) => byId.get(id) ? [byId.get(id)] : []),
+    coldPeople: [],
     duePeople: dueIds.flatMap((id) => byId.get(id) ? [byId.get(id)] : []),
+    resurfacedPeople: resurfacedIds.flatMap((id) => byId.get(id) ? [byId.get(id)] : []),
+    tease: teaseRow
+      ? {
+        personId: teaseRow.personId,
+        name: teaseRow.name,
+        source: teaseRow.source,
+        excerpt: teaseRow.text.replace(/\s+/g, " ").trim().slice(0, 220),
+        occurredAt: teaseRow.occurredAt,
+      }
+      : null,
     connectors: connectorStates()
   };
 }

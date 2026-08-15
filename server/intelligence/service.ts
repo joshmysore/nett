@@ -8,6 +8,7 @@ import {
 } from "../db.js";
 import {
   evidenceDocumentsByIds,
+  evidenceFreshness,
   personEvidenceDocuments,
   personEvidenceIndexState,
   refreshEvidenceIndex,
@@ -26,6 +27,7 @@ import {
   parseAskIntent,
   reciprocalRankFusion,
   retrieveAskMatches,
+  retrievalPathNote,
   scoreEmbeddedRows,
 } from "./ask.js";
 import { collectSharedContextSuggestions } from "./shared-context.js";
@@ -252,6 +254,7 @@ export async function intelligenceStatus() {
   const health = await ollama.health();
   const models = health.ok ? await ollama.listModels().catch(() => []) : [];
   const pick = models.length ? await resolveModels().catch(() => null) : null;
+  const freshness = evidenceFreshness();
   return {
     ...health,
     models,
@@ -260,7 +263,12 @@ export async function intelligenceStatus() {
     reasonModel: pick?.reason ?? undefined,
     embedModel: pick?.embed ?? undefined,
     evidenceDocuments: (db.prepare("SELECT COUNT(*) AS count FROM evidence_documents").get() as { count: number }).count,
-    embeddedDocuments: (db.prepare("SELECT COUNT(*) AS count FROM evidence_documents WHERE embedding_json IS NOT NULL").get() as { count: number }).count
+    embeddedDocuments: (db.prepare("SELECT COUNT(*) AS count FROM evidence_documents WHERE embedding_json IS NOT NULL").get() as { count: number }).count,
+    indexedAt: freshness.indexedAt,
+    communicationsAt: freshness.communicationsAt,
+    interactionIndexedAt: freshness.interactionIndexedAt,
+    stale: freshness.stale,
+    staleSources: freshness.staleSources,
   };
 }
 
@@ -269,7 +277,9 @@ export async function refreshEvidenceEmbeddings(limit = 250, options: { signal?:
   if (!models.embed) return { embedded: 0, model: null as string | null };
   const rows = db.prepare(`
     SELECT id, text FROM evidence_documents
-    WHERE embedding_json IS NULL ORDER BY updated_at DESC LIMIT ?
+    WHERE embedding_json IS NULL
+      AND kind IN ('profile-field', 'memory', 'conversation-summary')
+    ORDER BY updated_at DESC LIMIT ?
   `).all(Math.min(Math.max(limit, 1), 2_000)) as { id: string; text: string }[];
   const update = db.prepare("UPDATE evidence_documents SET embedding_json=?, updated_at=? WHERE id=?");
   let embedded = 0;
@@ -288,11 +298,69 @@ export async function refreshEvidenceEmbeddings(limit = 250, options: { signal?:
   return { embedded, model: models.embed };
 }
 
-export async function answerRelationshipQuestion(question: string, options: { signal?: AbortSignal } = {}): Promise<{
+type AskAnswer = {
   answer: string;
   citations: IntelligenceCitation[];
   provider: string;
-}> {
+  note?: string;
+};
+
+export type AskStreamEvent =
+  | { type: "stage"; id: string; label: string; detail?: string }
+  | { type: "meta"; path: string; provider: string; citations: IntelligenceCitation[]; note?: string }
+  | { type: "token"; text: string }
+  | { type: "reset" }
+  | { type: "done"; answer: string; citations: IntelligenceCitation[]; provider: string; note?: string };
+
+function askSystemPrompt(): string {
+  return [
+    "You are Nett, a private local relationship assistant.",
+    "Each evidence block is a stored profile or a quoted message, email, or note.",
+    "Name people. Use only these records. If a constraint has no evidence, say so.",
+    "Never invent facts or infer health, politics, religion, sexuality, or ethnicity.",
+    "Answer in under 12 sentences. Cite by using the supplied evidence ids.",
+    "If the question is about one person, write a brief: who they are, why they matter, role or company, place, last contact, and one or two quoted facts. Do not list leftover keyword matches.",
+  ].join(" ");
+}
+
+function shouldWriteWithModel(retrieval: Awaited<ReturnType<typeof retrieveAskMatches>>): boolean {
+  if (retrieval.provider === "local-people-index") return false;
+  return retrieval.intent.inferential || retrieval.intent.personBrief;
+}
+
+function mapModelCitations(
+  retrieval: Awaited<ReturnType<typeof retrieveAskMatches>>,
+  generated: { citations: Array<{ evidenceId: string; quote?: string }> },
+  fallback: IntelligenceCitation[],
+): IntelligenceCitation[] {
+  const byId = new Map(retrieval.people.map((person) => [person.personId, person]));
+  const mapped = generated.citations.flatMap((citation): IntelligenceCitation[] => {
+    const person = byId.get(citation.evidenceId)
+      || retrieval.people.find((item) => item.matches.some((match) => match.evidenceId === citation.evidenceId));
+    if (!person) return [];
+    const match = person.matches.find((item) => item.evidenceId === citation.evidenceId) ?? person.matches[0];
+    return [{
+      personId: person.personId,
+      label: person.name,
+      field: match?.field || "profile",
+      value: citation.quote || match?.excerpt || person.location || person.name,
+      source: match?.source || "nett",
+      evidenceId: match?.evidenceId || citation.evidenceId,
+    }];
+  });
+  return mapped.length ? mapped : fallback;
+}
+
+function answerLooksThin(answer: string, retrieval: Awaited<ReturnType<typeof retrieveAskMatches>>): boolean {
+  const text = answer.trim();
+  if (text.length < 24) return true;
+  return !retrieval.people.some((person) => {
+    const first = person.name.split(/\s+/)[0] || "";
+    return first.length > 2 && text.toLocaleLowerCase().includes(first.toLocaleLowerCase());
+  });
+}
+
+async function retrieveForAsk(question: string, options: { signal?: AbortSignal } = {}) {
   const models = await resolveModels(options.signal).catch(() => null);
   const retrieval = await retrieveAskMatches(question, {
     signal: options.signal,
@@ -303,7 +371,33 @@ export async function answerRelationshipQuestion(question: string, options: { si
       }
       : undefined,
   });
-  const citations = askCitations(retrieval);
+  return { models, retrieval, citations: askCitations(retrieval), note: retrievalPathNote(retrieval) };
+}
+
+async function generateCitedAnswer(
+  model: string,
+  question: string,
+  retrieval: Awaited<ReturnType<typeof retrieveAskMatches>>,
+  fallback: IntelligenceCitation[],
+  signal?: AbortSignal,
+): Promise<AskAnswer> {
+  assertActive(signal);
+  const generated = await ollama.answerWithCitations({
+    model,
+    question,
+    signal,
+    evidence: askEvidenceBlocks(retrieval),
+    system: askSystemPrompt(),
+  });
+  return {
+    answer: generated.answer,
+    citations: mapModelCitations(retrieval, generated, fallback),
+    provider: `ollama:${model}`,
+  };
+}
+
+export async function answerRelationshipQuestion(question: string, options: { signal?: AbortSignal } = {}): Promise<AskAnswer> {
+  const { models, retrieval, citations, note } = await retrieveForAsk(question, options);
   if (!retrieval.people.length) {
     return {
       answer: "Nothing stored in people, notes, messages, or email matched that question.",
@@ -312,52 +406,134 @@ export async function answerRelationshipQuestion(question: string, options: { si
     };
   }
 
-  if (retrieval.provider === "local-people-index" || !retrieval.intent.inferential) {
-    return { answer: formatAskAnswer(retrieval), citations, provider: retrieval.provider };
+  if (!shouldWriteWithModel(retrieval)) {
+    return { answer: formatAskAnswer(retrieval), citations, provider: retrieval.provider, note };
   }
 
-  const model = models?.reason ?? models?.fast;
-  if (!model) {
-    return { answer: formatAskAnswer(retrieval), citations, provider: retrieval.provider };
+  const fast = models?.fast;
+  const reason = models?.reason;
+  if (!fast && !reason) {
+    return { answer: formatAskAnswer(retrieval), citations, provider: retrieval.provider, note };
   }
 
   try {
-    assertActive(options.signal);
-    const generated = await ollama.answerWithCitations({
+    if (fast) {
+      const first = await generateCitedAnswer(fast, question, retrieval, citations, options.signal);
+      const thin = answerLooksThin(first.answer, retrieval) || first.citations.length < 1;
+      if (!thin || !reason || reason === fast) return { ...first, note };
+      try {
+        return { ...await generateCitedAnswer(reason, question, retrieval, citations, options.signal), note };
+      } catch {
+        return { ...first, note };
+      }
+    }
+    return { ...await generateCitedAnswer(reason!, question, retrieval, citations, options.signal), note };
+  } catch {
+    return { answer: formatAskAnswer(retrieval), citations, provider: retrieval.provider, note };
+  }
+}
+
+function streamPrompt(question: string, retrieval: Awaited<ReturnType<typeof retrieveAskMatches>>): string {
+  const evidence = askEvidenceBlocks(retrieval).map((block) =>
+    `<evidence id=${JSON.stringify(block.id)} title=${JSON.stringify(block.title)}>\n${block.text}\n</evidence>`
+  ).join("\n\n");
+  return [
+    "Answer the question using only the supplied evidence.",
+    "Name people. If evidence is insufficient, say so.",
+    `Question: ${question}`,
+    evidence,
+  ].join("\n\n");
+}
+
+export async function* streamRelationshipQuestion(
+  question: string,
+  options: { signal?: AbortSignal } = {},
+): AsyncGenerator<AskStreamEvent> {
+  yield { type: "stage", id: "search", label: "Searching records" };
+  const { models, retrieval, citations, note } = await retrieveForAsk(question, options);
+  const matched = retrieval.people.length;
+  yield {
+    type: "stage",
+    id: "match",
+    label: matched
+      ? `Matched ${matched} ${matched === 1 ? "person" : "people"}`
+      : "No matching people",
+    detail: retrieval.provider,
+  };
+  if (!retrieval.people.length) {
+    const empty = "Nothing stored in people, notes, messages, or email matched that question.";
+    yield { type: "done", answer: empty, citations: [], provider: "local-evidence" };
+    return;
+  }
+
+  if (!shouldWriteWithModel(retrieval)) {
+    const answer = formatAskAnswer(retrieval);
+    yield { type: "stage", id: "write", label: "Writing from the index" };
+    yield { type: "meta", path: "index", provider: retrieval.provider, citations, note };
+    yield { type: "done", answer, citations, provider: retrieval.provider, note };
+    return;
+  }
+
+  const fast = models?.fast;
+  const reason = models?.reason;
+  if (!fast && !reason) {
+    const answer = formatAskAnswer(retrieval);
+    yield { type: "stage", id: "write", label: "Writing from stored records" };
+    yield { type: "meta", path: "index", provider: retrieval.provider, citations, note };
+    yield { type: "done", answer, citations, provider: retrieval.provider, note };
+    return;
+  }
+
+  const runStream = async function* (model: string, path: "fast" | "reason") {
+    yield {
+      type: "stage",
+      id: path === "reason" ? "escalate" : "write",
+      label: path === "reason" ? `Trying ${model}` : `Writing with ${model}`,
+    } satisfies AskStreamEvent;
+    yield { type: "meta", path, provider: `ollama:${model}`, citations, note } satisfies AskStreamEvent;
+    let collected = "";
+    for await (const event of ollama.streamGenerate({
       model,
-      question,
+      prompt: streamPrompt(question, retrieval),
+      system: askSystemPrompt(),
       signal: options.signal,
-      evidence: askEvidenceBlocks(retrieval),
-      system: [
-        "You are Nett, a private local relationship assistant.",
-        "Each evidence block is one person: profile fields plus excerpts from notes, messages, or email.",
-        "Name people. Use only these records. If a constraint has no evidence, say so.",
-        "Never invent facts or infer health, politics, religion, sexuality, or ethnicity.",
-        "Answer in under 12 sentences.",
-      ].join(" "),
-    });
-    const byId = new Map(retrieval.people.map((person) => [person.personId, person]));
-    const modelCitations = generated.citations.flatMap((citation): IntelligenceCitation[] => {
-      const person = byId.get(citation.evidenceId)
-        || retrieval.people.find((item) => item.matches.some((match) => match.evidenceId === citation.evidenceId));
-      if (!person) return [];
-      const match = person.matches.find((item) => item.evidenceId === citation.evidenceId) ?? person.matches[0];
-      return [{
-        personId: person.personId,
-        label: person.name,
-        field: match?.field || "profile",
-        value: citation.quote || match?.excerpt || person.location || person.name,
-        source: match?.source || "nett",
-        evidenceId: match?.evidenceId,
-      }];
-    });
-    return {
-      answer: generated.answer,
-      citations: modelCitations.length ? modelCitations : citations,
+    })) {
+      if (event.type === "token") {
+        collected += event.text;
+        yield { type: "token", text: event.text } satisfies AskStreamEvent;
+      }
+    }
+    return collected;
+  };
+
+  try {
+    const model = fast ?? reason!;
+    let collected = "";
+    for await (const event of runStream(model, "fast")) {
+      if (event.type === "token") collected += event.text;
+      yield event;
+    }
+    const thin = answerLooksThin(collected, retrieval);
+    if (thin && reason && reason !== model) {
+      yield { type: "reset" };
+      collected = "";
+      for await (const event of runStream(reason, "reason")) {
+        if (event.type === "token") collected += event.text;
+        yield event;
+      }
+      yield { type: "done", answer: collected || formatAskAnswer(retrieval), citations, provider: `ollama:${reason}`, note };
+      return;
+    }
+    yield {
+      type: "done",
+      answer: collected || formatAskAnswer(retrieval),
+      citations,
       provider: `ollama:${model}`,
+      note,
     };
   } catch {
-    return { answer: formatAskAnswer(retrieval), citations, provider: retrieval.provider };
+    const answer = formatAskAnswer(retrieval);
+    yield { type: "done", answer, citations, provider: retrieval.provider, note };
   }
 }
 

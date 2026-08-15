@@ -81,6 +81,33 @@ export function ReviewPage({
     }
   };
 
+  const batchGroups = new Map<string, SuggestionItem[]>();
+  for (const item of suggestions) {
+    if ((item.confidence ?? 0) < 0.75 || item.currentValue != null) continue;
+    const key = item.source || "nett";
+    const list = batchGroups.get(key) ?? [];
+    list.push(item);
+    batchGroups.set(key, list);
+  }
+  const batchable = [...batchGroups.entries()].filter(([, items]) => items.length >= 2);
+
+  const acceptBatch = async (source: string, items: SuggestionItem[]) => {
+    setWorking(`batch:${source}`);
+    try {
+      for (const item of items) {
+        await api.reviewSuggestion(item.id, "accepted", true);
+      }
+      const ids = new Set(items.map((item) => item.id));
+      setSuggestions((rows) => rows.filter((row) => !ids.has(row.id)));
+      refresh();
+      notify("success", `Accepted ${items.length} suggestions from ${source}`);
+    } catch (reason) {
+      notify("error", reason instanceof Error ? reason.message : "Could not accept the batch");
+    } finally {
+      setWorking(null);
+    }
+  };
+
   if (loading) {
     return (
       <div className="review-page">
@@ -200,17 +227,36 @@ export function ReviewPage({
             <h2>Facts to review</h2>
             <span>{suggestions.length}</span>
           </header>
+          {batchable.length > 0 && (
+            <div className="review-batch">
+              {batchable.map(([source, items]) => (
+                <button
+                  key={source}
+                  type="button"
+                  className="secondary-button"
+                  disabled={working === `batch:${source}`}
+                  onClick={() => void acceptBatch(source, items)}
+                >
+                  Accept {items.length} high-confidence from {source}
+                </button>
+              ))}
+            </div>
+          )}
           <ul className="review-list">
             {suggestions.map((item) => (
               <li key={item.id}>
                 <div className="review-card">
                   <div className="review-card-head">
-                    <Link to={`/people/${item.personId}`}>{item.personName}</Link>
+                    <Link to={`/people/${item.personId}`}>
+                      {item.personName}
+                      {item.currentValue != null ? " · conflict on profile" : ""}
+                    </Link>
                     <strong>{item.fieldName.replace(/_/g, " ")}</strong>
                     <small>
                       {item.confidence != null
                         ? `${Math.round(item.confidence * 100)}% · `
                         : ""}
+                      {item.source ? `${item.source} · ` : ""}
                       {item.rationale || "Suggested from stored evidence"}
                     </small>
                   </div>

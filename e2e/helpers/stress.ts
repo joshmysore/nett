@@ -43,7 +43,7 @@ export async function openCapture(page: Page) {
   } else {
     await page.keyboard.press(process.platform === "darwin" ? "Meta+m" : "Control+m");
   }
-  await expect(page.getByRole("heading", { name: /Remember this|Review the memory/ })).toBeVisible({
+  await expect(page.getByRole("heading", { name: /Remember this|Review the fields/ })).toBeVisible({
     timeout: 10_000,
   });
 }

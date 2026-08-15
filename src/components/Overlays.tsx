@@ -1,6 +1,7 @@
 import {
   Brain,
   CalendarBlank,
+  ChatCircle,
   Check,
   ClockCounterClockwise,
   Database,
@@ -61,11 +62,19 @@ const COMMANDS: CommandDef[] = [
   {
     id: "remember",
     label: "Remember…",
-    hint: "Capture a memory or relationship note",
+    hint: "Turn a sentence into fields on a person",
     shortcut: "⌘M",
-    keywords: ["remember", "memory", "note", "capture", "dictate"],
+    keywords: ["remember", "structure", "fields", "capture", "dictate", "fact"],
     icon: Plus,
     action: { type: "remember" },
+  },
+  {
+    id: "ask",
+    label: "Ask Nett",
+    hint: "Question your records — does not write",
+    keywords: ["ask", "question", "query", "find", "search"],
+    icon: ChatCircle,
+    action: { type: "navigate", path: "/today#ask" },
   },
   {
     id: "home",
@@ -270,8 +279,8 @@ export function CommandPalette({
           value={query}
           onChange={(event) => setQuery(event.target.value)}
           onKeyDown={onKeyDown}
-          placeholder="Find a person or run a command…"
-          aria-label="Command palette"
+          placeholder="Find a person or command…"
+          aria-label="Find a person or command"
           role="combobox"
           aria-expanded="true"
           aria-haspopup="listbox"
@@ -433,7 +442,7 @@ export function CaptureDialog({
 
   const requestClose = () => {
     if (dirty && working) return;
-    if (dirty && !window.confirm("Discard this memory? Nothing has been saved yet.")) return;
+    if (dirty && !window.confirm("Discard this? Nothing has been saved yet.")) return;
     abortRef.current?.abort();
     onClose();
   };
@@ -565,11 +574,11 @@ export function CaptureDialog({
 
   return (
     <Modal
-      title={stage === "write" ? "Remember this" : "Review the memory"}
+      title={stage === "write" ? "Remember this" : "Review the fields"}
       subtitle={
         stage === "write"
-          ? "Capture the thought naturally. Nett will structure it before saving."
-          : "Accept, edit, or reject each proposed fact. Nothing is saved until you approve."
+          ? "Nett will attach this to a person and propose fields. Nothing is saved until you approve."
+          : "Accept, edit, or reject each proposed field. A written memory is kept as evidence."
       }
       onClose={requestClose}
       wide
@@ -582,7 +591,7 @@ export function CaptureDialog({
               ref={composer}
               value={text}
               onChange={(event) => setText(event.target.value)}
-              placeholder="Sam likes Spanish red wine. Capture the person and the fact — Nett will structure it."
+              placeholder="Sam likes Spanish red wine. Nett will find the person and propose fields."
             />
             <button
               className="voice-button"
@@ -613,7 +622,7 @@ export function CaptureDialog({
               {capability.disclosure}
             </p>
           )}
-          <div className="capture-hints" aria-label="Memory fields Nett can detect">
+          <div className="capture-hints" aria-label="Fields Remember can propose">
             <span>
               <Brain size={15} />
               Person
@@ -641,7 +650,7 @@ export function CaptureDialog({
               disabled={working || !text.trim()}
             >
               {working ? <SpinnerGap className="spin" /> : <Brain />}
-              Structure memory
+              Structure into fields
             </button>
           </div>
         </>
@@ -678,9 +687,9 @@ export function CaptureDialog({
                 </p>
               )}
             </div>
-            <div className="extracted-grid">
+            <div className={`extracted-grid${parsed.extracted.followUpDate ? "" : " is-fields-only"}`}>
               <label>
-                <span>Memory</span>
+                <span>Kept as written</span>
                 <textarea
                   value={parsed.extracted.memory}
                   onChange={(event) =>
@@ -694,25 +703,27 @@ export function CaptureDialog({
                   }
                 />
               </label>
-              <label>
-                <span>Follow-up date</span>
-                <input
-                  type="date"
-                  value={parsed.extracted.followUpDate || ""}
-                  onChange={(event) =>
-                    setParsed({
-                      ...parsed,
-                      extracted: {
-                        ...parsed.extracted,
-                        followUpDate: event.target.value,
-                      },
-                    })
-                  }
-                />
-              </label>
-              {asList(parsed.proposals).length > 0 && (
+              {parsed.extracted.followUpDate ? (
+                <label>
+                  <span>Follow-up date</span>
+                  <input
+                    type="date"
+                    value={parsed.extracted.followUpDate}
+                    onChange={(event) =>
+                      setParsed({
+                        ...parsed,
+                        extracted: {
+                          ...parsed.extracted,
+                          followUpDate: event.target.value,
+                        },
+                      })
+                    }
+                  />
+                </label>
+              ) : null}
+              {asList(parsed.proposals).length > 0 ? (
                 <div className="capture-proposals">
-                  <span>Proposed facts — accept, edit, or reject each one</span>
+                  <span>Proposed fields — accept, edit, or reject each one</span>
                   <ul>
                     {parsed.proposals!.map((proposal) => {
                       const key = `${proposal.field}-${proposal.evidenceStart}`;
@@ -780,6 +791,11 @@ export function CaptureDialog({
                     })}
                   </ul>
                 </div>
+              ) : (
+                <p className="capture-empty-fields" role="note">
+                  No fields were detected. This will save as a written memory on the person —
+                  the same as Record on their page.
+                </p>
               )}
             </div>
             <div className="modal-actions">
@@ -798,7 +814,7 @@ export function CaptureDialog({
                 disabled={working || !personId}
               >
                 {working ? <SpinnerGap className="spin" /> : <Check />}
-                Approve and save
+                Save to person
               </button>
             </div>
           </>

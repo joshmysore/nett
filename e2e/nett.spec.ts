@@ -21,12 +21,11 @@ test("dashboard, command search, and accessibility", async ({ page }, testInfo) 
   await page.goto("/");
   await expect(page.getByRole("heading", { name: /Remember\s+everyone/i })).toBeVisible();
   await page.getByRole("link", { name: /Open Nett/i }).first().click();
-  await expect(page.getByRole("heading", { name: "Home" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: /Ask or find anything/i })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Ask Nett" })).toBeVisible();
   await expectNoSeriousAccessibilityViolations(page);
 
-  await page.getByRole("button", { name: /Ask or find anything/ }).click();
-  const search = page.getByRole("combobox", { name: /Ask or find anything/i });
+  await page.getByRole("button", { name: /Find a person/i }).click();
+  const search = page.getByRole("combobox", { name: /Find a person or command/i });
   await expect(search).toBeVisible();
   await search.fill("Alex");
   await expect(page.locator(".command-results > button").first()).toBeVisible();
@@ -95,7 +94,7 @@ test("mobile navigation and primary actions fit the viewport", async ({ page }, 
   await page.goto("/");
   await expect(page.getByRole("heading", { name: /Remember\s+everyone/i })).toBeVisible();
   await page.getByRole("link", { name: /Open Nett/i }).first().click();
-  await expect(page.getByRole("heading", { name: "Home" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Ask Nett" })).toBeVisible();
   await expect(page.getByRole("navigation", { name: "Mobile navigation" })).toBeVisible();
   await page.getByRole("button", { name: "Open navigation" }).click();
   await expect(page.getByRole("complementary", { name: "Primary navigation" })).toBeVisible();
