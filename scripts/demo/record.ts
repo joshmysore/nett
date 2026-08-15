@@ -67,7 +67,10 @@ function startDevServer(): { stop: () => void } {
   children[1].stderr?.on("data", (chunk) => process.stderr.write(`[web] ${chunk}`));
   return {
     stop() {
-      for (const child of children) child.kill("SIGTERM");
+      for (const child of children) {
+        if (child.pid) spawnSync("kill", ["-9", String(child.pid)], { stdio: "ignore" });
+        child.kill("SIGKILL");
+      }
     },
   };
 }
@@ -107,8 +110,8 @@ async function zoomReset(page: Page) {
 }
 
 async function punchClick(page: Page, locator: Locator, options: { scale?: number; stay?: boolean } = {}) {
-  await locator.evaluate((node) => node.scrollIntoView({ block: "center", inline: "nearest" }));
-  await sleep(240);
+  await locator.scrollIntoViewIfNeeded({ timeout: 4000 }).catch(() => undefined);
+  await sleep(200);
   await moveTo(page, locator);
   await zoomTo(page, locator, options.scale ?? 1.42);
   await page.evaluate(() => window.__nettDemo.clickPulse());
@@ -235,12 +238,19 @@ async function walkthrough(page: Page, mark: (id: string) => void) {
   await page.goto(`${BASE}/`, { waitUntil: "domcontentloaded" });
   await page.locator("#landing-title").waitFor({ state: "visible" });
   mark("landing");
-  await sleep(7200);
+  await sleep(5600);
 
   mark("workbench");
-  await punchClick(page, page.locator(".landing-nav .landing-glass-cta__link"));
-  await page.locator("#ask-nett-query").waitFor({ state: "visible", timeout: 20_000 });
-  await sleep(1800);
+  const openNett = page.getByRole("link", { name: /Open Nett/ }).first();
+  await openNett.waitFor({ state: "visible", timeout: 8000 });
+  await punchClick(page, openNett);
+  try {
+    await page.locator("#ask-nett-query").waitFor({ state: "visible", timeout: 8000 });
+  } catch {
+    await page.goto(`${BASE}/today`, { waitUntil: "domcontentloaded" });
+    await page.locator("#ask-nett-query").waitFor({ state: "visible", timeout: 20_000 });
+  }
+  await sleep(1600);
 
   const rail = (label: string) => page.locator(".rail-link", { hasText: label }).first();
 

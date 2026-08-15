@@ -97,18 +97,19 @@
   const moveTo = (nx, ny, ms = 700) =>
     new Promise((resolve) => {
       mount();
-      if (moving) cancelAnimationFrame(moving);
+      if (moving) clearTimeout(moving);
       const sx = x;
       const sy = y;
-      const started = performance.now();
-      const step = (now) => {
-        const t = Math.min(1, (now - started) / Math.max(ms, 1));
+      const started = Date.now();
+      const duration = Math.max(ms, 1);
+      const step = () => {
+        const t = Math.min(1, (Date.now() - started) / duration);
         const e = ease(t);
         place(sx + (nx - sx) * e, sy + (ny - sy) * e);
-        if (t < 1) moving = requestAnimationFrame(step);
+        if (t < 1) moving = setTimeout(step, 16);
         else resolve();
       };
-      moving = requestAnimationFrame(step);
+      step();
     });
 
   const clickPulse = () => {
