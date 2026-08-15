@@ -305,7 +305,7 @@ async function walkthrough(page: Page, mark: (id: string) => void) {
   await sleep(1000);
   await punchClick(page, page.getByRole("button", { name: "Open full profile" }));
   await page.locator("h1", { hasText: "Kendra Mysore" }).waitFor({ state: "visible" });
-  await sleep(900);
+  await sleep(2400);
 
   mark("kendra_note");
   await punchClick(page, page.getByRole("button", { name: "Edit profile" }));
@@ -336,7 +336,7 @@ async function walkthrough(page: Page, mark: (id: string) => void) {
   await sleep(700);
   await punchClick(page, page.getByRole("button", { name: "Open full profile" }));
   await page.locator("h1", { hasText: "Gilly Zaid" }).waitFor({ state: "visible" });
-  await sleep(700);
+  await sleep(2000);
   await punchClick(page, page.locator(".profile-actions").getByRole("button", { name: "Record a memory" }), { stay: true });
   await typeHuman(page, page.locator("#profile-memory"), "If he comes through the city this month, dinner — no agenda.");
   await zoomReset(page);
@@ -355,7 +355,7 @@ async function walkthrough(page: Page, mark: (id: string) => void) {
   await zoomReset(page);
   await punchClick(page, page.locator("button.ask-send"));
   await waitForAskAnswer(page, "What do I know about Kendra Mysore?");
-  await sleep(3200);
+  await sleep(12_000);
 
   await moveTo(page, ask);
   await zoomTo(page, ask, 1.22);
@@ -363,7 +363,7 @@ async function walkthrough(page: Page, mark: (id: string) => void) {
   await zoomReset(page);
   await punchClick(page, page.locator("button.ask-send"));
   await waitForAskAnswer(page, "Tell me about Gilly Zaid.");
-  await sleep(3400);
+  await sleep(12_000);
 
   mark("remember");
   const remember = page.locator(".rail-remember");
@@ -381,7 +381,7 @@ async function walkthrough(page: Page, mark: (id: string) => void) {
   await savePerson.waitFor({ state: "visible", timeout: 60_000 });
   await sleep(800);
   await punchClick(page, savePerson);
-  await sleep(2200);
+  await sleep(4000);
 }
 
 async function encodeMp4(

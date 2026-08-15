@@ -10,9 +10,10 @@ npm run demo:record
 Writes `docs/demo/output/nett-investor-demo.mp4` and, in this environment,
 `/opt/cursor/artifacts/nett-investor-demo.mp4`.
 
-The cut opens the lived-in workbench from landing (no first-run setup,
+The cut holds the landing, then opens `/today` (no first-run setup,
 no About essay). Review is one accept. Sources refresh Messages and
-WhatsApp only.
+WhatsApp only. Landing’s Spline scene freezes in-page timers in
+headless Chromium, so the recorder does not click through that page.
 
 The cut is silent unless a neural voice (`edge-tts`) is available. When
 it is, lines are timed to walkthrough beats rather than dumped at the
