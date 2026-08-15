@@ -9,6 +9,7 @@ import {
 import { Avatar } from "@/components/Primitives";
 import {
   abilityById,
+  composerPlaceholder,
   detectComposerTrigger,
   filterAbilities,
   replaceTriggerRange,
@@ -147,9 +148,7 @@ export function AskComposer({
     const abilitiesNext = value.abilities.includes(ability.id)
       ? value.abilities
       : [...value.abilities, ability.id];
-    const remainder = replaceTriggerRange(value.text, trigger, "");
-    const insert = remainder.trim() ? "" : ability.prompt;
-    applyTrigger({ ...value, abilities: abilitiesNext }, insert, trigger);
+    applyTrigger({ ...value, abilities: abilitiesNext }, "", trigger);
   };
 
   const removePerson = (id: string) => {
@@ -158,7 +157,15 @@ export function AskComposer({
   };
 
   const removeAbility = (id: AskAbilityId) => {
-    onChange({ ...value, abilities: value.abilities.filter((item) => item !== id) });
+    const prompt = abilityById(id).prompt.trim();
+    const text = value.text.trim() === prompt || value.text === abilityById(id).prompt
+      ? ""
+      : value.text;
+    onChange({
+      ...value,
+      text,
+      abilities: value.abilities.filter((item) => item !== id),
+    });
     fieldRef.current?.focus();
   };
 
@@ -267,7 +274,7 @@ export function AskComposer({
         aria-autocomplete="list"
         aria-activedescendant={activeId}
         aria-describedby={describedBy}
-        placeholder="Ask who you know, or what you talked about…"
+        placeholder={composerPlaceholder(value.people, value.abilities)}
         onChange={(event) => {
           onChange({ ...value, text: event.target.value });
           setCaret(event.target.selectionStart);

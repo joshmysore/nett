@@ -845,10 +845,14 @@
   cursor: pointer;
 }
 
-.ask-suggest button:hover,
+.ask-suggest button:hover {
+  background: var(--tint);
+}
+
 .ask-suggest button:focus-visible,
 .ask-suggest button.is-active {
-  background: var(--tint);
+  background: var(--tint-2);
+  box-shadow: inset 3px 0 0 var(--accent);
 }
 
 .ask-suggest strong,

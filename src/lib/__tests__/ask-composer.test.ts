@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   composeAskQuestion,
+  composerPlaceholder,
   detectComposerTrigger,
   filterAbilities,
   primaryAskAbility,
@@ -63,6 +64,17 @@ test("replaceTriggerRange removes the trigger token", () => {
   const trigger = detectComposerTrigger("ask @An", 7);
   assert.ok(trigger);
   assert.equal(replaceTriggerRange("ask @An", trigger), "ask");
+});
+
+test("composerPlaceholder follows the attached ability and people", () => {
+  assert.equal(
+    composerPlaceholder([], ["about"]),
+    "What do I know about…",
+  );
+  assert.equal(
+    composerPlaceholder([{ id: "1", name: "Ana Ruiz" }], []),
+    "Ask about Ana Ruiz…",
+  );
 });
 
 test("primaryAskAbility prefers a retrieval mode over a source filter", () => {

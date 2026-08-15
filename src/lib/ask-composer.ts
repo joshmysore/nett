@@ -161,3 +161,14 @@ export function primaryAskAbility(ids: readonly AskAbilityId[]): AskAbilityId | 
   const mode = ids.find((id) => id === "about" || id === "talked" || id === "notes" || id === "who" || id === "recent" || id === "place");
   return mode ?? ids[0] ?? null;
 }
+
+export function composerPlaceholder(
+  people: readonly MentionedPerson[],
+  abilities: readonly AskAbilityId[],
+): string {
+  const id = primaryAskAbility(abilities);
+  if (id) return `${abilityById(id).prompt.trim()}…`;
+  if (people.length === 1) return `Ask about ${people[0].name}…`;
+  if (people.length > 1) return "Ask about them…";
+  return "Ask who you know, or what you talked about…";
+}
