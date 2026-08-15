@@ -148,6 +148,72 @@
   letter-spacing: -0.02em;
 }
 
+.ask-writer {
+  margin: 0 0 var(--space-md);
+  padding: var(--space-sm) 0;
+  border-top: 1px solid var(--line);
+}
+
+.ask-writer-copy,
+.ask-writer-note {
+  margin: 0;
+  max-width: 62ch;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.ask-writer-copy {
+  margin-bottom: var(--space-xs);
+}
+
+.ask-writer-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 10px 12px;
+  margin-bottom: var(--space-2xs);
+}
+
+.ask-writer-form label {
+  display: grid;
+  gap: 4px;
+  min-width: min(100%, 180px);
+  color: var(--text-soft);
+  font-size: 13px;
+}
+
+.ask-writer-form input,
+.ask-writer-form select {
+  min-width: 0;
+  min-height: 40px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--control-radius);
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 14px;
+  overflow-wrap: anywhere;
+}
+
+.ask-writer-form input:focus-visible,
+.ask-writer-form select:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.ask-writer-form button {
+  min-height: 40px;
+}
+
+@media (max-width: 640px) {
+  .ask-writer-form label {
+    width: 100%;
+    min-width: 0;
+  }
+}
+
 .source-cards {
   margin: 0;
   padding: 0;

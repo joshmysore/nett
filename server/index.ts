@@ -18,7 +18,6 @@ import type { PeopleFilters } from "./db.js";
 import type { CaptureExtraction } from "./capture/extract.js";
 import { extractCaptureWithModel } from "./capture/llm.js";
 import { extractOwnerContext } from "./capture/owner-context.js";
-import { getProvider } from "./agent.js";
 import { refreshStaleCommunicationIndex } from "./intelligence/evidence-index.js";
 import { searchPeopleFromEvidence, searchPersonIds } from "./intelligence/people-search.js";
 import {
@@ -32,6 +31,8 @@ import {
   searchEvidence,
   streamRelationshipQuestion,
 } from "./intelligence/service.js";
+import { getAskWriterSettings, setAskWriterSettings } from "./intelligence/ask-writer.js";
+import { answerRelationshipQuestion } from "./intelligence/service.js";
 import { generateRelationshipInsights } from "./intelligence/insights.js";
 import { parsePersonPatch } from "../src/lib/contracts.js";
 import {
@@ -362,6 +363,21 @@ app.post("/api/inference/suggestions/:id/review", (req, res) => {
 app.get("/api/intelligence/status", async (_req, res) => {
   try { res.json(await intelligenceStatus()); }
   catch (error) { res.status(500).json({ error: error instanceof Error ? error.message : "Could not inspect local intelligence" }); }
+});
+app.get("/api/intelligence/ask-writer", async (_req, res) => {
+  try { res.json(await getAskWriterSettings()); }
+  catch (error) { res.status(500).json({ error: error instanceof Error ? error.message : "Could not read Ask writer settings" }); }
+});
+app.put("/api/intelligence/ask-writer", async (req, res) => {
+  try {
+    res.json(await setAskWriterSettings({
+      writer: typeof req.body?.writer === "string" ? req.body.writer : undefined,
+      model: req.body?.model === null || typeof req.body?.model === "string" ? req.body.model : undefined,
+      apiKey: req.body?.apiKey === null || typeof req.body?.apiKey === "string" ? req.body.apiKey : undefined,
+    }));
+  } catch (error) {
+    res.status(400).json({ error: error instanceof Error ? error.message : "Could not save Ask writer settings" });
+  }
 });
 app.post("/api/intelligence/index", async (req, res) => {
   try {
@@ -1090,6 +1106,9 @@ app.post("/api/import/csv", upload.single("file"), (req, res) => {
 app.post("/api/agent/query", async (req, res) => {
   const query = String(req.body.query || "").trim();
   if (!query) return res.status(400).json({ error: "Ask a question about your network" });
+  const contextPersonIds = Array.isArray(req.body.contextPersonIds)
+    ? req.body.contextPersonIds.map((id: unknown) => String(id || "")).filter(Boolean).slice(0, 4)
+    : [];
   const controller = new AbortController();
   req.on("close", () => { if (!res.writableEnded) controller.abort(); });
   const wantsStream = req.query.stream === "1"
@@ -1101,7 +1120,10 @@ app.post("/api/agent/query", async (req, res) => {
       res.setHeader("Connection", "keep-alive");
       res.setHeader("X-Accel-Buffering", "no");
       res.flushHeaders();
-      for await (const event of streamRelationshipQuestion(query, { signal: controller.signal })) {
+      for await (const event of streamRelationshipQuestion(query, {
+        signal: controller.signal,
+        contextPersonIds,
+      })) {
         if (res.writableEnded) return;
         res.write(`data: ${JSON.stringify(event)}\n\n`);
         const flushable = res as typeof res & { flush?: () => void };
@@ -1114,8 +1136,13 @@ app.post("/api/agent/query", async (req, res) => {
       if (!res.writableEnded) res.end();
       return;
     }
-    const result = await getProvider().answer(query, controller.signal);
+    const result = await answerRelationshipQuestion(query, {
+      signal: controller.signal,
+      contextPersonIds,
+    });
     if (res.writableEnded) return;
+    db.prepare("INSERT INTO ai_queries (id, query, response, citations_json, provider, created_at) VALUES (?, ?, ?, ?, ?, datetime('now'))")
+      .run(randomUUID(), query, result.answer, JSON.stringify(result.citations), result.provider);
     res.json(result);
   } catch (error) {
     if (res.writableEnded) return;

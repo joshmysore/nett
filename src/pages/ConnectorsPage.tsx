@@ -68,6 +68,103 @@ const futureConnectors = [
 ];
 
 type Freshness = Awaited<ReturnType<typeof api.freshness>>;
+type AskWriter = Awaited<ReturnType<typeof api.askWriterSettings>>;
+
+function AskWriterSettings({ notify }: { notify: (kind: ToastKind, message: string) => void }) {
+  const [settings, setSettings] = useState<AskWriter | null>(null);
+  const [writer, setWriter] = useState<AskWriter["writer"]>("local");
+  const [model, setModel] = useState("");
+  const [apiKey, setApiKey] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    api.askWriterSettings()
+      .then((next) => {
+        setSettings(next);
+        setWriter(next.writer);
+        setModel(next.model || "");
+      })
+      .catch(() => setSettings(null));
+  }, []);
+
+  const save = async (event: FormEvent) => {
+    event.preventDefault();
+    setSaving(true);
+    try {
+      const next = await api.saveAskWriterSettings({
+        writer,
+        model: model.trim() || null,
+        apiKey: writer === "local" ? undefined : (apiKey.trim() || undefined),
+      });
+      setSettings(next);
+      setApiKey("");
+      notify("success", writer === "local"
+        ? "Ask will write with the local model when one is running."
+        : `Ask will send matching records to ${writer} when you ask.`);
+    } catch (error) {
+      notify("error", error instanceof Error ? error.message : "Could not save Ask writer");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <section id="ask-writer" className="ask-writer" aria-labelledby="ask-writer-title">
+      <div className="section-heading sources-section-heading">
+        <h2 id="ask-writer-title">Ask writer</h2>
+      </div>
+      <p className="ask-writer-copy">
+        Local Ollama stays the default. A small hosted model can write from the same
+        evidence if you supply a key. Disabled until you choose it.
+      </p>
+      <form className="ask-writer-form" onSubmit={(event) => void save(event)}>
+        <label>
+          Writer
+          <select
+            value={writer}
+            onChange={(event) => setWriter(event.target.value as AskWriter["writer"])}
+          >
+            <option value="local">Local Ollama</option>
+            <option value="anthropic">Anthropic (Haiku)</option>
+            <option value="openai">OpenAI (GPT mini)</option>
+          </select>
+        </label>
+        {writer !== "local" && (
+          <>
+            <label>
+              Model
+              <input
+                value={model}
+                onChange={(event) => setModel(event.target.value)}
+                placeholder={writer === "anthropic" ? "claude-haiku-4-5" : "gpt-4o-mini"}
+                autoComplete="off"
+              />
+            </label>
+            <label>
+              API key
+              <input
+                type="password"
+                value={apiKey}
+                onChange={(event) => setApiKey(event.target.value)}
+                placeholder={settings?.hasKey ? "Key saved — paste to replace" : "Paste a key you own"}
+                autoComplete="off"
+              />
+            </label>
+          </>
+        )}
+        <button className="quiet-action" disabled={saving || (writer !== "local" && !apiKey.trim() && !settings?.hasKey)}>
+          {saving ? "Saving" : "Save"}
+        </button>
+      </form>
+      <p className="ask-writer-note">
+        {writer === "local"
+          ? "Answers stay on this Mac. Ollama is loopback only."
+          : settings?.disclosure || "The question and matching records leave this Mac. Ask still does not write."}
+        {settings?.envKey ? " An environment key is already available." : ""}
+      </p>
+    </section>
+  );
+}
 
 function formatInterval(ms?: number) {
   if (!ms || ms <= 0) return null;
@@ -258,6 +355,7 @@ export function ConnectorsPage({
         <a href="#sources" className="is-active">
           Sources
         </a>
+        <a href="#ask-writer">Ask</a>
         <a href="#merge-review">Merge review</a>
         <a href="#more">More</a>
       </nav>
@@ -331,6 +429,8 @@ export function ConnectorsPage({
           </button>
         </div>
       </section>
+
+      <AskWriterSettings notify={notify} />
 
       <section id="sources" className="connector-group">
         <div className="section-heading sources-section-heading">
