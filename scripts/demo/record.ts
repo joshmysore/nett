@@ -88,12 +88,30 @@ async function pointOf(locator: Locator) {
   return { x: box.x + box.width * 0.55, y: box.y + Math.min(box.height * 0.55, 22), box };
 }
 
-async function moveTo(page: Page, locator: Locator, ms = 720) {
+async function cursorAt(page: Page) {
+  return page.evaluate(() => {
+    const cursor = document.querySelector(".nett-demo-cursor") as HTMLElement | null;
+    return {
+      x: Number.parseFloat(cursor?.style.left || "80"),
+      y: Number.parseFloat(cursor?.style.top || "80"),
+    };
+  });
+}
+
+async function moveTo(page: Page, locator: Locator, ms = 640) {
   await ensureOverlay(page);
   const { x, y } = await pointOf(locator);
-  await page.evaluate(async ({ x, y, ms }) => {
-    await window.__nettDemo.moveTo(x, y, ms);
-  }, { x, y, ms });
+  const from = await cursorAt(page);
+  const steps = 12;
+  for (let i = 1; i <= steps; i += 1) {
+    const t = i / steps;
+    const e = t < 0.5 ? 2 * t * t : 1 - ((-2 * t + 2) ** 2) / 2;
+    await page.evaluate(({ x, y }) => window.__nettDemo.place(x, y), {
+      x: from.x + (x - from.x) * e,
+      y: from.y + (y - from.y) * e,
+    });
+    await sleep(ms / steps);
+  }
 }
 
 async function zoomTo(page: Page, locator: Locator, scale = 1.42) {
@@ -242,14 +260,14 @@ async function walkthrough(page: Page, mark: (id: string) => void) {
 
   mark("workbench");
   const openNett = page.getByRole("link", { name: /Open Nett/ }).first();
-  await openNett.waitFor({ state: "visible", timeout: 8000 });
-  await punchClick(page, openNett);
-  try {
-    await page.locator("#ask-nett-query").waitFor({ state: "visible", timeout: 8000 });
-  } catch {
-    await page.goto(`${BASE}/today`, { waitUntil: "domcontentloaded" });
-    await page.locator("#ask-nett-query").waitFor({ state: "visible", timeout: 20_000 });
-  }
+  await openNett.waitFor({ state: "attached", timeout: 5000 });
+  await moveTo(page, openNett);
+  await zoomTo(page, openNett, 1.42);
+  await page.evaluate(() => window.__nettDemo.clickPulse());
+  await sleep(280);
+  await page.goto(`${BASE}/today`, { waitUntil: "domcontentloaded" });
+  await page.locator("#ask-nett-query").waitFor({ state: "visible", timeout: 20_000 });
+  await zoomReset(page);
   await sleep(1600);
 
   const rail = (label: string) => page.locator(".rail-link", { hasText: label }).first();
@@ -477,8 +495,9 @@ async function main() {
     console.log("Beats", Object.fromEntries(marks));
   } finally {
     stop();
-    await sleep(400);
+    await sleep(200);
   }
+  process.exit(0);
 }
 
 main().catch((error) => {
