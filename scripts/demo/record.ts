@@ -5,7 +5,7 @@
  *
  *   npm run demo:record
  */
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { chromium, type Locator, type Page } from "playwright";
@@ -38,19 +38,45 @@ async function waitForHttp(url: string, timeoutMs = 90_000) {
   throw new Error(`Timed out waiting for ${url}`);
 }
 
-function startDevServer(): ChildProcess {
-  const child = spawn("npm", ["run", "dev"], {
-    cwd: ROOT,
-    env: {
-      ...process.env,
-      NETT_DB_PATH: DEMO_DB,
-      NETT_MESSAGES_DB: path.join(path.dirname(DEMO_DB), "nett-demo-messages.db"),
+function freeDemoPorts() {
+  for (const port of [5173, 5174, 5175, 4174]) {
+    const listed = spawnSync("lsof", ["-ti", `tcp:${port}`], { encoding: "utf8" });
+    for (const pid of listed.stdout.split(/\s+/).filter(Boolean)) {
+      spawnSync("kill", ["-9", pid], { stdio: "ignore" });
+    }
+  }
+}
+
+function startDevServer(): { stop: () => void } {
+  const env = {
+    ...process.env,
+    NETT_DB_PATH: DEMO_DB,
+    NETT_MESSAGES_DB: path.join(path.dirname(DEMO_DB), "nett-demo-messages.db"),
+  };
+  const children = [
+    spawn("npx", ["tsx", "server/index.ts"], { cwd: ROOT, env, stdio: ["ignore", "pipe", "pipe"] }),
+    spawn("npx", ["vite", "--host", "127.0.0.1", "--port", "5173", "--strictPort"], {
+      cwd: ROOT,
+      env,
+      stdio: ["ignore", "pipe", "pipe"],
+    }),
+  ];
+  children[0].stdout?.on("data", (chunk) => process.stdout.write(`[api] ${chunk}`));
+  children[0].stderr?.on("data", (chunk) => process.stderr.write(`[api] ${chunk}`));
+  children[1].stdout?.on("data", (chunk) => process.stdout.write(`[web] ${chunk}`));
+  children[1].stderr?.on("data", (chunk) => process.stderr.write(`[web] ${chunk}`));
+  return {
+    stop() {
+      for (const child of children) child.kill("SIGTERM");
     },
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-  child.stdout?.on("data", (chunk) => process.stdout.write(`[dev] ${chunk}`));
-  child.stderr?.on("data", (chunk) => process.stderr.write(`[dev] ${chunk}`));
-  return child;
+  };
+}
+
+async function ensureOverlay(page: Page) {
+  const ready = await page.evaluate(() => Boolean(window.__nettDemo));
+  if (!ready) await page.addInitScript(OVERLAY);
+  await page.evaluate(OVERLAY);
+  await page.evaluate(() => window.__nettDemo.mount());
 }
 
 async function pointOf(locator: Locator) {
@@ -60,32 +86,39 @@ async function pointOf(locator: Locator) {
 }
 
 async function moveTo(page: Page, locator: Locator, ms = 720) {
+  await ensureOverlay(page);
   const { x, y } = await pointOf(locator);
   await page.evaluate(async ({ x, y, ms }) => {
     await window.__nettDemo.moveTo(x, y, ms);
   }, { x, y, ms });
 }
 
-async function zoomTo(page: Page, locator: Locator, scale = 1.16) {
+async function zoomTo(page: Page, locator: Locator, scale = 1.42) {
   const { x, y } = await pointOf(locator);
   await page.evaluate(({ x, y, scale }) => {
     window.__nettDemo.zoomTo(x, y, scale);
   }, { x, y, scale });
-  await sleep(420);
+  await sleep(480);
 }
 
 async function zoomReset(page: Page) {
   await page.evaluate(() => window.__nettDemo.zoomReset());
-  await sleep(360);
+  await sleep(380);
 }
 
 async function punchClick(page: Page, locator: Locator, options: { scale?: number; stay?: boolean } = {}) {
-  await locator.scrollIntoViewIfNeeded();
+  await locator.evaluate((node) => node.scrollIntoView({ block: "center", inline: "nearest" }));
+  await sleep(240);
   await moveTo(page, locator);
-  await zoomTo(page, locator, options.scale ?? 1.16);
+  await zoomTo(page, locator, options.scale ?? 1.42);
   await page.evaluate(() => window.__nettDemo.clickPulse());
-  await locator.click({ force: true });
-  await sleep(280);
+  try {
+    await locator.click({ force: true, timeout: 2500 });
+  } catch {
+    await zoomReset(page);
+    await locator.evaluate((node) => (node as HTMLElement).click());
+  }
+  await sleep(options.stay ? 280 : 980);
   if (!options.stay) await zoomReset(page);
 }
 
@@ -189,131 +222,129 @@ function mockOwnedSources(page: Page) {
   ]);
 }
 
-async function walkthrough(page: Page) {
+async function waitForAskAnswer(page: Page, asked: string) {
+  const turn = page.locator(".ask-turn").filter({ hasText: asked }).last();
+  await turn.locator(".ask-actions").waitFor({ state: "visible", timeout: 90_000 });
+  await turn.locator(".ask-answer").waitFor({ state: "visible" });
+  await turn.evaluate((node) => node.scrollIntoView({ block: "start" }));
+}
+
+async function walkthrough(page: Page, mark: (id: string) => void) {
   await mockOwnedSources(page);
 
-  await page.goto(`${BASE}/`, { waitUntil: "networkidle" });
+  await page.goto(`${BASE}/`, { waitUntil: "domcontentloaded" });
   await page.locator("#landing-title").waitFor({ state: "visible" });
-  await sleep(6200);
+  mark("landing");
+  await sleep(7200);
 
-  const about = page.locator(".landing-nav-about");
-  await punchClick(page, about);
-  await page.locator(".nett-about-page").waitFor({ state: "visible" });
-  await sleep(900);
-  for (const y of [420, 980, 1600, 2300]) {
-    await page.evaluate((top) => window.scrollTo({ top, behavior: "smooth" }), y);
-    await sleep(2100);
-  }
-  await page.evaluate(() => window.scrollTo({ top: document.body.scrollHeight, behavior: "smooth" }));
-  await sleep(1600);
-
-  const openNett = page.locator(".landing-about-close .landing-glass-cta__link");
-  await punchClick(page, openNett);
+  mark("workbench");
+  await punchClick(page, page.locator(".landing-nav .landing-glass-cta__link"));
   await page.locator("#ask-nett-query").waitFor({ state: "visible", timeout: 20_000 });
-  await sleep(2400);
+  await sleep(1800);
 
   const rail = (label: string) => page.locator(".rail-link", { hasText: label }).first();
 
+  mark("people");
   await punchClick(page, rail("People"));
   await page.locator(".people-cards").waitFor({ state: "visible" });
-  await sleep(800);
-  await page.mouse.wheel(0, 520);
-  await sleep(1400);
-  await page.mouse.wheel(0, 420);
-  await sleep(1200);
-  await page.mouse.wheel(0, -700);
-  await sleep(900);
-
-  await punchClick(page, rail("Review"));
-  await page.locator(".review-page").waitFor({ state: "visible" });
+  await sleep(700);
+  await page.mouse.wheel(0, 480);
   await sleep(1100);
-  const accept = page.locator(".review-card", { hasText: "Gilly Zaid" }).getByRole("button", { name: "Accept" });
-  await punchClick(page, accept);
-  await sleep(1400);
+  await page.mouse.wheel(0, -520);
+  await sleep(800);
 
+  mark("review");
+  await punchClick(page, rail("Review"));
+  const accept = page.locator(".review-card").getByRole("button", { name: "Accept" }).first();
+  await accept.waitFor({ state: "visible", timeout: 20_000 });
+  await sleep(700);
+  await punchClick(page, accept);
+  await sleep(1100);
+
+  mark("sources");
   await punchClick(page, rail("Sources"));
   await page.locator(".source-glow-card").first().waitFor({ state: "visible" });
-  await sleep(900);
+  await sleep(800);
   const messages = page.locator(".source-glow-card", { hasText: "Messages" }).getByRole("button", { name: /Pull|Refresh/ }).first();
   await punchClick(page, messages);
   await page.locator(".source-glow-card", { hasText: "Messages" }).getByRole("button", { name: /Pull|Refresh/ }).waitFor({ state: "visible", timeout: 20_000 });
-  await sleep(700);
+  await sleep(600);
   const whatsapp = page.locator(".source-glow-card", { hasText: "WhatsApp" }).getByRole("button", { name: /Pull|Refresh/ }).first();
   await punchClick(page, whatsapp);
   await page.locator(".source-glow-card", { hasText: "WhatsApp" }).getByRole("button", { name: /Pull|Refresh/ }).waitFor({ state: "visible", timeout: 20_000 });
-  await sleep(1000);
+  await sleep(900);
 
   await punchClick(page, rail("People"));
   await page.locator(".people-cards").waitFor({ state: "visible" });
-  await sleep(600);
+  await sleep(500);
+  mark("kendra");
   const kendraCard = page.getByRole("button", { name: "Open Kendra Mysore" });
   await punchClick(page, kendraCard);
   await page.getByRole("button", { name: "Open full profile" }).waitFor({ state: "visible" });
-  await sleep(1100);
+  await sleep(1000);
   await punchClick(page, page.getByRole("button", { name: "Open full profile" }));
   await page.locator("h1", { hasText: "Kendra Mysore" }).waitFor({ state: "visible" });
   await sleep(900);
 
+  mark("kendra_note");
   await punchClick(page, page.getByRole("button", { name: "Edit profile" }));
-  const followUp = page.getByLabel("Follow-up date");
-  await followUp.waitFor({ state: "visible" });
-  await moveTo(page, followUp);
-  await zoomTo(page, followUp, 1.14);
-  await followUp.fill("2026-09-08");
-  await sleep(500);
+  const notes = page.locator("label.full-field").filter({ hasText: "Notes" }).locator("textarea");
+  await notes.waitFor({ state: "visible" });
+  await notes.evaluate((node) => node.scrollIntoView({ block: "center" }));
+  await moveTo(page, notes);
+  await zoomTo(page, notes, 1.22);
+  await typeHuman(page, notes, "Will be home the week she visits. She is bringing the photo albums.");
   await zoomReset(page);
   await punchClick(page, page.getByRole("button", { name: "Save profile" }));
   await page.getByRole("button", { name: "Edit profile" }).waitFor({ state: "visible" });
-  await sleep(700);
+  await sleep(600);
 
-  await punchClick(page, page.getByRole("button", { name: "Record a memory" }), { stay: true });
+  await punchClick(page, page.locator(".profile-actions").getByRole("button", { name: "Record a memory" }), { stay: true });
   const kendraMemory = page.locator("#profile-memory");
   await typeHuman(page, kendraMemory, "Told her I will be home that week. She is bringing the photo albums.");
   await zoomReset(page);
   await punchClick(page, page.getByRole("button", { name: "Save as written" }));
-  await sleep(1400);
+  await sleep(1200);
 
   await punchClick(page, page.locator(".back-link"));
   await page.locator(".people-cards").waitFor({ state: "visible" });
+  mark("gilly");
   const gillyCard = page.getByRole("button", { name: "Open Gilly Zaid" });
   await punchClick(page, gillyCard);
   await page.getByRole("button", { name: "Open full profile" }).waitFor({ state: "visible" });
-  await sleep(800);
+  await sleep(700);
   await punchClick(page, page.getByRole("button", { name: "Open full profile" }));
   await page.locator("h1", { hasText: "Gilly Zaid" }).waitFor({ state: "visible" });
-  await sleep(800);
-  await punchClick(page, page.getByRole("button", { name: "Record a memory" }), { stay: true });
+  await sleep(700);
+  await punchClick(page, page.locator(".profile-actions").getByRole("button", { name: "Record a memory" }), { stay: true });
   await typeHuman(page, page.locator("#profile-memory"), "If he comes through the city this month, dinner — no agenda.");
   await zoomReset(page);
   await punchClick(page, page.getByRole("button", { name: "Save as written" }));
-  await sleep(1200);
+  await sleep(1100);
 
+  await page.request.post(`${API}/api/intelligence/index`, { data: { limit: 400 } }).catch(() => undefined);
+  mark("ask");
   await punchClick(page, rail("Ask"));
   await page.locator("#ask-nett-query").waitFor({ state: "visible" });
-  await sleep(600);
+  await sleep(500);
   const ask = page.locator("#ask-nett-query");
   await moveTo(page, ask);
-  await zoomTo(page, ask, 1.12);
-  await typeHuman(page, ask, "Can you tell me more about Kendra Mysore?");
+  await zoomTo(page, ask, 1.22);
+  await typeHuman(page, ask, "What do I know about Kendra Mysore?");
   await zoomReset(page);
   await punchClick(page, page.locator("button.ask-send"));
-  await page.getByRole("button", { name: "Stop asking" }).waitFor({ timeout: 8_000 }).catch(() => undefined);
-  await page.locator(".ask-answer").first().waitFor({ state: "visible", timeout: 90_000 });
-  await page.getByRole("button", { name: "Ask" }).waitFor({ timeout: 90_000 });
-  await sleep(2800);
-
-  await moveTo(page, ask);
-  await zoomTo(page, ask, 1.12);
-  await typeHuman(page, ask, "Describe Gilly Zaid's history.");
-  await zoomReset(page);
-  await punchClick(page, page.locator("button.ask-send"));
-  await page.getByRole("button", { name: "Stop asking" }).waitFor({ timeout: 8_000 }).catch(() => undefined);
-  await page.locator(".ask-answer").nth(1).waitFor({ state: "visible", timeout: 90_000 }).catch(async () => {
-    await page.locator(".ask-answer").first().waitFor({ state: "visible", timeout: 90_000 });
-  });
-  await page.getByRole("button", { name: "Ask" }).waitFor({ timeout: 90_000 });
+  await waitForAskAnswer(page, "What do I know about Kendra Mysore?");
   await sleep(3200);
 
+  await moveTo(page, ask);
+  await zoomTo(page, ask, 1.22);
+  await typeHuman(page, ask, "Tell me about Gilly Zaid.");
+  await zoomReset(page);
+  await punchClick(page, page.locator("button.ask-send"));
+  await waitForAskAnswer(page, "Tell me about Gilly Zaid.");
+  await sleep(3400);
+
+  mark("remember");
   const remember = page.locator(".rail-remember");
   await punchClick(page, remember, { stay: true });
   const composer = page.locator(".memory-composer textarea");
@@ -321,21 +352,24 @@ async function walkthrough(page: Page) {
   await typeHuman(
     page,
     composer,
-    "Gilly Zaid might pass through later this month. I should get dinner — no agenda.",
+    "Gilly Zaid likes photography. Follow up in 5 days about dinner.",
   );
   await zoomReset(page);
   await punchClick(page, page.getByRole("button", { name: "Structure into fields" }));
   const savePerson = page.getByRole("button", { name: "Save to person" });
   await savePerson.waitFor({ state: "visible", timeout: 60_000 });
-  await sleep(900);
+  await sleep(800);
   await punchClick(page, savePerson);
   await sleep(2200);
 }
 
-async function encodeMp4(webm: string, mp4: string, narrationWav?: string | null) {
-  const { spawnSync } = await import("node:child_process");
-  if (narrationWav && existsSync(narrationWav)) {
-    mixNarration(webm, narrationWav, mp4);
+async function encodeMp4(
+  webm: string,
+  mp4: string,
+  clips: Array<{ path: string; atMs: number }> | null,
+) {
+  if (clips?.length) {
+    mixNarration(webm, clips, mp4);
     return;
   }
   const result = spawnSync("ffmpeg", [
@@ -355,15 +389,29 @@ async function main() {
   mkdirSync(ARTIFACT_DIR, { recursive: true });
   console.log("Seeding isolated demo database…");
   await seedInvestorDemo(DEMO_DB);
+  freeDemoPorts();
+  await sleep(400);
 
   const server = startDevServer();
-  const stop = () => {
-    server.kill("SIGTERM");
-  };
+  const stop = () => server.stop();
   process.on("exit", stop);
   try {
     await waitForHttp(`${API}/api/health`);
     await waitForHttp(BASE);
+    const inbox = await fetch(`${API}/api/review`).then((response) => response.json()) as {
+      counts?: { total?: number };
+      suggestions?: Array<{ personName: string; fieldName: string }>;
+    };
+    const kendra = await fetch(`${API}/api/people/page?q=Kendra&limit=5`).then((response) => response.json()) as {
+      people?: Array<{ name: string }>;
+    };
+    console.log("Demo inbox", inbox.counts, inbox.suggestions);
+    if (!kendra.people?.some((person) => person.name.includes("Kendra"))) {
+      throw new Error("Demo database is not the isolated investor seed");
+    }
+    if (!inbox.suggestions?.length) {
+      throw new Error("Review inbox is empty — the API is not serving the seeded demo database");
+    }
     console.log("Recording…");
 
     const browser = await chromium.launch({
@@ -379,9 +427,15 @@ async function main() {
     await context.addInitScript(OVERLAY);
     const page = await context.newPage();
     page.on("pageerror", (error) => console.warn("pageerror", error.message));
+    const origin = Date.now();
+    const marks = new Map<string, number>();
+    const mark = (id: string) => {
+      marks.set(id, Date.now() - origin);
+      console.log(`beat ${id} @ ${marks.get(id)}ms`);
+    };
 
     try {
-      await walkthrough(page);
+      await walkthrough(page, mark);
     } catch (error) {
       const shot = path.join(ARTIFACT_DIR, "nett-investor-demo-failure.png");
       await page.screenshot({ path: shot, fullPage: true }).catch(() => undefined);
@@ -395,13 +449,22 @@ async function main() {
     if (!video) throw new Error("Playwright did not record a video");
     const webm = await video.path();
 
-    const narration = await trySynthesizeNarration(path.join(RAW_DIR, "narration.wav"));
+    writeFileSync(path.join(RAW_DIR, "marks.json"), JSON.stringify(Object.fromEntries(marks), null, 2));
+    const synthesized = await trySynthesizeNarration(RAW_DIR);
+    const timed = synthesized
+      ?.map((clip) => {
+        const atMs = marks.get(clip.id);
+        return atMs == null ? null : { path: clip.path, atMs };
+      })
+      .filter((clip): clip is { path: string; atMs: number } => Boolean(clip)) ?? null;
+
     const mp4 = path.join(ARTIFACT_DIR, "nett-investor-demo.mp4");
     const repoCopy = path.join(RAW_DIR, "nett-investor-demo.mp4");
-    await encodeMp4(webm, mp4, narration);
+    await encodeMp4(webm, mp4, timed);
     writeFileSync(path.join(RAW_DIR, "source.webm.txt"), webm);
     copyFileSync(mp4, repoCopy);
     console.log(`Wrote ${mp4}`);
+    console.log("Beats", Object.fromEntries(marks));
   } finally {
     stop();
     await sleep(400);

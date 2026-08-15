@@ -10,8 +10,14 @@ npm run demo:record
 Writes `docs/demo/output/nett-investor-demo.mp4` and, in this environment,
 `/opt/cursor/artifacts/nett-investor-demo.mp4`.
 
-The cut is silent unless a neural voice (`edge-tts`) is available. Force
-silence with `NETT_DEMO_SILENT=1`. Headed Chromium: `NETT_DEMO_HEADED=1`.
+The cut opens the lived-in workbench from landing (no first-run setup,
+no About essay). Review is one accept. Sources refresh Messages and
+WhatsApp only.
+
+The cut is silent unless a neural voice (`edge-tts`) is available. When
+it is, lines are timed to walkthrough beats rather than dumped at the
+start. Force silence with `NETT_DEMO_SILENT=1`. Headed Chromium:
+`NETT_DEMO_HEADED=1`.
 
 Ask uses Ollama when a local model is reachable on loopback. Without it,
 Ask still answers from stored evidence.
