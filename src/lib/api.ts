@@ -160,6 +160,10 @@ export const api = {
   intelligenceStatus: () => request<{
     ok: boolean; version?: string; selectedModel?: string;
     fastModel?: string; reasonModel?: string; embedModel?: string;
+    askWriter?: "local" | "anthropic" | "openai";
+    askWriterModel?: string | null;
+    askWriterHasKey?: boolean;
+    askWriterDisclosure?: string;
     evidenceDocuments: number;
     embeddedDocuments: number; models: { name: string; size?: number }[];
     indexedAt?: string | null;
@@ -168,6 +172,21 @@ export const api = {
     stale?: boolean;
     staleSources?: string[];
   }>("/api/intelligence/status"),
+  askWriterSettings: () => request<{
+    writer: "local" | "anthropic" | "openai";
+    model: string | null;
+    hasKey: boolean;
+    envKey: boolean;
+    disclosure: string;
+  }>("/api/intelligence/ask-writer"),
+  saveAskWriterSettings: (input: { writer?: "local" | "anthropic" | "openai"; model?: string | null; apiKey?: string | null }) =>
+    request<{
+      writer: "local" | "anthropic" | "openai";
+      model: string | null;
+      hasKey: boolean;
+      envKey: boolean;
+      disclosure: string;
+    }>("/api/intelligence/ask-writer", { method: "PUT", body: JSON.stringify(input) }),
   searchEvidence: (query: string, signal?: AbortSignal) =>
     request<Array<{ id: string; person_id: string | null; kind: string; source: string; text: string; occurred_at: string | null; score: number }>>(
       `/api/evidence/search?q=${encodeURIComponent(query)}`,
@@ -296,9 +315,9 @@ export const api = {
     Object.entries(input).forEach(([key, value]) => { if (value) body.append(key, value); });
     return request<{ recordsSeen: number; bundles: number; message: string }>("/api/platform/whatsapp/import", { method: "POST", body });
   },
-  query: (query: string, signal?: AbortSignal) =>
-    request<AgentAnswer>("/api/agent/query", { method: "POST", body: JSON.stringify({ query }), signal }),
-  queryStream: async function* (query: string, signal?: AbortSignal): AsyncGenerator<
+  query: (query: string, signal?: AbortSignal, contextPersonIds?: string[]) =>
+    request<AgentAnswer>("/api/agent/query", { method: "POST", body: JSON.stringify({ query, contextPersonIds }), signal }),
+  queryStream: async function* (query: string, signal?: AbortSignal, contextPersonIds?: string[]): AsyncGenerator<
     | { type: "stage"; id: string; label: string; detail?: string }
     | { type: "meta"; path: string; provider: string; citations: AgentAnswer["citations"]; note?: string }
     | { type: "token"; text: string }
@@ -308,7 +327,7 @@ export const api = {
     const response = await fetch("/api/agent/query?stream=1", {
       method: "POST",
       headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
-      body: JSON.stringify({ query }),
+      body: JSON.stringify({ query, contextPersonIds }),
       signal,
     });
     if (!response.ok || !response.body) {
