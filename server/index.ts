@@ -33,6 +33,7 @@ import {
   streamRelationshipQuestion,
 } from "./intelligence/service.js";
 import { generateRelationshipInsights } from "./intelligence/insights.js";
+import { isAskAbilityId } from "./intelligence/ask.js";
 import { parsePersonPatch } from "../src/lib/contracts.js";
 import {
   applyLinkedInPublicProfile,
@@ -1090,6 +1091,10 @@ app.post("/api/import/csv", upload.single("file"), (req, res) => {
 app.post("/api/agent/query", async (req, res) => {
   const query = String(req.body.query || "").trim();
   if (!query) return res.status(400).json({ error: "Ask a question about your network" });
+  const personIds = Array.isArray(req.body.personIds)
+    ? req.body.personIds.filter((id: unknown): id is string => typeof id === "string" && id.length > 0).slice(0, 12)
+    : [];
+  const ability = isAskAbilityId(req.body.ability) ? req.body.ability : null;
   const controller = new AbortController();
   req.on("close", () => { if (!res.writableEnded) controller.abort(); });
   const wantsStream = req.query.stream === "1"
@@ -1101,7 +1106,7 @@ app.post("/api/agent/query", async (req, res) => {
       res.setHeader("Connection", "keep-alive");
       res.setHeader("X-Accel-Buffering", "no");
       res.flushHeaders();
-      for await (const event of streamRelationshipQuestion(query, { signal: controller.signal })) {
+      for await (const event of streamRelationshipQuestion(query, { signal: controller.signal, personIds, ability })) {
         if (res.writableEnded) return;
         res.write(`data: ${JSON.stringify(event)}\n\n`);
         const flushable = res as typeof res & { flush?: () => void };
@@ -1114,7 +1119,7 @@ app.post("/api/agent/query", async (req, res) => {
       if (!res.writableEnded) res.end();
       return;
     }
-    const result = await getProvider().answer(query, controller.signal);
+    const result = await getProvider().answer(query, controller.signal, { personIds, ability });
     if (res.writableEnded) return;
     res.json(result);
   } catch (error) {

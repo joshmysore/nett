@@ -29,6 +29,7 @@ import {
   retrieveAskMatches,
   retrievalPathNote,
   scoreEmbeddedRows,
+  type AskAbilityId,
 } from "./ask.js";
 import { collectSharedContextSuggestions } from "./shared-context.js";
 import { collectTraitSuggestions } from "./traits.js";
@@ -360,10 +361,18 @@ function answerLooksThin(answer: string, retrieval: Awaited<ReturnType<typeof re
   });
 }
 
-async function retrieveForAsk(question: string, options: { signal?: AbortSignal } = {}) {
+type AskRunOptions = {
+  signal?: AbortSignal;
+  personIds?: readonly string[];
+  ability?: AskAbilityId | null;
+};
+
+async function retrieveForAsk(question: string, options: AskRunOptions = {}) {
   const models = await resolveModels(options.signal).catch(() => null);
   const retrieval = await retrieveAskMatches(question, {
     signal: options.signal,
+    personIds: options.personIds,
+    ability: options.ability,
     embedQuery: models?.embed
       ? async (text, signal) => {
         const [vector] = await ollama.embed(models.embed!, [text], signal);
@@ -396,7 +405,7 @@ async function generateCitedAnswer(
   };
 }
 
-export async function answerRelationshipQuestion(question: string, options: { signal?: AbortSignal } = {}): Promise<AskAnswer> {
+export async function answerRelationshipQuestion(question: string, options: AskRunOptions = {}): Promise<AskAnswer> {
   const { models, retrieval, citations, note } = await retrieveForAsk(question, options);
   if (!retrieval.people.length) {
     return {
@@ -447,7 +456,7 @@ function streamPrompt(question: string, retrieval: Awaited<ReturnType<typeof ret
 
 export async function* streamRelationshipQuestion(
   question: string,
-  options: { signal?: AbortSignal } = {},
+  options: AskRunOptions = {},
 ): AsyncGenerator<AskStreamEvent> {
   yield { type: "stage", id: "search", label: "Searching records" };
   const { models, retrieval, citations, note } = await retrieveForAsk(question, options);

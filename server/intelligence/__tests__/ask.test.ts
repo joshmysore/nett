@@ -19,7 +19,7 @@ globalThis.fetch = ((input: unknown, init?: RequestInit) => handler(String(input
 
 const { addMemory, createPerson, db, updatePerson } = await import("../../db.js");
 const { refreshEvidenceIndex } = await import("../evidence-index.js");
-const { parseAskIntent, retrieveAskMatches, formatAskAnswer, cosine, reciprocalRankFusion } = await import("../ask.js");
+const { applyAskAbility, parseAskIntent, retrieveAskMatches, formatAskAnswer, cosine, reciprocalRankFusion } = await import("../ask.js");
 const { answerRelationshipQuestion, refreshEvidenceEmbeddings, resetIntelligenceModelCache, streamRelationshipQuestion } = await import("../service.js");
 
 after(() => {
@@ -188,6 +188,27 @@ test("unmatched questions do not dump unrelated recent evidence", async () => {
   const answer = await answerRelationshipQuestion("Who do I know in Reykjavik who collects stamps?");
   assert.doesNotMatch(answer.answer, /Ivy Recent/);
   assert.match(answer.answer, /Nothing stored|No one matched|Reykjavik/i);
+});
+
+test("attached person ids scope retrieval to those people", async () => {
+  const ana = seedPerson("Ana Mentioned", { location: "Lisbon", notes: "Talked about legal tech over dinner." });
+  seedPerson("Ben Unmentioned", { location: "Lisbon", notes: "Also building legaltech, but was not attached." });
+  refreshEvidenceIndex();
+  const retrieval = await retrieveAskMatches("What notes do I have about legal tech?", {
+    personIds: [ana],
+    ability: "notes",
+  });
+  assert.deepEqual(peopleNames(retrieval), ["Ana Mentioned"]);
+  assert.ok(!peopleNames(retrieval).includes("Ben Unmentioned"));
+});
+
+test("applyAskAbility adds source and recency lenses", () => {
+  const intent = applyAskAbility(parseAskIntent("Who have I talked to?"), "recent");
+  assert.equal(intent.recencyDays, 90);
+  const messages = applyAskAbility(parseAskIntent("What did we discuss?"), "messages");
+  assert.deepEqual(messages.sources, ["messages"]);
+  const about = applyAskAbility(parseAskIntent("hello"), "about");
+  assert.equal(about.personBrief, true);
 });
 
 test("recent-contact questions prefer last_contact over the rest of the network", async () => {

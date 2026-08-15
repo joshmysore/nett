@@ -48,6 +48,7 @@ export type AskIntent = {
   topics: string[];
   expansions: string[];
   sources: string[];
+  kinds: string[];
   recencyDays: number | null;
   foodIntent: boolean;
   inferential: boolean;
@@ -61,11 +62,49 @@ export type AskRetrieval = {
   provider: "local-people-index" | "local-evidence";
 };
 
+export type AskAbilityId =
+  | "who"
+  | "about"
+  | "talked"
+  | "recent"
+  | "place"
+  | "notes"
+  | "messages"
+  | "email"
+  | "whatsapp";
+
 export type AskRetrieveOptions = {
   signal?: AbortSignal;
+  personIds?: readonly string[];
+  ability?: AskAbilityId | null;
   /** Dedicated embedding model only. Omit when Ollama has no embed model. */
   embedQuery?: (text: string, signal?: AbortSignal) => Promise<number[] | null>;
 };
+
+const ASK_ABILITY_IDS = new Set<AskAbilityId>([
+  "who", "about", "talked", "recent", "place", "notes", "messages", "email", "whatsapp",
+]);
+
+export function isAskAbilityId(value: unknown): value is AskAbilityId {
+  return typeof value === "string" && ASK_ABILITY_IDS.has(value as AskAbilityId);
+}
+
+export function applyAskAbility(intent: AskIntent, ability?: AskAbilityId | null): AskIntent {
+  if (!ability) return intent;
+  const sources = [...intent.sources];
+  const kinds = [...intent.kinds];
+  let recencyDays = intent.recencyDays;
+  let personBrief = intent.personBrief;
+  if (ability === "about") personBrief = true;
+  if (ability === "talked" && !sources.length) sources.push("messages", "whatsapp", "gmail");
+  if (ability === "talked") kinds.push("conversation-summary", "interaction");
+  if (ability === "notes") kinds.push("memory");
+  if (ability === "recent") recencyDays = recencyDays ?? 90;
+  if (ability === "messages" && !sources.includes("messages")) sources.push("messages");
+  if (ability === "email" && !sources.includes("gmail")) sources.push("gmail");
+  if (ability === "whatsapp" && !sources.includes("whatsapp")) sources.push("whatsapp");
+  return { ...intent, sources, kinds: [...new Set(kinds)], recencyDays, personBrief };
+}
 
 const STOPWORDS = new Set([
   "a", "an", "the", "and", "or", "but", "if", "on", "at", "to", "for", "of", "with",
@@ -329,6 +368,7 @@ export function parseAskIntent(question: string): AskIntent {
     topics,
     expansions: [...new Set(expansions)].slice(0, 16),
     sources,
+    kinds: [],
     recencyDays,
     foodIntent,
     inferential: isInferentialQuestion(question),
@@ -577,6 +617,7 @@ type FtsHit = EvidenceDocument & { rank: number };
 function searchFts(match: string, options: {
   sources?: readonly string[];
   personIds?: readonly string[];
+  kinds?: readonly string[];
   after?: string | null;
   limit: number;
 }): FtsHit[] {
@@ -591,6 +632,10 @@ function searchFts(match: string, options: {
     const ids = options.personIds.slice(0, 80);
     clauses.push(`d.person_id IN (${ids.map(() => "?").join(",")})`);
     values.push(...ids);
+  }
+  if (options.kinds?.length) {
+    clauses.push(`d.kind IN (${options.kinds.map(() => "?").join(",")})`);
+    values.push(...options.kinds);
   }
   if (options.after) {
     clauses.push("d.occurred_at >= ?");
@@ -689,6 +734,7 @@ function attachEvidenceForPeople(people: AskPerson[], intent: AskIntent): void {
   const hits = searchFts(match, {
     personIds: ids,
     sources: intent.sources,
+    kinds: intent.kinds,
     after: intent.recencyDays ? isoDaysAgo(intent.recencyDays) : null,
     limit: PERSON_LIMIT * 8,
   });
@@ -749,6 +795,16 @@ function nameScore(row: ProfileRow, query: string): number {
   if (parts.length >= 2 && name.endsWith(parts[parts.length - 1]) && name.startsWith(parts[0])) return 80;
   if (parts.length === 1 && (name.startsWith(parts[0]) || name.split(/\s+/)[0] === parts[0])) return 45;
   return 20;
+}
+
+function loadPeopleByIds(ids: readonly string[]): AskPerson[] {
+  const unique = [...new Set(ids.filter(Boolean))].slice(0, 12);
+  if (!unique.length) return [];
+  const profiles = profilesByIds(unique);
+  return unique.flatMap((id) => {
+    const row = profiles.get(id);
+    return row ? [emptyPerson(row)] : [];
+  });
 }
 
 function loadNamedPeople(query: string): AskPerson[] {
@@ -849,11 +905,64 @@ function attachPersonBriefEvidence(people: AskPerson[]): void {
   }
 }
 
+function scopedKinds(ability?: AskAbilityId | null): string[] | undefined {
+  if (ability === "notes") return ["memory"];
+  if (ability === "talked") return ["conversation-summary", "interaction"];
+  return undefined;
+}
+
+function retrieveScopedPeople(
+  intent: AskIntent,
+  people: AskPerson[],
+  options: AskRetrieveOptions,
+): AskRetrieval {
+  const ids = people.map((person) => person.personId);
+  const hasConstraint = Boolean(intent.places.length || intent.topics.length || intent.foodIntent);
+  if (hasConstraint && !intent.personBrief) {
+    const topicMatch = topicFtsMatch(intent);
+    const placeMatch = ftsMatchFromTerms(intent.places);
+    const match = [placeMatch, topicMatch].filter(Boolean).join(" AND ") || topicMatch || placeMatch;
+    if (match) {
+      const hits = searchFts(match, {
+        personIds: ids,
+        sources: intent.sources,
+        kinds: scopedKinds(options.ability),
+        after: intent.recencyDays ? isoDaysAgo(intent.recencyDays) : null,
+        limit: 80,
+      });
+      const profiles = profilesByIds(ids);
+      const found = new Map<string, AskPerson>();
+      applyEvidenceHits(found, hits, intent.topics.length ? "topic" : "place", profiles);
+      for (const person of people) {
+        if (!found.has(person.personId)) found.set(person.personId, person);
+      }
+      const next = [...found.values()];
+      attachPersonBriefEvidence(next);
+      attachEvidenceForPeople(next, intent);
+      return { intent, people: next, provider: "local-evidence" };
+    }
+  }
+  attachPersonBriefEvidence(people);
+  return {
+    intent: {
+      ...intent,
+      personBrief: true,
+      namedPerson: intent.namedPerson || people[0]?.name || null,
+    },
+    people,
+    provider: "local-evidence",
+  };
+}
+
 export async function retrieveAskMatches(
   question: string,
   options: AskRetrieveOptions = {},
 ): Promise<AskRetrieval> {
-  const intent = parseAskIntent(question);
+  const intent = applyAskAbility(parseAskIntent(question), options.ability);
+  if (options.personIds?.length) {
+    const scoped = loadPeopleByIds(options.personIds);
+    if (scoped.length) return retrieveScopedPeople(intent, scoped, options);
+  }
   if (intent.namedPerson) {
     const named = loadNamedPeople(intent.namedPerson);
     if (named.length) {
@@ -870,15 +979,17 @@ export async function retrieveAskMatches(
     : new Map<string, AskPerson>();
 
   const after = intent.recencyDays ? isoDaysAgo(intent.recencyDays) : null;
+  const kinds = intent.kinds.length ? intent.kinds : scopedKinds(options.ability);
   const placeFts = intent.places.length
-    ? searchFts(ftsMatchFromTerms(intent.places), { sources: intent.sources, after, limit: 60 })
+    ? searchFts(ftsMatchFromTerms(intent.places), { sources: intent.sources, kinds, after, limit: 60 })
     : [];
   const topicFts = topicMatch
-    ? searchFts(topicMatch, { sources: intent.sources, after, limit: 80 })
+    ? searchFts(topicMatch, { sources: intent.sources, kinds, after, limit: 80 })
     : [];
   const combinedFts = intent.places.length && topicMatch
     ? searchFts(`${ftsMatchFromTerms(intent.places)} AND ${topicMatch}`, {
       sources: intent.sources,
+      kinds,
       after,
       limit: 40,
     })
