@@ -10,6 +10,7 @@ export type AgentAnswer = { answer: string; citations: Citation[]; provider: str
 export type AgentQueryScope = {
   personIds?: readonly string[];
   ability?: AskAbilityId | null;
+  contextPersonIds?: readonly string[];
 };
 
 export interface LlmProvider {
@@ -70,6 +71,7 @@ export function getProvider(): LlmProvider {
         signal,
         personIds: scope?.personIds,
         ability: scope?.ability,
+        contextPersonIds: scope?.contextPersonIds,
       });
       db.prepare("INSERT INTO ai_queries (id, query, response, citations_json, provider, created_at) VALUES (?, ?, ?, ?, ?, datetime('now'))")
         .run(randomUUID(), query, result.answer, JSON.stringify(result.citations), result.provider);

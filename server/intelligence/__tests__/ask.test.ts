@@ -19,7 +19,16 @@ globalThis.fetch = ((input: unknown, init?: RequestInit) => handler(String(input
 
 const { addMemory, createPerson, db, updatePerson } = await import("../../db.js");
 const { refreshEvidenceIndex } = await import("../evidence-index.js");
-const { applyAskAbility, parseAskIntent, retrieveAskMatches, formatAskAnswer, cosine, reciprocalRankFusion } = await import("../ask.js");
+const {
+  applyAskAbility,
+  parseAskIntent,
+  retrieveAskMatches,
+  formatAskAnswer,
+  cosine,
+  reciprocalRankFusion,
+  extractNamedPerson,
+  loadNamedPeople,
+} = await import("../ask.js");
 const { answerRelationshipQuestion, refreshEvidenceEmbeddings, resetIntelligenceModelCache, streamRelationshipQuestion } = await import("../service.js");
 
 after(() => {
@@ -36,7 +45,7 @@ function seedPerson(name: string, metadata: Record<string, unknown> = {}): strin
 function addMessage(
   personId: string,
   body: string,
-  options: { connector?: string; subject?: string; occurredAt?: string } = {},
+  options: { connector?: string; subject?: string; occurredAt?: string; conversationId?: string } = {},
 ): void {
   const timestamp = options.occurredAt ?? new Date().toISOString();
   const communicationId = randomUUID();
@@ -44,11 +53,12 @@ function addMessage(
     INSERT INTO communications
       (id, connector_id, external_id, conversation_id, direction, kind, body, occurred_at,
        evidence_json, created_at, updated_at)
-    VALUES (?, ?, ?, NULL, 'incoming', 'text', ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, 'incoming', 'text', ?, ?, ?, ?, ?)
   `).run(
     communicationId,
     options.connector ?? "messages",
     `ext-${communicationId}`,
+    options.conversationId ?? null,
     body,
     timestamp,
     JSON.stringify({ subject: options.subject ?? null }),
@@ -59,6 +69,22 @@ function addMessage(
     INSERT INTO communication_people (communication_id, person_id, role)
     VALUES (?, ?, 'participant')
   `).run(communicationId, personId);
+}
+
+function addGroupChat(
+  title: string,
+  personId: string,
+  options: { connector?: string; body?: string } = {},
+): string {
+  const id = randomUUID();
+  const timestamp = new Date().toISOString();
+  const connector = options.connector ?? "whatsapp";
+  db.prepare(`
+    INSERT INTO conversations (id, connector_id, external_id, title, is_group, raw_json, created_at, updated_at)
+    VALUES (?, ?, ?, ?, 1, '{}', ?, ?)
+  `).run(id, connector, `group-${id}`, title, timestamp, timestamp);
+  addMessage(personId, options.body ?? `Hello from ${title}`, { connector, conversationId: id });
+  return id;
 }
 
 function json(body: unknown): Response {
@@ -213,10 +239,17 @@ test("applyAskAbility adds source and recency lenses", () => {
 
 test("recent-contact questions prefer last_contact over the rest of the network", async () => {
   seedPerson("Jules Today", { location: "Madrid", last_contact: new Date().toISOString() });
+  seedPerson("Ivo This Week", { location: "Madrid", last_contact: new Date(Date.now() - 2 * 86_400_000).toISOString() });
   seedPerson("Kim Years", { location: "Madrid", last_contact: "2020-01-01T00:00:00.000Z" });
   const retrieval = await retrieveAskMatches("What do I know about the people I contacted most recently?");
-  assert.ok(peopleNames(retrieval).includes("Jules Today"));
-  assert.ok(formatAskAnswer(retrieval).includes("Jules Today"));
+  const names = peopleNames(retrieval);
+  assert.ok(names.includes("Jules Today"));
+  assert.ok(names.includes("Ivo This Week"));
+  assert.ok(!names.includes("Kim Years"));
+  const answer = formatAskAnswer(retrieval);
+  assert.match(answer, /Jules Today/);
+  assert.match(answer, /Ivo This Week/);
+  assert.doesNotMatch(answer, /Kim Years/);
 });
 
 test("hybrid retrieval finds a paraphrase via profile embeddings", async () => {
@@ -344,26 +377,35 @@ test("inferential questions escalate when the fast model is thin", async () => {
   resetIntelligenceModelCache();
 });
 
-test("factual questions do not wait on a chat model", async () => {
+test("any stored-record question uses the local chat model when it is available", async () => {
+  seedPerson("Giselle Model Paris", { location: "Paris", foods: ["Sichuan"] });
+  refreshEvidenceIndex();
   resetIntelligenceModelCache();
   let generateCalled = false;
-  handler = async (url) => {
+  handler = async (url, init) => {
     if (url.endsWith("/api/version")) return json({ version: "test" });
     if (url.endsWith("/api/tags")) return json({ models: [{ name: "llama3.2:3b" }, { name: "qwen3:14b" }] });
     if (url.endsWith("/api/generate")) {
       generateCalled = true;
-      return json({ response: JSON.stringify({ answer: "should not run", citations: [] }) });
+      const body = JSON.parse(String(init?.body || "{}"));
+      assert.match(String(body.prompt || body.system || ""), /Giselle Model Paris|Paris/i);
+      return json({
+        response: JSON.stringify({
+          answer: "Giselle Model Paris is in Paris and likes Sichuan.",
+          citations: [],
+        }),
+      });
     }
     throw new Error(`unexpected ${url}`);
   };
   const answer = await answerRelationshipQuestion("Who do I know in Paris who like spicy food?");
-  assert.equal(generateCalled, false);
-  assert.equal(answer.provider, "local-evidence");
+  assert.equal(generateCalled, true);
+  assert.equal(answer.provider, "ollama:llama3.2:3b");
   handler = offline;
   resetIntelligenceModelCache();
 });
 
-test("stream emits search and match stages before the answer", async () => {
+test("stream emits extract, match, and records stages before the answer", async () => {
   seedPerson("Stage Fixture", { location: "Lisbon, Portugal" });
   await refreshEvidenceIndex();
   const events: Array<{ type: string; id?: string }> = [];
@@ -371,9 +413,81 @@ test("stream emits search and match stages before the answer", async () => {
     events.push(event);
   }
   assert.equal(events[0]?.type, "stage");
-  assert.equal(events[0]?.id, "search");
+  assert.equal(events[0]?.id, "extract");
   assert.ok(events.some((event) => event.type === "stage" && event.id === "match"));
+  assert.ok(events.some((event) => event.type === "stage" && event.id === "records"));
   assert.ok(events.some((event) => event.type === "done"));
+});
+
+test("extracts a name from a free-form message-history question", () => {
+  const intent = parseAskIntent("What's Serena Pellegrino's message history?");
+  assert.equal(intent.namedPerson?.toLocaleLowerCase(), "serena pellegrino");
+  assert.equal(intent.wantsMessages, true);
+  assert.ok(!intent.topics.includes("serena"));
+});
+
+test("does not treat leftover question words as a person name", () => {
+  const intent = parseAskIntent("What do I know about the people I contacted most recently?");
+  assert.equal(intent.namedPerson, null);
+  assert.ok(intent.recencyDays);
+});
+
+test("fuzzy name matching recovers a one-letter last-name typo", async () => {
+  seedPerson("Sofia Pellegrini", { location: "Milan", company: "Studio Luce" });
+  seedPerson("Sofia Pei", { location: "Taipei" });
+  const intent = parseAskIntent("Tell me about Sofia Pelegrini");
+  assert.equal(intent.namedPerson?.toLocaleLowerCase(), "sofia pelegrini");
+  const retrieval = await retrieveAskMatches("Tell me about Sofia Pelegrini");
+  assert.deepEqual(peopleNames(retrieval), ["Sofia Pellegrini"]);
+  assert.match(retrieval.nameNote || "", /Sofia Pellegrini/);
+  const matched = loadNamedPeople("Sofia Pelegrini");
+  assert.equal(matched[0]?.name, "Sofia Pellegrini");
+});
+
+test("message-history questions pull Gmail, WhatsApp, and Messages", async () => {
+  const id = seedPerson("Ada Fong", { location: "Singapore", company: "Harbour Lab" });
+  addMessage(id, "Can we move the harbour review to Thursday?", { connector: "gmail", subject: "Review" });
+  addMessage(id, "On my way — 10 min.", { connector: "whatsapp" });
+  addMessage(id, "Landed. Call you after customs.", { connector: "messages" });
+  const retrieval = await retrieveAskMatches("What is Ada Fong's message history?");
+  assert.deepEqual(peopleNames(retrieval), ["Ada Fong"]);
+  const sources = new Set(retrieval.people[0]?.matches.map((match) => match.source));
+  assert.ok(sources.has("gmail"));
+  assert.ok(sources.has("whatsapp"));
+  assert.ok(sources.has("messages"));
+  const answer = formatAskAnswer(retrieval);
+  assert.match(answer, /Ada Fong/);
+});
+
+test("group-chat questions list stored groups for a person", async () => {
+  const id = seedPerson("Ben Ortiz", { location: "Austin" });
+  addGroupChat("Friday dinner", id, { connector: "whatsapp", body: "I can host." });
+  addGroupChat("Studio crew", id, { connector: "messages", body: "Rehearsal at 7." });
+  const retrieval = await retrieveAskMatches("What group chats am I in with Ben Ortiz?");
+  assert.ok(retrieval.groups.some((group) => group.title === "Friday dinner"));
+  assert.ok(retrieval.groups.some((group) => group.title === "Studio crew"));
+  assert.match(formatAskAnswer(retrieval), /Friday dinner|Studio crew/);
+});
+
+test("group-chat questions without a name list recent groups", async () => {
+  const id = seedPerson("Cam Group", { location: "Oslo" });
+  addGroupChat("Oslo walkers", id, { connector: "whatsapp" });
+  const retrieval = await retrieveAskMatches("What group chats am I in?");
+  assert.ok(retrieval.groups.some((group) => group.title === "Oslo walkers"));
+});
+
+test("they/them follow-ups resolve to the previous person", async () => {
+  const id = seedPerson("Nora Brief Context", { location: "Lisbon", company: "Atelier Nora" });
+  addMessage(id, "See you at the studio tomorrow.", { connector: "messages" });
+  const retrieval = await retrieveAskMatches("What's their message history?", {
+    contextPersonIds: [id],
+  });
+  assert.deepEqual(peopleNames(retrieval), ["Nora Brief Context"]);
+  assert.ok(retrieval.people[0]?.matches.some((match) => /studio tomorrow/i.test(match.excerpt)));
+});
+
+test("extractNamedPerson still reads a typed name-only question", () => {
+  assert.equal(extractNamedPerson("Ada Fong"), "Ada Fong");
 });
 
 test("embeddings are never written with a chat model", async () => {

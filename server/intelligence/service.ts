@@ -31,6 +31,12 @@ import {
   scoreEmbeddedRows,
   type AskAbilityId,
 } from "./ask.js";
+import {
+  defaultCloudModel,
+  getAskWriterKey,
+  getAskWriterSettings,
+} from "./ask-writer.js";
+import { answerWithCloud, cloudStreamPrompt, streamCloudGenerate } from "./cloud-llm.js";
 import { collectSharedContextSuggestions } from "./shared-context.js";
 import { collectTraitSuggestions } from "./traits.js";
 
@@ -256,6 +262,7 @@ export async function intelligenceStatus() {
   const models = health.ok ? await ollama.listModels().catch(() => []) : [];
   const pick = models.length ? await resolveModels().catch(() => null) : null;
   const freshness = evidenceFreshness();
+  const askWriter = await getAskWriterSettings();
   return {
     ...health,
     models,
@@ -263,6 +270,10 @@ export async function intelligenceStatus() {
     fastModel: pick?.fast ?? undefined,
     reasonModel: pick?.reason ?? undefined,
     embedModel: pick?.embed ?? undefined,
+    askWriter: askWriter.writer,
+    askWriterModel: askWriter.model,
+    askWriterHasKey: askWriter.hasKey,
+    askWriterDisclosure: askWriter.disclosure,
     evidenceDocuments: (db.prepare("SELECT COUNT(*) AS count FROM evidence_documents").get() as { count: number }).count,
     embeddedDocuments: (db.prepare("SELECT COUNT(*) AS count FROM evidence_documents WHERE embedding_json IS NOT NULL").get() as { count: number }).count,
     indexedAt: freshness.indexedAt,
@@ -316,17 +327,24 @@ export type AskStreamEvent =
 function askSystemPrompt(): string {
   return [
     "You are Nett, a private local relationship assistant.",
-    "Each evidence block is a stored profile or a quoted message, email, or note.",
+    "Each evidence block is a stored profile, group chat, or a quoted message, email, or note.",
+    "Answer the user's actual question. Do not force a canned brief unless they asked who someone is.",
     "Name people. Use only these records. If a constraint has no evidence, say so.",
     "Never invent facts or infer health, politics, religion, sexuality, or ethnicity.",
     "Answer in under 12 sentences. Cite by using the supplied evidence ids.",
-    "If the question is about one person, write a brief: who they are, why they matter, role or company, place, last contact, and one or two quoted facts. Do not list leftover keyword matches.",
+    "If the question is about one person, include why they matter, role or company, place, last contact, and one or two quoted facts when those exist.",
   ].join(" ");
 }
 
-function shouldWriteWithModel(retrieval: Awaited<ReturnType<typeof retrieveAskMatches>>): boolean {
-  if (retrieval.provider === "local-people-index") return false;
-  return retrieval.intent.inferential || retrieval.intent.personBrief;
+function hasAskEvidence(retrieval: Awaited<ReturnType<typeof retrieveAskMatches>>): boolean {
+  return retrieval.people.length > 0 || retrieval.groups.length > 0;
+}
+
+function shouldWriteWithModel(
+  retrieval: Awaited<ReturnType<typeof retrieveAskMatches>>,
+  hasWriter: boolean,
+): boolean {
+  return hasWriter && hasAskEvidence(retrieval);
 }
 
 function mapModelCitations(
@@ -355,24 +373,30 @@ function mapModelCitations(
 function answerLooksThin(answer: string, retrieval: Awaited<ReturnType<typeof retrieveAskMatches>>): boolean {
   const text = answer.trim();
   if (text.length < 24) return true;
+  if (retrieval.groups.length && retrieval.groups.some((group) =>
+    group.title.length > 2 && text.toLocaleLowerCase().includes(group.title.toLocaleLowerCase())
+  )) return false;
+  if (!retrieval.people.length) return false;
   return !retrieval.people.some((person) => {
     const first = person.name.split(/\s+/)[0] || "";
     return first.length > 2 && text.toLocaleLowerCase().includes(first.toLocaleLowerCase());
   });
 }
 
-type AskRunOptions = {
+export type AskQueryOptions = {
   signal?: AbortSignal;
   personIds?: readonly string[];
   ability?: AskAbilityId | null;
+  contextPersonIds?: readonly string[];
 };
 
-async function retrieveForAsk(question: string, options: AskRunOptions = {}) {
+async function retrieveForAsk(question: string, options: AskQueryOptions = {}) {
   const models = await resolveModels(options.signal).catch(() => null);
   const retrieval = await retrieveAskMatches(question, {
     signal: options.signal,
     personIds: options.personIds,
     ability: options.ability,
+    contextPersonIds: options.contextPersonIds,
     embedQuery: models?.embed
       ? async (text, signal) => {
         const [vector] = await ollama.embed(models.embed!, [text], signal);
@@ -381,6 +405,22 @@ async function retrieveForAsk(question: string, options: AskRunOptions = {}) {
       : undefined,
   });
   return { models, retrieval, citations: askCitations(retrieval), note: retrievalPathNote(retrieval) };
+}
+
+function emptyAskAnswer(retrieval: Awaited<ReturnType<typeof retrieveAskMatches>>): AskAnswer {
+  if (retrieval.groups.length) {
+    return {
+      answer: formatAskAnswer(retrieval),
+      citations: askCitations(retrieval),
+      provider: retrieval.provider,
+      note: retrievalPathNote(retrieval),
+    };
+  }
+  return {
+    answer: "Nothing stored in people, notes, messages, or email matched that question.",
+    citations: [],
+    provider: "local-evidence",
+  };
 }
 
 async function generateCitedAnswer(
@@ -405,23 +445,45 @@ async function generateCitedAnswer(
   };
 }
 
-export async function answerRelationshipQuestion(question: string, options: AskRunOptions = {}): Promise<AskAnswer> {
-  const { models, retrieval, citations, note } = await retrieveForAsk(question, options);
-  if (!retrieval.people.length) {
-    return {
-      answer: "Nothing stored in people, notes, messages, or email matched that question.",
-      citations: [],
-      provider: "local-evidence",
-    };
-  }
+async function writeWithCloud(
+  question: string,
+  retrieval: Awaited<ReturnType<typeof retrieveAskMatches>>,
+  fallback: IntelligenceCitation[],
+  signal?: AbortSignal,
+): Promise<AskAnswer | null> {
+  const settings = await getAskWriterSettings();
+  if (settings.writer === "local" || !settings.hasKey) return null;
+  const apiKey = await getAskWriterKey(settings.writer);
+  if (!apiKey) return null;
+  const model = settings.model || defaultCloudModel(settings.writer);
+  const generated = await answerWithCloud({
+    writer: settings.writer,
+    model,
+    apiKey,
+    system: askSystemPrompt(),
+    prompt: cloudStreamPrompt(question, askEvidenceBlocks(retrieval)),
+    question,
+    evidence: askEvidenceBlocks(retrieval),
+    signal,
+  });
+  return {
+    answer: generated.answer,
+    citations: mapModelCitations(retrieval, generated, fallback),
+    provider: `${settings.writer}:${generated.model}`,
+    note: settings.disclosure,
+  };
+}
 
-  if (!shouldWriteWithModel(retrieval)) {
-    return { answer: formatAskAnswer(retrieval), citations, provider: retrieval.provider, note };
-  }
+export async function answerRelationshipQuestion(question: string, options: AskQueryOptions = {}): Promise<AskAnswer> {
+  const { models, retrieval, citations, note } = await retrieveForAsk(question, options);
+  if (!hasAskEvidence(retrieval)) return emptyAskAnswer(retrieval);
+
+  const cloud = await writeWithCloud(question, retrieval, citations, options.signal).catch(() => null);
+  if (cloud) return { ...cloud, note: [note, cloud.note].filter(Boolean).join(" ") };
 
   const fast = models?.fast;
   const reason = models?.reason;
-  if (!fast && !reason) {
+  if (!shouldWriteWithModel(retrieval, Boolean(fast || reason))) {
     return { answer: formatAskAnswer(retrieval), citations, provider: retrieval.provider, note };
   }
 
@@ -454,38 +516,110 @@ function streamPrompt(question: string, retrieval: Awaited<ReturnType<typeof ret
   ].join("\n\n");
 }
 
+function matchStage(retrieval: Awaited<ReturnType<typeof retrieveAskMatches>>): { label: string; detail?: string } {
+  if (retrieval.people.length === 1) {
+    return {
+      label: `Found ${retrieval.people[0].name}`,
+      detail: retrieval.nameNote,
+    };
+  }
+  if (retrieval.people.length > 1) {
+    return {
+      label: `Matched ${retrieval.people.length} people`,
+      detail: retrieval.people.map((person) => person.name).slice(0, 4).join(", "),
+    };
+  }
+  if (retrieval.groups.length) {
+    return { label: `Found ${retrieval.groups.length} group chats` };
+  }
+  return { label: "No matching people" };
+}
+
+function recordsStage(retrieval: Awaited<ReturnType<typeof retrieveAskMatches>>): string {
+  const messages = retrieval.people.reduce(
+    (count, person) => count + person.matches.filter((match) => match.field === "conversation" || match.field === "group").length,
+    0,
+  );
+  const groups = retrieval.groups.length;
+  const parts = [
+    retrieval.people.length ? "profile" : "",
+    messages ? `${messages} message${messages === 1 ? "" : "s"}` : "",
+    groups ? `${groups} group${groups === 1 ? "" : "s"}` : "",
+  ].filter(Boolean);
+  return parts.length ? `Loading ${parts.join(" · ")}` : "Loading stored records";
+}
+
 export async function* streamRelationshipQuestion(
   question: string,
-  options: AskRunOptions = {},
+  options: AskQueryOptions = {},
 ): AsyncGenerator<AskStreamEvent> {
-  yield { type: "stage", id: "search", label: "Searching records" };
+  yield { type: "stage", id: "extract", label: "Reading the question" };
   const { models, retrieval, citations, note } = await retrieveForAsk(question, options);
-  const matched = retrieval.people.length;
+  const named = retrieval.intent.namedPerson || retrieval.people[0]?.name;
+  yield {
+    type: "stage",
+    id: "search",
+    label: named ? `Looking for ${named}` : "Searching records",
+  };
+  const matched = matchStage(retrieval);
   yield {
     type: "stage",
     id: "match",
-    label: matched
-      ? `Matched ${matched} ${matched === 1 ? "person" : "people"}`
-      : "No matching people",
-    detail: retrieval.provider,
+    label: matched.label,
+    detail: matched.detail || retrieval.provider,
   };
-  if (!retrieval.people.length) {
-    const empty = "Nothing stored in people, notes, messages, or email matched that question.";
-    yield { type: "done", answer: empty, citations: [], provider: "local-evidence" };
+  if (!hasAskEvidence(retrieval)) {
+    const empty = emptyAskAnswer(retrieval);
+    yield { type: "done", answer: empty.answer, citations: empty.citations, provider: empty.provider };
     return;
   }
+  yield { type: "stage", id: "records", label: recordsStage(retrieval) };
 
-  if (!shouldWriteWithModel(retrieval)) {
-    const answer = formatAskAnswer(retrieval);
-    yield { type: "stage", id: "write", label: "Writing from the index" };
-    yield { type: "meta", path: "index", provider: retrieval.provider, citations, note };
-    yield { type: "done", answer, citations, provider: retrieval.provider, note };
-    return;
+  const writer = await getAskWriterSettings();
+  if (writer.writer !== "local" && writer.hasKey) {
+    const apiKey = await getAskWriterKey(writer.writer);
+    const model = writer.model || defaultCloudModel(writer.writer);
+    if (apiKey) {
+      const cloudNote = [note, writer.disclosure].filter(Boolean).join(" ");
+      yield {
+        type: "stage",
+        id: "write",
+        label: `Writing with ${model}`,
+        detail: writer.disclosure,
+      };
+      yield { type: "meta", path: "cloud", provider: `${writer.writer}:${model}`, citations, note: cloudNote };
+      try {
+        let collected = "";
+        for await (const event of streamCloudGenerate({
+          writer: writer.writer,
+          model,
+          apiKey,
+          system: askSystemPrompt(),
+          prompt: streamPrompt(question, retrieval),
+          signal: options.signal,
+        })) {
+          if (event.type === "token") {
+            collected += event.text;
+            yield { type: "token", text: event.text };
+          }
+        }
+        yield {
+          type: "done",
+          answer: collected || formatAskAnswer(retrieval),
+          citations,
+          provider: `${writer.writer}:${model}`,
+          note: cloudNote,
+        };
+        return;
+      } catch {
+        // Fall through to local writer or the stored-record answer.
+      }
+    }
   }
 
   const fast = models?.fast;
   const reason = models?.reason;
-  if (!fast && !reason) {
+  if (!shouldWriteWithModel(retrieval, Boolean(fast || reason))) {
     const answer = formatAskAnswer(retrieval);
     yield { type: "stage", id: "write", label: "Writing from stored records" };
     yield { type: "meta", path: "index", provider: retrieval.provider, citations, note };

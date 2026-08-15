@@ -1,3 +1,4 @@
+import Fuse from "fuse.js";
 import { db } from "../db.js";
 import type { EvidenceDocument } from "./evidence-index.js";
 
@@ -42,6 +43,14 @@ export type AskPerson = {
   matches: AskMatch[];
 };
 
+export type AskGroup = {
+  id: string;
+  title: string;
+  source: string;
+  lastAt: string | null;
+  personId?: string;
+};
+
 export type AskIntent = {
   question: string;
   places: string[];
@@ -54,12 +63,18 @@ export type AskIntent = {
   inferential: boolean;
   personBrief: boolean;
   namedPerson: string | null;
+  namedPeople: string[];
+  wantsMessages: boolean;
+  wantsGroups: boolean;
+  pronounRef: boolean;
 };
 
 export type AskRetrieval = {
   intent: AskIntent;
   people: AskPerson[];
+  groups: AskGroup[];
   provider: "local-people-index" | "local-evidence";
+  nameNote?: string;
 };
 
 export type AskAbilityId =
@@ -79,6 +94,8 @@ export type AskRetrieveOptions = {
   ability?: AskAbilityId | null;
   /** Dedicated embedding model only. Omit when Ollama has no embed model. */
   embedQuery?: (text: string, signal?: AbortSignal) => Promise<number[] | null>;
+  /** Prior Ask turn — used to resolve they/them/their. */
+  contextPersonIds?: readonly string[];
 };
 
 const ASK_ABILITY_IDS = new Set<AskAbilityId>([
@@ -95,6 +112,7 @@ export function applyAskAbility(intent: AskIntent, ability?: AskAbilityId | null
   const kinds = [...intent.kinds];
   let recencyDays = intent.recencyDays;
   let personBrief = intent.personBrief;
+  let wantsMessages = intent.wantsMessages;
   if (ability === "about") personBrief = true;
   if (ability === "talked" && !sources.length) sources.push("messages", "whatsapp", "gmail");
   if (ability === "talked") kinds.push("conversation-summary", "interaction");
@@ -103,7 +121,10 @@ export function applyAskAbility(intent: AskIntent, ability?: AskAbilityId | null
   if (ability === "messages" && !sources.includes("messages")) sources.push("messages");
   if (ability === "email" && !sources.includes("gmail")) sources.push("gmail");
   if (ability === "whatsapp" && !sources.includes("whatsapp")) sources.push("whatsapp");
-  return { ...intent, sources, kinds: [...new Set(kinds)], recencyDays, personBrief };
+  if (ability === "talked" || ability === "messages" || ability === "email" || ability === "whatsapp") {
+    wantsMessages = true;
+  }
+  return { ...intent, sources, kinds: [...new Set(kinds)], recencyDays, personBrief, wantsMessages };
 }
 
 const STOPWORDS = new Set([
@@ -154,7 +175,9 @@ const PLACE_STOP = /^(who|that|which|with|and|or|to|for|about|like|likes|interes
 
 const PERSON_LIMIT = 12;
 const CANDIDATE_LIMIT = 48;
-const EVIDENCE_PER_PERSON = 6;
+const EVIDENCE_PER_PERSON = 8;
+const MESSAGE_WINDOW = 40;
+const GROUP_WINDOW = 20;
 
 function sanitizeNeedle(value: string): string {
   return value.replace(/[%_]/g, " ").replace(/\s+/g, " ").trim().toLocaleLowerCase();
@@ -201,6 +224,23 @@ function expandTerm(term: string): string[] {
 
 const INFERENTIAL_PATTERN = /\b(might|maybe|perhaps|would|could|should|interested|recommend|suggest|introduc(?:e|tion)?|relevant|good fit|who would|who might|likely|probably)\b/i;
 const PERSON_BRIEF_PATTERN = /^(?:tell me about|what(?: else)? do i know about|who is|who'?s|about)\s+(.+?)\s*[.?!]*$/i;
+const PRONOUN_PATTERN = /\b(they|them|their|theirs|this person)\b/i;
+const MESSAGE_INTENT_PATTERN = /\b(message history|messages?|texted|texts|sms|imessage|e-?mails?|gmail|whatsapp|talked|said|wrote|inbox|thread)\b/i;
+const GROUP_INTENT_PATTERN = /\b(group chats?|group threads?|groups)\b/i;
+
+const NAME_SPAN_PATTERNS = [
+  PERSON_BRIEF_PATTERN,
+  /\b(?:what(?: else)? do i know about|tell me about|who is|who'?s)\s+(.+?)(?:\s*[.?!]|$)/i,
+  /\b(?:message history|messages|e-?mails?|texts?|whatsapp|chats?|history)\s+(?:with|for|from|about)\s+(.+?)(?:\s*[.?!]|$)/i,
+  /([\p{L}][\p{L}'’-]+(?:\s+[\p{L}][\p{L}'’-]+){0,3})(?:'s|s')\s+(?:message|messages|e-?mails?|history|chat|chats|texts?)/iu,
+  /\b(?:with|about|regarding)\s+([A-Z][\p{L}'’-]+(?:\s+[A-Z][\p{L}'’-]+){0,3})/u,
+];
+
+const NAME_FURNITURE = new Set([
+  ...STOPWORDS,
+  "history", "message", "messages", "email", "emails", "gmail", "whatsapp",
+  "chat", "chats", "group", "groups", "text", "texts", "sms", "inbox", "thread",
+]);
 
 export function isInferentialQuestion(question: string): boolean {
   if (/\bfollow[ -]?up\b/i.test(question)) return false;
@@ -208,21 +248,83 @@ export function isInferentialQuestion(question: string): boolean {
 }
 
 export function isPersonBriefQuestion(question: string): boolean {
-  return PERSON_BRIEF_PATTERN.test(question.trim());
+  return PERSON_BRIEF_PATTERN.test(question.trim()) || /\bwhat(?: else)? do i know about\b/i.test(question);
+}
+
+export function wantsMessageHistory(question: string): boolean {
+  return MESSAGE_INTENT_PATTERN.test(question);
+}
+
+export function wantsGroupChats(question: string): boolean {
+  return GROUP_INTENT_PATTERN.test(question);
+}
+
+export function hasPronounRef(question: string): boolean {
+  return PRONOUN_PATTERN.test(question);
+}
+
+const REJECT_NAME_TOKENS = new Set([
+  "contacted", "contact", "contacts", "recently", "lately", "someone", "anyone",
+  "everybody", "network", "ones", "what's", "whats", "who's", "whos", "most",
+]);
+
+function looksLikePersonName(value: string): boolean {
+  const tokens = value.split(/\s+/).filter(Boolean);
+  if (!tokens.length) return false;
+  if (tokens.some((token) => REJECT_NAME_TOKENS.has(token.toLocaleLowerCase()))) return false;
+  if (tokens.every((token) => NAME_FURNITURE.has(token.toLocaleLowerCase()))) return false;
+  return true;
+}
+
+function cleanExtractedName(value: string): string | null {
+  const name = value
+    .replace(/^(the|my|our|what'?s|who'?s|what|who)\s+/i, "")
+    .replace(/\b(message history|messages?|e-?mails?|texts?|whatsapp|chats?|history|group chats?)\b/gi, " ")
+    .replace(/[?.!,;:"“”]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (name.length < 2) return null;
+  const tokens = name.split(/\s+/).filter((token) => !NAME_FURNITURE.has(token.toLocaleLowerCase()) && !REJECT_NAME_TOKENS.has(token.toLocaleLowerCase()));
+  const cleaned = tokens.join(" ").trim();
+  if (cleaned.length < 2 || !looksLikePersonName(cleaned)) return null;
+  return cleaned;
 }
 
 export function extractNamedPerson(question: string): string | null {
+  return extractNamedPeople(question)[0] ?? null;
+}
+
+export function extractNamedPeople(question: string): string[] {
   const trimmed = question.trim().replace(/[.?!]+$/, "").trim();
-  const brief = trimmed.match(PERSON_BRIEF_PATTERN);
-  if (brief?.[1]) {
-    const name = brief[1].replace(/^(the|my|our)\s+/i, "").trim();
-    return name.length >= 2 ? name : null;
+  const found: string[] = [];
+  const seen = new Set<string>();
+  const add = (value: string | null) => {
+    if (!value) return;
+    const key = value.toLocaleLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    found.push(value);
+  };
+  for (const pattern of NAME_SPAN_PATTERNS) {
+    const match = trimmed.match(pattern);
+    if (match?.[1]) add(cleanExtractedName(match[1]));
   }
+  if (found.length) return found;
+
   const words = trimmed.split(/\s+/);
-  if (words.length < 2 || words.length > 4) return null;
-  if (words.some((word) => STOPWORDS.has(word.toLocaleLowerCase()))) return null;
-  if (/\d/.test(trimmed)) return null;
-  return trimmed;
+  if (words.length >= 2 && words.length <= 4
+    && !words.some((word) => STOPWORDS.has(word.toLocaleLowerCase()))
+    && !/\d/.test(trimmed)
+  ) {
+    add(trimmed);
+  }
+  return found;
+}
+
+export function looksLikeNamedPersonQuestion(question: string): boolean {
+  if (extractNamedPeople(question).length) return true;
+  if (hasPronounRef(question)) return true;
+  return /\b(about|regarding|who is|who'?s|message history|emails? with|chats? with)\b/i.test(question);
 }
 
 /** Text handed to the embedding model — constraints, not question syntax. */
@@ -309,8 +411,10 @@ function sourcesFrom(question: string): string[] {
   const sources: string[] = [];
   if (/\b(gmail|e-?mails?|mail)\b/i.test(question)) sources.push("gmail");
   if (/\b(imessage|i-message|texted|texts|sms)\b/i.test(question)) sources.push("messages");
-  if (/\bmessages?\b/i.test(question) && !sources.includes("messages")) sources.push("messages");
   if (/\bwhatsapp\b/i.test(question)) sources.push("whatsapp");
+  if (/\bmessages?\b/i.test(question) && !sources.includes("messages") && !/\bmessage history\b/i.test(question)) {
+    sources.push("messages");
+  }
   return [...new Set(sources)];
 }
 
@@ -345,15 +449,16 @@ export function parseAskIntent(question: string): AskIntent {
   for (const place of places) {
     topicSource = topicSource.replace(new RegExp(`\\b${place.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "ig"), " ");
   }
-  const namedPerson = extractNamedPerson(question);
-  if (namedPerson) {
-    for (const token of tokenize(namedPerson)) consumed.add(token);
+  const namedPeople = extractNamedPeople(question);
+  const namedPerson = namedPeople[0] ?? null;
+  for (const name of namedPeople) {
+    for (const token of tokenize(name)) consumed.add(token);
   }
 
   const topics = tokenize(topicSource)
     .filter((token) => !consumed.has(token))
     .filter((token) => !(foodIntent && GENERIC_FOOD_WORDS.has(token)))
-    .filter((token) => !["email", "emails", "gmail", "mail", "message", "messages", "recent", "recently", "lately", "most", "contacted", "contact", "contacts"].includes(token))
+    .filter((token) => !["email", "emails", "gmail", "mail", "message", "messages", "recent", "recently", "lately", "most", "contacted", "contact", "contacts", "history", "chat", "chats", "group", "groups", "whatsapp", "sms", "text", "texts"].includes(token))
     .slice(0, 8);
 
   const phrase = topics.join(" ");
@@ -374,6 +479,10 @@ export function parseAskIntent(question: string): AskIntent {
     inferential: isInferentialQuestion(question),
     personBrief: Boolean(namedPerson) || isPersonBriefQuestion(question),
     namedPerson,
+    namedPeople,
+    wantsMessages: wantsMessageHistory(question),
+    wantsGroups: wantsGroupChats(question),
+    pronounRef: hasPronounRef(question),
   };
 }
 
@@ -786,6 +895,44 @@ function usefulExcerpt(person: AskPerson, excerpt: string): boolean {
   return true;
 }
 
+type NameRow = {
+  id: string;
+  preferred_name: string;
+  first_name: string | null;
+  last_name: string | null;
+  nickname: string | null;
+};
+
+let nameIndexCache: { count: number; at: number; fuse: Fuse<NameRow> } | null = null;
+
+export function resetAskNameIndex(): void {
+  nameIndexCache = null;
+}
+
+function nameSearchIndex(): Fuse<NameRow> {
+  const count = (db.prepare("SELECT COUNT(*) AS count FROM people").get() as { count: number }).count;
+  if (nameIndexCache && nameIndexCache.count === count && Date.now() - nameIndexCache.at < 15_000) {
+    return nameIndexCache.fuse;
+  }
+  const rows = db.prepare(`
+    SELECT id, preferred_name, first_name, last_name, nickname FROM people
+  `).all() as NameRow[];
+  const fuse = new Fuse(rows, {
+    includeScore: true,
+    threshold: 0.42,
+    ignoreLocation: true,
+    minMatchCharLength: 2,
+    keys: [
+      { name: "preferred_name", weight: 0.62 },
+      { name: "nickname", weight: 0.18 },
+      { name: "last_name", weight: 0.12 },
+      { name: "first_name", weight: 0.08 },
+    ],
+  });
+  nameIndexCache = { count, at: Date.now(), fuse };
+  return fuse;
+}
+
 function nameScore(row: ProfileRow, query: string): number {
   const needle = query.toLocaleLowerCase();
   const name = row.name.toLocaleLowerCase();
@@ -797,17 +944,25 @@ function nameScore(row: ProfileRow, query: string): number {
   return 20;
 }
 
-function loadPeopleByIds(ids: readonly string[]): AskPerson[] {
-  const unique = [...new Set(ids.filter(Boolean))].slice(0, 12);
-  if (!unique.length) return [];
-  const profiles = profilesByIds(unique);
-  return unique.flatMap((id) => {
-    const row = profiles.get(id);
-    return row ? [emptyPerson(row)] : [];
+function fuseNameScore(score: number): number {
+  return Math.max(20, Math.round(92 - score * 140));
+}
+
+function peopleFromRanked(ranked: Array<{ row: ProfileRow; score: number }>): AskPerson[] {
+  if (!ranked.length) return [];
+  const best = ranked[0].score;
+  const chosen = best >= 80
+    ? ranked.filter((item) => item.score >= 80)
+    : ranked.filter((item) => item.score >= 40).slice(0, 3);
+  return (chosen.length ? chosen : ranked.slice(0, 1)).map((item) => {
+    const person = emptyPerson(item.row);
+    person.score = item.score;
+    person.groups.add("name");
+    return person;
   });
 }
 
-function loadNamedPeople(query: string): AskPerson[] {
+function loadExactNamedPeople(query: string): AskPerson[] {
   const trimmed = query.trim();
   if (trimmed.length < 2) return [];
   const parts = trimmed.split(/\s+/);
@@ -831,78 +986,268 @@ function loadNamedPeople(query: string): AskPerson[] {
   const ranked = [...new Map(rows.map((row) => [row.id, row])).values()]
     .map((row) => ({ row, score: nameScore(row, trimmed) }))
     .sort((a, b) => b.score - a.score);
-  if (!ranked.length) return [];
-  const best = ranked[0].score;
-  const chosen = best >= 80
-    ? ranked.filter((item) => item.score >= 80)
-    : ranked.filter((item) => item.score >= 40).slice(0, 3);
-  return (chosen.length ? chosen : ranked.slice(0, 1)).map((item) => {
-    const person = emptyPerson(item.row);
-    person.score = item.score;
+  return peopleFromRanked(ranked);
+}
+
+export function fuzzyNamedPeople(query: string, limit = 5): AskPerson[] {
+  const trimmed = query.trim();
+  if (trimmed.length < 2) return [];
+  const hits = nameSearchIndex().search(trimmed).slice(0, 8);
+  if (!hits.length) return [];
+  const best = hits[0].score ?? 1;
+  const close = hits.filter((hit) => (hit.score ?? 1) <= Math.min(0.42, best + 0.08));
+  const profiles = profilesByIds(close.map((hit) => hit.item.id));
+  const ranked = close
+    .map((hit) => {
+      const row = profiles.get(hit.item.id);
+      return row ? { row, score: fuseNameScore(hit.score ?? 1) } : null;
+    })
+    .filter((item): item is { row: ProfileRow; score: number } => Boolean(item))
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit);
+  return peopleFromRanked(ranked);
+}
+
+export function loadNamedPeople(query: string): AskPerson[] {
+  const exact = loadExactNamedPeople(query);
+  if (exact.some((person) => person.score >= 80)) return exact;
+  const fuzzy = fuzzyNamedPeople(query);
+  if (fuzzy.length) return fuzzy;
+  return exact;
+}
+
+function loadPeopleByIds(ids: readonly string[]): AskPerson[] {
+  const profiles = profilesByIds(ids);
+  return ids.flatMap((id) => {
+    const row = profiles.get(id);
+    if (!row) return [];
+    const person = emptyPerson(row);
+    person.score = 90;
     person.groups.add("name");
-    return person;
+    return [person];
   });
 }
 
-function attachPersonBriefEvidence(people: AskPerson[]): void {
-  for (const person of people) {
-    const facts: Array<[string, string | null]> = [
-      ["relationship", person.relationship],
-      ["job_title", person.jobTitle && person.company ? `${person.jobTitle} at ${person.company}` : person.jobTitle],
-      ["company", person.company],
-      ["headline", person.headline],
-      ["location", person.location],
-      ["hometown", listText(person.hometown)],
-      ["how_met", [person.howMet, person.whenMet, person.whereMet].filter(Boolean).join(" · ") || null],
-      ["interests", person.interests],
-      ["foods", person.foods],
-      ["notes", person.notes],
-      ["quick_memories", person.quickMemories],
-    ];
-    for (const [field, value] of facts) {
-      if (!value || !usefulExcerpt(person, value)) continue;
-      addMatch(person, "profile", { field, source: "nett", excerpt: value.slice(0, 240) }, 5);
+function resolveNamedPeople(intent: AskIntent, options: AskRetrieveOptions): {
+  people: AskPerson[];
+  nameNote?: string;
+} {
+  if (intent.pronounRef && options.contextPersonIds?.length) {
+    const people = loadPeopleByIds(options.contextPersonIds.slice(0, 3));
+    if (people.length) {
+      return {
+        people,
+        nameNote: people.length === 1
+          ? `Using ${people[0].name} from the previous question.`
+          : `Using ${people.map((person) => person.name).join(", ")} from the previous question.`,
+      };
     }
-    if (person.lastContact) {
-      addMatch(person, "profile", {
-        field: "last_contact",
-        source: "nett",
-        excerpt: `Last talked ${humanDate(person.lastContact)}`,
-        occurredAt: person.lastContact,
-      }, 2);
-    }
-    const docs = db.prepare(`
-      SELECT id, source, kind, text, occurred_at
-      FROM evidence_documents
-      WHERE person_id = ?
-        AND kind IN ('memory', 'conversation-summary', 'interaction', 'profile')
-      ORDER BY CASE kind
-        WHEN 'memory' THEN 0
-        WHEN 'conversation-summary' THEN 1
-        WHEN 'profile' THEN 2
-        ELSE 3
-      END, occurred_at DESC
-      LIMIT 10
-    `).all(person.personId) as Array<{
-      id: string;
-      source: string;
-      kind: string;
-      text: string;
-      occurred_at: string | null;
-    }>;
-    for (const doc of docs) {
-      const excerpt = doc.text.replace(/\s+/g, " ").trim().slice(0, 240);
-      if (!usefulExcerpt(person, excerpt)) continue;
-      addMatch(person, "evidence", {
-        field: doc.kind === "memory" ? "memory" : doc.kind === "conversation-summary" ? "conversation" : "profile",
-        source: doc.source,
-        excerpt,
-        evidenceId: doc.id,
-        occurredAt: doc.occurred_at,
-      }, doc.kind === "memory" ? 4 : 3);
-    }
-    person.matches = person.matches.slice(0, EVIDENCE_PER_PERSON + 2);
   }
+  const queries = intent.namedPeople.length ? intent.namedPeople : intent.namedPerson ? [intent.namedPerson] : [];
+  const merged = new Map<string, AskPerson>();
+  let fuzzyQuery: string | null = null;
+  for (const query of queries) {
+    const found = loadNamedPeople(query);
+    if (!found.length) continue;
+    const exactHit = found.some((person) => person.name.toLocaleLowerCase() === query.toLocaleLowerCase());
+    if (!exactHit) fuzzyQuery = query;
+    for (const person of found) {
+      const existing = merged.get(person.personId);
+      if (!existing || existing.score < person.score) merged.set(person.personId, person);
+    }
+  }
+  const people = [...merged.values()].sort((a, b) => b.score - a.score);
+  if (!people.length) return { people };
+  const nameNote = fuzzyQuery && people[0]
+    ? `Matched ${people.map((person) => person.name).join(", ")} from “${fuzzyQuery}”.`
+    : undefined;
+  return { people, nameNote };
+}
+
+function attachPersonProfile(person: AskPerson): void {
+  const facts: Array<[string, string | null]> = [
+    ["relationship", person.relationship],
+    ["job_title", person.jobTitle && person.company ? `${person.jobTitle} at ${person.company}` : person.jobTitle],
+    ["company", person.company],
+    ["headline", person.headline],
+    ["location", person.location],
+    ["hometown", listText(person.hometown)],
+    ["how_met", [person.howMet, person.whenMet, person.whereMet].filter(Boolean).join(" · ") || null],
+    ["interests", person.interests],
+    ["foods", person.foods],
+    ["notes", person.notes],
+    ["quick_memories", person.quickMemories],
+  ];
+  for (const [field, value] of facts) {
+    if (!value || !usefulExcerpt(person, value)) continue;
+    addMatch(person, "profile", { field, source: "nett", excerpt: value.slice(0, 240) }, 5);
+  }
+  if (person.lastContact) {
+    addMatch(person, "profile", {
+      field: "last_contact",
+      source: "nett",
+      excerpt: `Last talked ${humanDate(person.lastContact)}`,
+      occurredAt: person.lastContact,
+    }, 2);
+  }
+}
+
+function attachPersonDocuments(person: AskPerson): void {
+  const docs = db.prepare(`
+    SELECT id, source, kind, text, occurred_at
+    FROM evidence_documents
+    WHERE person_id = ?
+      AND kind IN ('memory', 'conversation-summary', 'interaction', 'profile')
+    ORDER BY CASE kind
+      WHEN 'memory' THEN 0
+      WHEN 'conversation-summary' THEN 1
+      WHEN 'profile' THEN 2
+      ELSE 3
+    END, occurred_at DESC
+    LIMIT 10
+  `).all(person.personId) as Array<{
+    id: string;
+    source: string;
+    kind: string;
+    text: string;
+    occurred_at: string | null;
+  }>;
+  for (const doc of docs) {
+    const excerpt = doc.text.replace(/\s+/g, " ").trim().slice(0, 240);
+    if (!usefulExcerpt(person, excerpt)) continue;
+    addMatch(person, "evidence", {
+      field: doc.kind === "memory" ? "memory" : doc.kind === "conversation-summary" ? "conversation" : "profile",
+      source: doc.source,
+      excerpt,
+      evidenceId: doc.id,
+      occurredAt: doc.occurred_at,
+    }, doc.kind === "memory" ? 4 : 3);
+  }
+}
+
+function communicationExcerpt(body: string, subject: string | null, title: string | null): string {
+  const parts = [
+    title ? `conversation: ${title}` : "",
+    subject ? `subject: ${subject}` : "",
+    body.replace(/\s+/g, " ").trim(),
+  ].filter(Boolean);
+  return parts.join(" · ").slice(0, 280);
+}
+
+function attachPersonMessages(person: AskPerson, intent: AskIntent): void {
+  const sources = intent.sources.length ? intent.sources : ["gmail", "whatsapp", "messages"];
+  const rows = db.prepare(`
+    SELECT c.id, c.connector_id, c.body, c.occurred_at, c.direction, c.evidence_json,
+      cv.title AS thread_title, cv.is_group
+    FROM communication_people cp
+    JOIN communications c ON c.id = cp.communication_id
+    LEFT JOIN conversations cv ON cv.id = c.conversation_id
+    WHERE cp.person_id = ?
+      AND c.connector_id IN (${sources.map(() => "?").join(",")})
+      AND c.body IS NOT NULL
+      AND TRIM(c.body) != ''
+    ORDER BY c.occurred_at DESC
+    LIMIT ?
+  `).all(person.personId, ...sources, MESSAGE_WINDOW) as Array<{
+    id: string;
+    connector_id: string;
+    body: string;
+    occurred_at: string | null;
+    direction: string | null;
+    evidence_json: string | null;
+    thread_title: string | null;
+    is_group: number | null;
+  }>;
+  for (const row of rows) {
+    let subject: string | null = null;
+    try {
+      const evidence = JSON.parse(row.evidence_json || "{}") as { subject?: unknown };
+      subject = typeof evidence.subject === "string" ? evidence.subject : null;
+    } catch {
+      subject = null;
+    }
+    const excerpt = communicationExcerpt(row.body, subject, row.thread_title);
+    if (!usefulExcerpt(person, excerpt)) continue;
+    addMatch(person, "message", {
+      field: row.is_group ? "group" : "conversation",
+      source: row.connector_id,
+      excerpt,
+      evidenceId: `comm:${row.id}`,
+      occurredAt: row.occurred_at,
+    }, 3);
+  }
+}
+
+export function loadGroupsForPeople(personIds: readonly string[]): AskGroup[] {
+  const ids = [...new Set(personIds.filter(Boolean))].slice(0, 8);
+  if (!ids.length) return [];
+  const rows = db.prepare(`
+    SELECT cv.id, cv.title, cv.connector_id AS source, MAX(c.occurred_at) AS last_at, cp.person_id AS person_id
+    FROM conversations cv
+    JOIN communications c ON c.conversation_id = cv.id
+    JOIN communication_people cp ON cp.communication_id = c.id
+    WHERE cv.is_group = 1
+      AND cp.person_id IN (${ids.map(() => "?").join(",")})
+    GROUP BY cv.id, cp.person_id
+    ORDER BY last_at DESC
+    LIMIT ?
+  `).all(...ids, GROUP_WINDOW) as Array<{
+    id: string;
+    title: string | null;
+    source: string;
+    last_at: string | null;
+    person_id: string;
+  }>;
+  return normalizeGroups(rows);
+}
+
+export function loadRecentGroups(): AskGroup[] {
+  const rows = db.prepare(`
+    SELECT cv.id, cv.title, cv.connector_id AS source, MAX(c.occurred_at) AS last_at
+    FROM conversations cv
+    JOIN communications c ON c.conversation_id = cv.id
+    WHERE cv.is_group = 1
+    GROUP BY cv.id
+    ORDER BY last_at DESC
+    LIMIT ?
+  `).all(GROUP_WINDOW) as Array<{
+    id: string;
+    title: string | null;
+    source: string;
+    last_at: string | null;
+  }>;
+  return normalizeGroups(rows);
+}
+
+function normalizeGroups(rows: Array<{ id: string; title: string | null; source: string; last_at?: string | null; lastAt?: string | null; person_id?: string }>): AskGroup[] {
+  const seen = new Set<string>();
+  const groups: AskGroup[] = [];
+  for (const row of rows) {
+    if (seen.has(row.id)) continue;
+    seen.add(row.id);
+    groups.push({
+      id: row.id,
+      title: (row.title || "").trim() || "Untitled group",
+      source: row.source,
+      lastAt: row.last_at ?? row.lastAt ?? null,
+      personId: row.person_id,
+    });
+  }
+  return groups;
+}
+
+function attachPersonRecordEvidence(people: AskPerson[], intent: AskIntent, options: { messages?: boolean } = {}): void {
+  const includeMessages = options.messages ?? (people.length <= 2);
+  for (const person of people) {
+    attachPersonProfile(person);
+    attachPersonDocuments(person);
+    if (includeMessages) attachPersonMessages(person, intent);
+    person.matches = person.matches.slice(0, includeMessages ? EVIDENCE_PER_PERSON + 8 : EVIDENCE_PER_PERSON + 2);
+  }
+}
+
+function attachPersonBriefEvidence(people: AskPerson[]): void {
+  attachPersonRecordEvidence(people, parseAskIntent(""), { messages: false });
 }
 
 function scopedKinds(ability?: AskAbilityId | null): string[] | undefined {
@@ -937,12 +1282,17 @@ function retrieveScopedPeople(
         if (!found.has(person.personId)) found.set(person.personId, person);
       }
       const next = [...found.values()];
-      attachPersonBriefEvidence(next);
+      attachPersonRecordEvidence(next, intent, { messages: next.length <= 2 || intent.wantsMessages });
       attachEvidenceForPeople(next, intent);
-      return { intent, people: next, provider: "local-evidence" };
+      return {
+        intent,
+        people: next,
+        groups: loadGroupsForPeople(ids),
+        provider: "local-evidence",
+      };
     }
   }
-  attachPersonBriefEvidence(people);
+  attachPersonRecordEvidence(people, intent, { messages: people.length <= 2 || intent.wantsMessages });
   return {
     intent: {
       ...intent,
@@ -950,6 +1300,7 @@ function retrieveScopedPeople(
       namedPerson: intent.namedPerson || people[0]?.name || null,
     },
     people,
+    groups: loadGroupsForPeople(ids),
     provider: "local-evidence",
   };
 }
@@ -963,12 +1314,28 @@ export async function retrieveAskMatches(
     const scoped = loadPeopleByIds(options.personIds);
     if (scoped.length) return retrieveScopedPeople(intent, scoped, options);
   }
-  if (intent.namedPerson) {
-    const named = loadNamedPeople(intent.namedPerson);
-    if (named.length) {
-      attachPersonBriefEvidence(named);
-      return { intent, people: named, provider: "local-evidence" };
-    }
+  const resolved = resolveNamedPeople(intent, options);
+  if (resolved.people.length) {
+    const ambiguous = resolved.people.length > 1 && resolved.people[0].score - (resolved.people[1]?.score ?? 0) < 15;
+    attachPersonRecordEvidence(resolved.people, intent, { messages: !ambiguous });
+    const groups = intent.wantsGroups || resolved.people.length <= 2
+      ? loadGroupsForPeople(resolved.people.map((person) => person.personId))
+      : [];
+    return {
+      intent,
+      people: resolved.people,
+      groups,
+      provider: "local-evidence",
+      nameNote: resolved.nameNote,
+    };
+  }
+  if (intent.wantsGroups && !intent.namedPerson && !intent.topics.length && !intent.places.length) {
+    return {
+      intent,
+      people: [],
+      groups: loadRecentGroups(),
+      provider: "local-evidence",
+    };
   }
   const structuredTerms = distinctiveTopicTerms([...intent.topics, ...intent.expansions]);
   const topicMatch = topicFtsMatch(intent);
@@ -1056,6 +1423,7 @@ export async function retrieveAskMatches(
   return {
     intent,
     people,
+    groups: [],
     provider: simplePlace ? "local-people-index" : "local-evidence",
   };
 }
@@ -1115,12 +1483,33 @@ function formatPersonBrief(people: AskPerson[], named: string | null): string {
   return sentences.join(" ");
 }
 
+function formatGroupAnswer(groups: AskGroup[], named: string | null): string {
+  if (!groups.length) {
+    return named
+      ? `No stored group chats include ${named}.`
+      : "No stored group chats were found in Messages, WhatsApp, or Gmail.";
+  }
+  const labels = groups.slice(0, 8).map((group) => {
+    const source = group.source === "messages" ? "Messages" : group.source === "whatsapp" ? "WhatsApp" : group.source;
+    return `${group.title} (${source})`;
+  });
+  const extra = groups.length - labels.length;
+  const who = named ? ` with ${named}` : "";
+  return `${groups.length} stored group chat${groups.length === 1 ? "" : "s"}${who}: ${labels.join(", ")}${extra > 0 ? `, and ${extra} more` : ""}.`;
+}
+
 export function formatAskAnswer(retrieval: AskRetrieval): string {
-  const { intent, people } = retrieval;
+  const { intent, people, groups } = retrieval;
+  if (!people.length && groups.length) return formatGroupAnswer(groups, intent.namedPerson);
   if (!people.length) {
     return "Nothing stored in people, notes, messages, or email matched that question.";
   }
-  if (intent.personBrief) return formatPersonBrief(people, intent.namedPerson);
+  if (intent.wantsGroups && groups.length) {
+    return formatGroupAnswer(groups, people[0]?.name || intent.namedPerson);
+  }
+  if (people[0]?.groups.has("name") && (intent.personBrief || intent.wantsMessages || intent.namedPerson || intent.pronounRef)) {
+    return formatPersonBrief(people, intent.namedPerson);
+  }
   const required = requiredGroups(intent);
   const complete = required.length
     ? people.filter((person) => required.every((group) => person.groups.has(group)))
@@ -1155,6 +1544,20 @@ export function askEvidenceBlocks(retrieval: AskRetrieval): Array<{
   text: string;
 }> {
   const blocks: Array<{ id: string; title: string; text: string }> = [];
+  if (retrieval.nameNote) {
+    blocks.push({ id: "name-match", title: "Name match", text: retrieval.nameNote });
+  }
+  for (const group of retrieval.groups.slice(0, 8)) {
+    blocks.push({
+      id: `group:${group.id}`,
+      title: `${group.title} · ${group.source}`,
+      text: [
+        `group chat: ${group.title}`,
+        `source: ${group.source}`,
+        group.lastAt ? `last activity: ${humanDate(group.lastAt)}` : "",
+      ].filter(Boolean).join("\n"),
+    });
+  }
   for (const person of retrieval.people) {
     const profile = [
       person.relationship && `relationship: ${person.relationship}`,
@@ -1189,28 +1592,43 @@ export function askEvidenceBlocks(retrieval: AskRetrieval): Array<{
       });
     }
   }
-  return blocks.slice(0, 16);
+  return blocks.slice(0, 28);
 }
 
 export function retrievalPathNote(retrieval: AskRetrieval): string {
-  const sources = [...new Set(
-    retrieval.people.flatMap((person) => person.matches.map((match) => match.source)).filter(Boolean),
-  )];
+  const sources = [...new Set([
+    ...retrieval.people.flatMap((person) => person.matches.map((match) => match.source)),
+    ...retrieval.groups.map((group) => group.source),
+  ].filter(Boolean))];
   const threads = retrieval.people.reduce(
-    (count, person) => count + person.matches.filter((match) => match.field === "conversation").length,
+    (count, person) => count + person.matches.filter((match) => match.field === "conversation" || match.field === "group").length,
     0,
   );
-  if (!sources.length) return "";
+  const parts = [
+    retrieval.nameNote,
+    sources.length ? undefined : "",
+  ].filter(Boolean);
+  if (!sources.length) return parts[0] || "";
   const comms = sources.filter((source) => ["messages", "whatsapp", "gmail", "telegram"].includes(source));
   if (comms.length) {
     const labels = comms.map((source) => source === "messages" ? "Messages" : source === "whatsapp" ? "WhatsApp" : source);
-    return `From ${labels.join(" and ")}${threads ? ` · ${threads} cited span${threads === 1 ? "" : "s"}` : ""}.`;
+    parts.push(`From ${labels.join(" and ")}${threads ? ` · ${threads} cited span${threads === 1 ? "" : "s"}` : ""}.`);
+    return parts.join(" ");
   }
-  return `Matched from stored ${sources.slice(0, 3).join(", ")} records.`;
+  parts.push(`Matched from stored ${sources.slice(0, 3).join(", ")} records.`);
+  return parts.filter(Boolean).join(" ");
 }
 
 export function askCitations(retrieval: AskRetrieval): AskCitation[] {
-  return retrieval.people.flatMap((person) => {
+  const groupCitations: AskCitation[] = retrieval.groups.slice(0, 6).map((group) => ({
+    personId: group.personId || retrieval.people[0]?.personId || group.id,
+    label: group.title,
+    field: "group",
+    value: `${group.title} · ${group.source}${group.lastAt ? ` · ${humanDate(group.lastAt)}` : ""}`,
+    source: group.source,
+    evidenceId: `group:${group.id}`,
+  }));
+  const peopleCitations = retrieval.people.flatMap((person) => {
     const matches = person.matches.length
       ? person.matches.slice(0, 2)
       : [{
@@ -1228,5 +1646,6 @@ export function askCitations(retrieval: AskRetrieval): AskCitation[] {
       evidenceId: match.evidenceId,
     }));
   });
+  return [...groupCitations, ...peopleCitations];
 }
 

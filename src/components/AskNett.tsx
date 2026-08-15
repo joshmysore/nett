@@ -24,6 +24,10 @@ type ModelState =
       model?: string;
       reasonModel?: string;
       embedModel?: string;
+      askWriter?: "local" | "anthropic" | "openai";
+      askWriterModel?: string | null;
+      askWriterHasKey?: boolean;
+      askWriterDisclosure?: string;
       documents?: number;
       indexedAt?: string | null;
       interactionIndexedAt?: string | null;
@@ -52,9 +56,10 @@ type Turn = {
 const emptyComposer = (): AskComposerValue => ({ text: "", people: [], abilities: [] });
 
 const examples = [
+  "What do I know about Serena?",
+  "What's their message history?",
+  "What group chats am I in with them?",
   "Who do I know in Paris who like spicy food?",
-  "Who might be interested in legal tech?",
-  "What do I know about the people I contacted most recently?",
 ];
 
 const PIXEL_DELAYS = [0, 90, 180, 90, 180, 270, 180, 270, 360];
@@ -84,6 +89,12 @@ function providerNote(answer: AgentAnswer) {
   if (answer.note) return answer.note;
   if (answer.provider.startsWith("ollama:")) {
     return `Written by ${answer.provider.slice("ollama:".length)} on this Mac.`;
+  }
+  if (answer.provider.startsWith("anthropic:")) {
+    return `Written by ${answer.provider.slice("anthropic:".length)}. Records left this Mac.`;
+  }
+  if (answer.provider.startsWith("openai:")) {
+    return `Written by ${answer.provider.slice("openai:".length)}. Records left this Mac.`;
   }
   if (answer.provider === "local-people-index") return "From the people index.";
   return "From stored records.";
@@ -394,6 +405,10 @@ export function AskNett({ onOpen }: { onOpen: (id: string) => void }) {
           model: status.fastModel || status.selectedModel,
           reasonModel: status.reasonModel,
           embedModel: status.embedModel,
+          askWriter: status.askWriter,
+          askWriterModel: status.askWriterModel,
+          askWriterHasKey: status.askWriterHasKey,
+          askWriterDisclosure: status.askWriterDisclosure,
           documents: status.evidenceDocuments,
           indexedAt: status.indexedAt,
           interactionIndexedAt: status.interactionIndexedAt,
@@ -437,10 +452,16 @@ export function AskNett({ onOpen }: { onOpen: (id: string) => void }) {
     const abort = new AbortController();
     abortRef.current = abort;
     const id = ++requestId.current;
+    const contextPersonIds = turns
+      .flatMap((item) => (item.answer?.citations || []).map((citation) => citation.personId))
+      .filter(Boolean)
+      .filter((personId, index, all) => all.indexOf(personId) === index)
+      .slice(-3);
     const payload = {
       query: next,
       personIds: attached.people.map((person) => person.id),
       ability: primaryAskAbility(attached.abilities),
+      contextPersonIds,
     };
     const turn: Turn = {
       id,
@@ -583,7 +604,7 @@ export function AskNett({ onOpen }: { onOpen: (id: string) => void }) {
       <header className="ask-head">
         <div>
           <h1 id="ask-nett-title">Ask Nett</h1>
-          <p className="ask-note">Questions your records. Ask does not write.</p>
+          <p className="ask-note">Any question about your people and messages. Ask does not write.</p>
         </div>
         {model.checked && <p className="ask-index">{indexNote(model)}</p>}
       </header>
@@ -782,9 +803,11 @@ export function AskNett({ onOpen }: { onOpen: (id: string) => void }) {
       <p className="ask-provider" id="ask-nett-provider">
         {!model.checked
           ? "Checking the local model…"
-          : model.available
-            ? `Local ${model.model || "model"} · Ask never writes.`
-            : "No local model. Matches come from stored records only."}
+          : model.askWriter && model.askWriter !== "local" && model.askWriterHasKey
+            ? model.askWriterDisclosure || `This question and matching records will be sent to ${model.askWriter}. Ask never writes.`
+            : model.available
+              ? `Local ${model.reasonModel && model.reasonModel !== model.model ? model.reasonModel : model.model || "model"} · Ask never writes.`
+              : "No local model. Matches come from stored records only. Add an Anthropic or OpenAI key on Sources to write answers."}
       </p>
     </section>
   );

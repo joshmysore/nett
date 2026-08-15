@@ -192,6 +192,75 @@ export class MacOSKeychainCredentialVault implements CredentialVault, StringCred
   }
 }
 
+/**
+ * Local 0600 file next to the database. Used when Keychain is unavailable
+ * (non-macOS, or tests). Not a substitute for Keychain on the user's Mac.
+ */
+export class FileCredentialVault implements CredentialVault, StringCredentialVault {
+  constructor(private readonly filePath: string) {}
+
+  private async readAll(): Promise<Record<string, string>> {
+    const { readFile } = await import("node:fs/promises");
+    try {
+      const raw = await readFile(this.filePath, "utf8");
+      const parsed = JSON.parse(raw) as unknown;
+      return parsed && typeof parsed === "object" ? parsed as Record<string, string> : {};
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return {};
+      throw new VaultError("Could not read local credential file", "IO", { cause: error });
+    }
+  }
+
+  private async writeAll(values: Record<string, string>): Promise<void> {
+    const { mkdir, writeFile } = await import("node:fs/promises");
+    const { dirname } = await import("node:path");
+    await mkdir(dirname(this.filePath), { recursive: true });
+    await writeFile(this.filePath, JSON.stringify(values), { mode: 0o600 });
+  }
+
+  async get(key: string): Promise<Uint8Array | undefined> {
+    validateKey(key);
+    const encoded = (await this.readAll())[key];
+    if (!encoded) return undefined;
+    return Buffer.from(encoded, "base64");
+  }
+
+  async set(key: string, secret: Uint8Array): Promise<void> {
+    validateKey(key);
+    const values = await this.readAll();
+    values[key] = Buffer.from(secret).toString("base64");
+    await this.writeAll(values);
+  }
+
+  async delete(key: string): Promise<boolean> {
+    validateKey(key);
+    const values = await this.readAll();
+    if (!(key in values)) return false;
+    delete values[key];
+    await this.writeAll(values);
+    return true;
+  }
+
+  async getString(key: string): Promise<string | undefined> {
+    const value = await this.get(key);
+    if (!value) return undefined;
+    try {
+      return new TextDecoder().decode(value);
+    } finally {
+      if (Buffer.isBuffer(value)) value.fill(0);
+    }
+  }
+
+  async setString(key: string, secret: string): Promise<void> {
+    const bytes = new TextEncoder().encode(secret);
+    try {
+      await this.set(key, bytes);
+    } finally {
+      bytes.fill(0);
+    }
+  }
+}
+
 export class InMemoryCredentialVault implements CredentialVault, StringCredentialVault {
   private readonly values = new Map<string, Uint8Array>();
 

@@ -160,6 +160,10 @@ export const api = {
   intelligenceStatus: () => request<{
     ok: boolean; version?: string; selectedModel?: string;
     fastModel?: string; reasonModel?: string; embedModel?: string;
+    askWriter?: "local" | "anthropic" | "openai";
+    askWriterModel?: string | null;
+    askWriterHasKey?: boolean;
+    askWriterDisclosure?: string;
     evidenceDocuments: number;
     embeddedDocuments: number; models: { name: string; size?: number }[];
     indexedAt?: string | null;
@@ -168,6 +172,21 @@ export const api = {
     stale?: boolean;
     staleSources?: string[];
   }>("/api/intelligence/status"),
+  askWriterSettings: () => request<{
+    writer: "local" | "anthropic" | "openai";
+    model: string | null;
+    hasKey: boolean;
+    envKey: boolean;
+    disclosure: string;
+  }>("/api/intelligence/ask-writer"),
+  saveAskWriterSettings: (input: { writer?: "local" | "anthropic" | "openai"; model?: string | null; apiKey?: string | null }) =>
+    request<{
+      writer: "local" | "anthropic" | "openai";
+      model: string | null;
+      hasKey: boolean;
+      envKey: boolean;
+      disclosure: string;
+    }>("/api/intelligence/ask-writer", { method: "PUT", body: JSON.stringify(input) }),
   searchEvidence: (query: string, signal?: AbortSignal) =>
     request<Array<{ id: string; person_id: string | null; kind: string; source: string; text: string; occurred_at: string | null; score: number }>>(
       `/api/evidence/search?q=${encodeURIComponent(query)}`,
@@ -296,13 +315,20 @@ export const api = {
     Object.entries(input).forEach(([key, value]) => { if (value) body.append(key, value); });
     return request<{ recordsSeen: number; bundles: number; message: string }>("/api/platform/whatsapp/import", { method: "POST", body });
   },
-  query: (input: string | { query: string; personIds?: string[]; ability?: string | null }, signal?: AbortSignal) => {
-    const body = typeof input === "string" ? { query: input } : input;
+  query: (
+    input: string | { query: string; personIds?: string[]; ability?: string | null; contextPersonIds?: string[] },
+    signal?: AbortSignal,
+    contextPersonIds?: string[],
+  ) => {
+    const body = typeof input === "string"
+      ? { query: input, contextPersonIds }
+      : { ...input, contextPersonIds: input.contextPersonIds ?? contextPersonIds };
     return request<AgentAnswer>("/api/agent/query", { method: "POST", body: JSON.stringify(body), signal });
   },
   queryStream: async function* (
-    input: string | { query: string; personIds?: string[]; ability?: string | null },
+    input: string | { query: string; personIds?: string[]; ability?: string | null; contextPersonIds?: string[] },
     signal?: AbortSignal,
+    contextPersonIds?: string[],
   ): AsyncGenerator<
     | { type: "stage"; id: string; label: string; detail?: string }
     | { type: "meta"; path: string; provider: string; citations: AgentAnswer["citations"]; note?: string }
@@ -310,7 +336,9 @@ export const api = {
     | { type: "reset" }
     | { type: "done"; answer: string; citations: AgentAnswer["citations"]; provider: string; note?: string }
   > {
-    const body = typeof input === "string" ? { query: input } : input;
+    const body = typeof input === "string"
+      ? { query: input, contextPersonIds }
+      : { ...input, contextPersonIds: input.contextPersonIds ?? contextPersonIds };
     const response = await fetch("/api/agent/query?stream=1", {
       method: "POST",
       headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
