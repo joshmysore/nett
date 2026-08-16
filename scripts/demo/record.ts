@@ -9,7 +9,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { chromium, type Locator, type Page } from "playwright";
-import { installAskStandin, type DemoPerson } from "./ask-standin.ts";
+import { type DemoPerson } from "./ask-standin.ts";
 import { seedInvestorDemo, DEMO_DB } from "./seed.ts";
 import { mixNarration, trySynthesizeNarration } from "./narration.ts";
 
@@ -17,6 +17,7 @@ const ROOT = path.resolve(import.meta.dirname, "../..");
 const ARTIFACT_DIR = process.env.NETT_DEMO_OUT || "/opt/cursor/artifacts";
 const RAW_DIR = path.join(ROOT, "docs/demo/output");
 const OVERLAY = readFileSync(path.join(import.meta.dirname, "overlay.js"), "utf8");
+const ASK_STANDIN = readFileSync(path.join(import.meta.dirname, "ask-standin.js"), "utf8");
 
 const BASE = process.env.NETT_BASE_URL || "http://127.0.0.1:5173";
 const API = process.env.NETT_API_URL || "http://127.0.0.1:4174";
@@ -290,6 +291,8 @@ async function walkthrough(page: Page, mark: (id: string) => void) {
   mark("workbench");
   await page.goto(`${BASE}/today`, { waitUntil: "domcontentloaded", timeout: 15_000 });
   await page.locator("#ask-nett-query").waitFor({ state: "visible", timeout: 20_000 });
+  const standin = await page.evaluate(() => Boolean(window.__nettAskStandin));
+  console.log("Ask stand-in", standin);
   await sleep(2400);
 
   const rail = (label: string) => page.locator(".rail-link", { hasText: label }).first();
@@ -377,7 +380,7 @@ async function walkthrough(page: Page, mark: (id: string) => void) {
   await softClick(page, page.locator("button.ask-send"));
   await waitForAskAnswer(page, "What do I know about Kendra Mysore?");
   await expandAskEvidence(page, "What do I know about Kendra Mysore?");
-  await sleep(14_000);
+  await sleep(20_000);
 
   mark("synthesis");
   await moveTo(page, ask);
@@ -386,7 +389,7 @@ async function walkthrough(page: Page, mark: (id: string) => void) {
   await waitForAskAnswer(page, "Who might I know that would be a good lead for legal tech?");
   await expandAskEvidence(page, "Who might I know that would be a good lead for legal tech?");
   await page.mouse.wheel(0, 280);
-  await sleep(16_000);
+  await sleep(36_000);
 
   mark("remember");
   await softClick(page, page.locator(".rail-remember"));
@@ -402,7 +405,7 @@ async function walkthrough(page: Page, mark: (id: string) => void) {
   await savePerson.waitFor({ state: "visible", timeout: 60_000 });
   await sleep(1200);
   await punchClick(page, savePerson);
-  await sleep(4500);
+  await sleep(6000);
 }
 
 async function encodeMp4(
@@ -476,9 +479,8 @@ async function main() {
     context.setDefaultTimeout(12_000);
     context.setDefaultNavigationTimeout(15_000);
     await context.addInitScript(OVERLAY);
-    await context.addInitScript({
-      content: `(${installAskStandin.toString()})(${JSON.stringify(people)})`,
-    });
+    await context.addInitScript(`window.__nettDemoPeople = ${JSON.stringify(people)};`);
+    await context.addInitScript(ASK_STANDIN);
     const page = await context.newPage();
     page.on("pageerror", (error) => console.warn("pageerror", error.message));
     const origin = Date.now();
