@@ -104,10 +104,10 @@ async function moveTo(page: Page, locator: Locator, ms = 640) {
   await ensureOverlay(page);
   const { x, y } = await pointOf(locator);
   const from = await cursorAt(page);
-  const steps = 12;
+  const steps = 20;
   for (let i = 1; i <= steps; i += 1) {
     const t = i / steps;
-    const e = t < 0.5 ? 2 * t * t : 1 - ((-2 * t + 2) ** 2) / 2;
+    const e = t < 0.5 ? 4 * t * t * t : 1 - ((-2 * t + 2) ** 3) / 2;
     await page.evaluate(({ x, y }) => window.__nettDemo.place(x, y), {
       x: from.x + (x - from.x) * e,
       y: from.y + (y - from.y) * e,
@@ -260,6 +260,7 @@ function mockOwnedSources(page: Page) {
 
 async function waitForAskAnswer(page: Page, asked: string) {
   const turn = page.locator(".ask-turn").filter({ hasText: asked }).last();
+  await turn.locator(".ask-thinking").waitFor({ state: "visible", timeout: 20_000 });
   await turn.locator(".ask-actions").waitFor({ state: "visible", timeout: 90_000 });
   await turn.locator(".ask-answer").waitFor({ state: "visible" });
   await turn.evaluate((node) => node.scrollIntoView({ block: "start" }));
@@ -267,10 +268,13 @@ async function waitForAskAnswer(page: Page, asked: string) {
 
 async function expandAskEvidence(page: Page, asked: string) {
   const turn = page.locator(".ask-turn").filter({ hasText: asked }).last();
+  await turn.locator(".ask-thinking-block").waitFor({ state: "visible" });
+  await turn.evaluate((node) => node.scrollIntoView({ block: "start" }));
+  await sleep(2800);
   const summary = turn.locator(".ask-evidence summary");
   if (await summary.count()) {
     await softClick(page, summary);
-    await sleep(1600);
+    await sleep(1800);
   }
   await turn.evaluate((node) => node.scrollIntoView({ block: "start" }));
 }
@@ -281,32 +285,37 @@ async function walkthrough(page: Page, mark: (id: string) => void) {
   await page.goto(`${BASE}/`, { waitUntil: "domcontentloaded" });
   await page.locator("#landing-title").waitFor({ state: "visible" });
   mark("landing");
-  await sleep(10_500);
+  await sleep(3200);
+  const title = page.locator("#landing-title");
+  if (await title.count()) {
+    await Promise.race([moveTo(page, title, 1400), sleep(1800)]).catch(() => undefined);
+  }
+  await sleep(4200);
   const openNett = page.getByRole("link", { name: /Open Nett/ }).first();
   if (await openNett.count()) {
-    await Promise.race([moveTo(page, openNett, 700), sleep(1600)]).catch(() => undefined);
-    await sleep(800);
+    await Promise.race([moveTo(page, openNett, 1600), sleep(2000)]).catch(() => undefined);
   }
+  await sleep(4800);
 
   mark("workbench");
   await page.goto(`${BASE}/today`, { waitUntil: "domcontentloaded", timeout: 15_000 });
   await page.locator("#ask-nett-query").waitFor({ state: "visible", timeout: 20_000 });
   const standin = await page.evaluate(() => Boolean(window.__nettAskStandin));
   console.log("Ask stand-in", standin);
-  await sleep(2400);
+  await sleep(3200);
 
   const rail = (label: string) => page.locator(".rail-link", { hasText: label }).first();
 
   mark("people");
   await softClick(page, rail("People"));
   await page.locator(".people-cards").waitFor({ state: "visible" });
-  await sleep(1400);
+  await sleep(1800);
   await page.mouse.wheel(0, 420);
-  await sleep(1600);
+  await sleep(1800);
   await page.mouse.wheel(0, 380);
-  await sleep(1400);
+  await sleep(1600);
   await page.mouse.wheel(0, -700);
-  await sleep(1200);
+  await sleep(2800);
 
   mark("review");
   await softClick(page, rail("Review"));
@@ -319,7 +328,7 @@ async function walkthrough(page: Page, mark: (id: string) => void) {
   mark("sources");
   await softClick(page, rail("Sources"));
   await page.locator(".source-glow-card").first().waitFor({ state: "visible" });
-  await sleep(1400);
+  await sleep(1800);
   const messages = page.locator(".source-glow-card", { hasText: "Messages" }).getByRole("button", { name: /Pull|Refresh/ }).first();
   await softClick(page, messages);
   await page.locator(".source-glow-card", { hasText: "Messages" }).getByRole("button", { name: /Pull|Refresh/ }).waitFor({ state: "visible", timeout: 20_000 });
@@ -327,7 +336,7 @@ async function walkthrough(page: Page, mark: (id: string) => void) {
   const whatsapp = page.locator(".source-glow-card", { hasText: "WhatsApp" }).getByRole("button", { name: /Pull|Refresh/ }).first();
   await softClick(page, whatsapp);
   await page.locator(".source-glow-card", { hasText: "WhatsApp" }).getByRole("button", { name: /Pull|Refresh/ }).waitFor({ state: "visible", timeout: 20_000 });
-  await sleep(1600);
+  await sleep(3200);
 
   await softClick(page, rail("People"));
   await page.locator(".people-cards").waitFor({ state: "visible" });
@@ -338,7 +347,7 @@ async function walkthrough(page: Page, mark: (id: string) => void) {
   await sleep(1800);
   await softClick(page, page.getByRole("button", { name: "Open full profile" }));
   await page.locator("h1", { hasText: "Kendra Mysore" }).waitFor({ state: "visible" });
-  await sleep(2800);
+  await sleep(4200);
 
   mark("kendra_note");
   await softClick(page, page.getByRole("button", { name: "Edit profile" }));
@@ -361,7 +370,7 @@ async function walkthrough(page: Page, mark: (id: string) => void) {
   mark("gilly");
   await softClick(page, page.getByRole("button", { name: "Open Gilly Zaid" }));
   await page.getByRole("button", { name: "Open full profile" }).waitFor({ state: "visible" });
-  await sleep(2400);
+  await sleep(3800);
 
   mark("ask");
   await page.keyboard.press("Escape").catch(() => undefined);
@@ -380,16 +389,18 @@ async function walkthrough(page: Page, mark: (id: string) => void) {
   await softClick(page, page.locator("button.ask-send"));
   await waitForAskAnswer(page, "What do I know about Kendra Mysore?");
   await expandAskEvidence(page, "What do I know about Kendra Mysore?");
-  await sleep(20_000);
+  await sleep(36_000);
 
   mark("synthesis");
   await moveTo(page, ask);
   await typeHuman(page, ask, "Who might I know that would be a good lead for legal tech?");
-  await punchClick(page, page.locator("button.ask-send"));
+  await softClick(page, page.locator("button.ask-send"));
   await waitForAskAnswer(page, "Who might I know that would be a good lead for legal tech?");
   await expandAskEvidence(page, "Who might I know that would be a good lead for legal tech?");
-  await page.mouse.wheel(0, 280);
-  await sleep(36_000);
+  await page.mouse.wheel(0, 220);
+  await sleep(2200);
+  await page.mouse.wheel(0, 260);
+  await sleep(68_000);
 
   mark("remember");
   await softClick(page, page.locator(".rail-remember"));
@@ -405,7 +416,7 @@ async function walkthrough(page: Page, mark: (id: string) => void) {
   await savePerson.waitFor({ state: "visible", timeout: 60_000 });
   await sleep(1200);
   await punchClick(page, savePerson);
-  await sleep(6000);
+  await sleep(8000);
 }
 
 async function encodeMp4(
@@ -473,7 +484,6 @@ async function main() {
       viewport: { width: 1440, height: 900 },
       deviceScaleFactor: 2,
       colorScheme: "dark",
-      reducedMotion: "reduce",
       recordVideo: { dir: RAW_DIR, size: { width: 1440, height: 900 } },
     });
     context.setDefaultTimeout(12_000);

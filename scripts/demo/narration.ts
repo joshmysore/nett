@@ -38,11 +38,11 @@ export const NARRATION_BEATS = [
   },
   {
     id: "ask",
-    text: "Now ask. Tell me about Kendra. Nett searches, reads the sources, cites the evidence, and writes a full brief on this machine.",
+    text: "Now ask. What do I know about Kendra. Nett thinks, grabs Messages and WhatsApp, cites the evidence, and writes a full brief on this machine.",
   },
   {
     id: "synthesis",
-    text: "Then ask across people. Who would be a good lead for legal tech. Nett connects overlapping conversations — not a directory search.",
+    text: "Then ask across people. Who would be a good lead for legal tech. Nett reads overlapping conversations, names the relationships, and writes the intro path.",
   },
   {
     id: "remember",

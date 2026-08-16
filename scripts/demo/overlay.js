@@ -2,8 +2,19 @@
 (() => {
   if (window.__nettDemo) return;
 
+  // Headless Chromium + Spline freezes in-page timers. Fail WebGL so the
+  // robot never mounts, without prefers-reduced-motion (that kills Ask
+  // word-in, thinking shimmer, and landing type).
+  const canvasProto = HTMLCanvasElement.prototype;
+  const originalGetContext = canvasProto.getContext;
+  canvasProto.getContext = function (type, ...rest) {
+    if (String(type).toLowerCase().includes("webgl")) return null;
+    return originalGetContext.call(this, type, ...rest);
+  };
+
   let cursor = null;
   let ripple = null;
+  let veil = null;
   let x = 80;
   let y = 80;
   let moving = null;
@@ -21,13 +32,13 @@
     #root {
       transform-origin: var(--nett-demo-ox, 50%) var(--nett-demo-oy, 50%);
       transform: scale(var(--nett-demo-scale, 1));
-      transition: transform 420ms cubic-bezier(0.16, 1, 0.3, 1), opacity 520ms ease;
-      animation: nett-demo-enter 640ms ease;
+      transition: transform 520ms cubic-bezier(0.16, 1, 0.3, 1), opacity 640ms ease;
+      animation: nett-demo-enter 720ms cubic-bezier(0.16, 1, 0.3, 1);
       will-change: transform;
     }
     @keyframes nett-demo-enter {
-      from { opacity: 0.55; }
-      to { opacity: 1; }
+      from { opacity: 0.4; filter: blur(6px); }
+      to { opacity: 1; filter: none; }
     }
     .nett-demo-cursor {
       position: fixed;
@@ -38,7 +49,8 @@
       transform: translate(-8px, -5px);
       filter: drop-shadow(0 3px 6px rgb(0 0 0 / 0.45));
       opacity: 0;
-      will-change: left, top;
+      transition: opacity 280ms ease, transform 160ms cubic-bezier(0.16, 1, 0.3, 1);
+      will-change: left, top, transform;
     }
     .nett-demo-cursor.is-on { opacity: 1; }
     .nett-demo-cursor.is-down { transform: translate(-8px, -5px) scale(0.82); }
@@ -53,11 +65,19 @@
       opacity: 0;
       pointer-events: none;
     }
-    .nett-demo-ripple.is-on { animation: nett-demo-ripple 520ms ease-out; }
+    .nett-demo-ripple.is-on { animation: nett-demo-ripple 560ms ease-out; }
     @keyframes nett-demo-ripple {
       from { transform: scale(0.35); opacity: 1; }
       to { transform: scale(2.8); opacity: 0; }
     }
+    .nett-demo-veil {
+      position: fixed;
+      inset: 0;
+      background: radial-gradient(circle at var(--nett-demo-ox, 50%) var(--nett-demo-oy, 50%), transparent 38%, rgb(0 0 0 / 0.22) 100%);
+      opacity: 0;
+      transition: opacity 520ms cubic-bezier(0.16, 1, 0.3, 1);
+    }
+    .nett-demo-veil.is-on { opacity: 1; }
   `;
 
   const mount = () => {
@@ -69,6 +89,7 @@
     overlay.id = "nett-demo-overlay";
     overlay.setAttribute("aria-hidden", "true");
     overlay.innerHTML = `
+      <div class="nett-demo-veil" data-veil></div>
       <div class="nett-demo-cursor" data-cursor>
         <svg viewBox="0 0 32 32" width="80" height="80">
           <path d="M4 2.4l20.2 14.1-9.1 1.6 4.4 10.2-3.7 1.6-4.5-10.3-7.3 6.8z" fill="#f4f1ea" stroke="#1a1a1a" stroke-width="1.6" stroke-linejoin="round"/>
@@ -80,6 +101,7 @@
     root.classList.add("nett-demo-on");
     cursor = overlay.querySelector("[data-cursor]");
     ripple = overlay.querySelector("[data-ripple]");
+    veil = overlay.querySelector("[data-veil]");
     if (cursor) {
       cursor.style.left = `${x}px`;
       cursor.style.top = `${y}px`;
@@ -131,7 +153,7 @@
     setTimeout(() => cursor && cursor.classList.remove("is-down"), 160);
   };
 
-  const zoomTo = (cx, cy, scale = 1.42) => {
+  const zoomTo = (cx, cy, scale = 1.28) => {
     const app = document.getElementById("root");
     const ox = `${Math.round(cx)}px`;
     const oy = `${Math.round(cy)}px`;
@@ -142,12 +164,14 @@
       app.style.transformOrigin = `${ox} ${oy}`;
       app.style.transform = `scale(${scale})`;
     }
+    if (veil) veil.classList.add("is-on");
   };
 
   const zoomReset = () => {
     const app = document.getElementById("root");
     document.documentElement?.style.setProperty("--nett-demo-scale", "1");
     if (app) app.style.transform = "scale(1)";
+    if (veil) veil.classList.remove("is-on");
   };
 
   window.__nettDemo = { moveTo, clickPulse, zoomTo, zoomReset, place, mount };
