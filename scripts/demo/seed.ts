@@ -116,8 +116,8 @@ export async function seedInvestorDemo(dbPath = DEMO_DB) {
     },
     {
       name: "Ada Fong",
-      meta: { relationship: "Collaborator", company: "Atelier", job_title: "Research lead", location: "San Francisco", relationship_strength: 58 },
-      memory: "Sent the draft of the recognition essay. She marked the sentence that actually mattered.",
+      meta: { relationship: "Collaborator", company: "Atelier", job_title: "Research lead", location: "San Francisco", interests: ["civic data", "public records"], relationship_strength: 58 },
+      memory: "Marked the public-records sentence. If I ever want to talk civic data, she is in.",
       days: 8,
     },
     {
@@ -128,8 +128,8 @@ export async function seedInvestorDemo(dbPath = DEMO_DB) {
     },
     {
       name: "Jordan Lee",
-      meta: { relationship: "Colleague", company: "Example Institute", industry: "Technology", location: "Austin", relationship_strength: 44 },
-      memory: "Coffee about the product roadmap. No next step yet.",
+      meta: { relationship: "Colleague", company: "Example Institute", industry: "Technology", location: "Austin", interests: ["compliance"], relationship_strength: 44 },
+      memory: "Coffee about the product roadmap. Asked for an intro if I meet someone in legal ops.",
       days: 21,
     },
     {
@@ -146,16 +146,24 @@ export async function seedInvestorDemo(dbPath = DEMO_DB) {
     },
     {
       name: "Noor Alvi",
-      meta: { relationship: "Friend", location: "Chicago", interests: ["legal tech"], relationship_strength: 54 },
-      memory: "Asked who I knew who might care about court-record tooling.",
+      meta: { relationship: "Friend", location: "Chicago", interests: ["legal tech"], company: "Civic Docket", job_title: "Product", relationship_strength: 72 },
+      memory: "Asked who I knew who might care about court-record tooling. Stuck on procurement.",
       days: 9,
+    },
+    {
+      name: "Dana Ruiz",
+      meta: { relationship: "Friend", location: "Brooklyn", company: "Recordly", job_title: "Founder", interests: ["legal tech", "court records"], relationship_strength: 68 },
+      memory: "Closed a pilot with two county clerks. Needs someone who already trusts the court-data problem.",
+      days: 6,
     },
   ];
 
-  const otherIds: string[] = [];
+  const named = new Map<string, string>();
+  named.set("Kendra Mysore", kendra);
+  named.set("Gilly Zaid", gilly);
   for (const row of others) {
     const id = createPerson(row.name);
-    otherIds.push(id);
+    named.set(row.name, id);
     updatePerson(id, { ...row.meta, last_contact: daysAgo(row.days), quick_memories: row.memory }, "nett");
     addMemory(id, row.memory, {}, "manual");
   }
@@ -202,7 +210,11 @@ export async function seedInvestorDemo(dbPath = DEMO_DB) {
   linkSource(kendra, "whatsapp", "Kendra", "Sending the train times when I have them.", daysAgo(6, 14));
   linkSource(gilly, "whatsapp", "Gilly", "Might pass through later this month — dinner if you are around?", daysAgo(1, 21));
   linkSource(gilly, "messages", "Gilly Zaid", "That voice note was the one about the old joke from school.", daysAgo(3, 11));
-  linkSource(otherIds[0], "messages", "Maya Chen", "Marked the sentence that actually mattered.", daysAgo(5, 16));
+  linkSource(named.get("Maya Chen")!, "messages", "Maya Chen", "Marked the sentence that actually mattered.", daysAgo(5, 16));
+  linkSource(named.get("Noor Alvi")!, "whatsapp", "Noor", "Do you know anyone who would care about court-record tooling? I'm stuck on the procurement side.", daysAgo(9, 20));
+  linkSource(named.get("Ada Fong")!, "messages", "Ada Fong", "The public-records paragraph is the one. If you ever want to talk civic data, I'm in.", daysAgo(8, 15));
+  linkSource(named.get("Dana Ruiz")!, "whatsapp", "Dana", "We just closed a pilot with two county clerks. Need someone who already trusts the court-data problem.", daysAgo(6, 18));
+  linkSource(named.get("Jordan Lee")!, "messages", "Jordan Lee", "If you ever meet someone in legal ops, I want an intro. Roadmap is stuck on compliance.", daysAgo(21, 11));
 
   setConnectorState("messages", {
     permission: "granted",

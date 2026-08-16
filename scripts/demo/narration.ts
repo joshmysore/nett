@@ -10,11 +10,11 @@ export const NARRATION_BEATS = [
   },
   {
     id: "workbench",
-    text: "Open the workbench. No first-run setup. The record is already here.",
+    text: "The workbench is already lived in. No first-run setup.",
   },
   {
     id: "people",
-    text: "People is the record. Cards, not a CRM grid.",
+    text: "People is the record. Cards, not a CRM grid. You find someone by why they matter.",
   },
   {
     id: "review",
@@ -22,7 +22,7 @@ export const NARRATION_BEATS = [
   },
   {
     id: "sources",
-    text: "Sources are the evidence you already own. Messages and WhatsApp. Read only. Refresh when you want them current.",
+    text: "Sources are the evidence you already own. Messages and WhatsApp. Read only.",
   },
   {
     id: "kendra",
@@ -34,11 +34,15 @@ export const NARRATION_BEATS = [
   },
   {
     id: "gilly",
-    text: "Gilly is a friend. Same motion.",
+    text: "Gilly is a friend. Same motion — open, recover, go.",
   },
   {
     id: "ask",
-    text: "Now ask. Tell me about this person. Describe their history. Nett answers from owned evidence, on this machine, with a local model.",
+    text: "Now ask. Tell me about Kendra. Nett searches, reads the sources, cites the evidence, and writes a full brief on this machine.",
+  },
+  {
+    id: "synthesis",
+    text: "Then ask across people. Who would be a good lead for legal tech. Nett connects overlapping conversations — not a directory search.",
   },
   {
     id: "remember",

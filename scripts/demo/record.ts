@@ -9,6 +9,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { chromium, type Locator, type Page } from "playwright";
+import { installAskStandin, type DemoPerson } from "./ask-standin.ts";
 import { seedInvestorDemo, DEMO_DB } from "./seed.ts";
 import { mixNarration, trySynthesizeNarration } from "./narration.ts";
 
@@ -114,24 +115,37 @@ async function moveTo(page: Page, locator: Locator, ms = 640) {
   }
 }
 
-async function zoomTo(page: Page, locator: Locator, scale = 1.42) {
+async function zoomTo(page: Page, locator: Locator, scale = 1.28) {
   const { x, y } = await pointOf(locator);
   await page.evaluate(({ x, y, scale }) => {
     window.__nettDemo.zoomTo(x, y, scale);
   }, { x, y, scale });
-  await sleep(480);
+  await sleep(420);
 }
 
 async function zoomReset(page: Page) {
   await page.evaluate(() => window.__nettDemo.zoomReset());
-  await sleep(380);
+  await sleep(320);
 }
 
-async function punchClick(page: Page, locator: Locator, options: { scale?: number; stay?: boolean } = {}) {
+async function softClick(page: Page, locator: Locator) {
   await locator.scrollIntoViewIfNeeded({ timeout: 4000 }).catch(() => undefined);
-  await sleep(200);
-  await moveTo(page, locator);
-  await zoomTo(page, locator, options.scale ?? 1.42);
+  await sleep(140);
+  await moveTo(page, locator, 520);
+  await page.evaluate(() => window.__nettDemo.clickPulse());
+  try {
+    await locator.click({ force: true, timeout: 2500 });
+  } catch {
+    await locator.evaluate((node) => (node as HTMLElement).click());
+  }
+  await sleep(480);
+}
+
+async function punchClick(page: Page, locator: Locator, options: { stay?: boolean } = {}) {
+  await locator.scrollIntoViewIfNeeded({ timeout: 4000 }).catch(() => undefined);
+  await sleep(180);
+  await moveTo(page, locator, 560);
+  await zoomTo(page, locator, 1.28);
   await page.evaluate(() => window.__nettDemo.clickPulse());
   try {
     await locator.click({ force: true, timeout: 2500 });
@@ -139,7 +153,7 @@ async function punchClick(page: Page, locator: Locator, options: { scale?: numbe
     await zoomReset(page);
     await locator.evaluate((node) => (node as HTMLElement).click());
   }
-  await sleep(options.stay ? 280 : 980);
+  await sleep(options.stay ? 260 : 720);
   if (!options.stay) await zoomReset(page);
 }
 
@@ -250,124 +264,125 @@ async function waitForAskAnswer(page: Page, asked: string) {
   await turn.evaluate((node) => node.scrollIntoView({ block: "start" }));
 }
 
+async function expandAskEvidence(page: Page, asked: string) {
+  const turn = page.locator(".ask-turn").filter({ hasText: asked }).last();
+  const summary = turn.locator(".ask-evidence summary");
+  if (await summary.count()) {
+    await softClick(page, summary);
+    await sleep(1600);
+  }
+  await turn.evaluate((node) => node.scrollIntoView({ block: "start" }));
+}
+
 async function walkthrough(page: Page, mark: (id: string) => void) {
   await mockOwnedSources(page);
 
   await page.goto(`${BASE}/`, { waitUntil: "domcontentloaded" });
   await page.locator("#landing-title").waitFor({ state: "visible" });
   mark("landing");
-  await sleep(5600);
+  await sleep(10_500);
+  const openNett = page.getByRole("link", { name: /Open Nett/ }).first();
+  if (await openNett.count()) {
+    await Promise.race([moveTo(page, openNett, 700), sleep(1600)]).catch(() => undefined);
+    await sleep(800);
+  }
 
   mark("workbench");
   await page.goto(`${BASE}/today`, { waitUntil: "domcontentloaded", timeout: 15_000 });
   await page.locator("#ask-nett-query").waitFor({ state: "visible", timeout: 20_000 });
-  await sleep(1600);
+  await sleep(2400);
 
   const rail = (label: string) => page.locator(".rail-link", { hasText: label }).first();
 
   mark("people");
-  await punchClick(page, rail("People"));
+  await softClick(page, rail("People"));
   await page.locator(".people-cards").waitFor({ state: "visible" });
-  await sleep(700);
-  await page.mouse.wheel(0, 480);
-  await sleep(1100);
-  await page.mouse.wheel(0, -520);
-  await sleep(800);
+  await sleep(1400);
+  await page.mouse.wheel(0, 420);
+  await sleep(1600);
+  await page.mouse.wheel(0, 380);
+  await sleep(1400);
+  await page.mouse.wheel(0, -700);
+  await sleep(1200);
 
   mark("review");
-  await punchClick(page, rail("Review"));
+  await softClick(page, rail("Review"));
   const accept = page.locator(".review-card").getByRole("button", { name: "Accept" }).first();
   await accept.waitFor({ state: "visible", timeout: 20_000 });
-  await sleep(700);
-  await punchClick(page, accept);
   await sleep(1100);
+  await punchClick(page, accept);
+  await sleep(1600);
 
   mark("sources");
-  await punchClick(page, rail("Sources"));
+  await softClick(page, rail("Sources"));
   await page.locator(".source-glow-card").first().waitFor({ state: "visible" });
-  await sleep(800);
+  await sleep(1400);
   const messages = page.locator(".source-glow-card", { hasText: "Messages" }).getByRole("button", { name: /Pull|Refresh/ }).first();
-  await punchClick(page, messages);
+  await softClick(page, messages);
   await page.locator(".source-glow-card", { hasText: "Messages" }).getByRole("button", { name: /Pull|Refresh/ }).waitFor({ state: "visible", timeout: 20_000 });
-  await sleep(600);
-  const whatsapp = page.locator(".source-glow-card", { hasText: "WhatsApp" }).getByRole("button", { name: /Pull|Refresh/ }).first();
-  await punchClick(page, whatsapp);
-  await page.locator(".source-glow-card", { hasText: "WhatsApp" }).getByRole("button", { name: /Pull|Refresh/ }).waitFor({ state: "visible", timeout: 20_000 });
   await sleep(900);
+  const whatsapp = page.locator(".source-glow-card", { hasText: "WhatsApp" }).getByRole("button", { name: /Pull|Refresh/ }).first();
+  await softClick(page, whatsapp);
+  await page.locator(".source-glow-card", { hasText: "WhatsApp" }).getByRole("button", { name: /Pull|Refresh/ }).waitFor({ state: "visible", timeout: 20_000 });
+  await sleep(1600);
 
-  await punchClick(page, rail("People"));
+  await softClick(page, rail("People"));
   await page.locator(".people-cards").waitFor({ state: "visible" });
-  await sleep(500);
+  await sleep(700);
   mark("kendra");
-  const kendraCard = page.getByRole("button", { name: "Open Kendra Mysore" });
-  await punchClick(page, kendraCard);
+  await punchClick(page, page.getByRole("button", { name: "Open Kendra Mysore" }));
   await page.getByRole("button", { name: "Open full profile" }).waitFor({ state: "visible" });
-  await sleep(1000);
-  await punchClick(page, page.getByRole("button", { name: "Open full profile" }));
+  await sleep(1800);
+  await softClick(page, page.getByRole("button", { name: "Open full profile" }));
   await page.locator("h1", { hasText: "Kendra Mysore" }).waitFor({ state: "visible" });
-  await sleep(2400);
+  await sleep(2800);
 
   mark("kendra_note");
-  await punchClick(page, page.getByRole("button", { name: "Edit profile" }));
+  await softClick(page, page.getByRole("button", { name: "Edit profile" }));
   const notes = page.locator("label.full-field").filter({ hasText: "Notes" }).locator("textarea");
   await notes.waitFor({ state: "visible" });
   await notes.evaluate((node) => node.scrollIntoView({ block: "center" }));
   await moveTo(page, notes);
-  await zoomTo(page, notes, 1.22);
   await typeHuman(page, notes, "Will be home the week she visits. She is bringing the photo albums.");
-  await zoomReset(page);
-  await punchClick(page, page.getByRole("button", { name: "Save profile" }));
+  await softClick(page, page.getByRole("button", { name: "Save profile" }));
   await page.getByRole("button", { name: "Edit profile" }).waitFor({ state: "visible" });
-  await sleep(600);
+  await sleep(800);
 
-  await punchClick(page, page.locator(".profile-actions").getByRole("button", { name: "Record a memory" }), { stay: true });
-  const kendraMemory = page.locator("#profile-memory");
-  await typeHuman(page, kendraMemory, "Told her I will be home that week. She is bringing the photo albums.");
-  await zoomReset(page);
-  await punchClick(page, page.getByRole("button", { name: "Save as written" }));
-  await sleep(1200);
+  await softClick(page, page.locator(".profile-actions").getByRole("button", { name: "Record a memory" }));
+  await typeHuman(page, page.locator("#profile-memory"), "Told her I will be home that week. She is bringing the photo albums.");
+  await softClick(page, page.getByRole("button", { name: "Save as written" }));
+  await sleep(1600);
 
-  await punchClick(page, page.locator(".back-link"));
+  await softClick(page, page.locator(".back-link"));
   await page.locator(".people-cards").waitFor({ state: "visible" });
   mark("gilly");
-  const gillyCard = page.getByRole("button", { name: "Open Gilly Zaid" });
-  await punchClick(page, gillyCard);
+  await softClick(page, page.getByRole("button", { name: "Open Gilly Zaid" }));
   await page.getByRole("button", { name: "Open full profile" }).waitFor({ state: "visible" });
-  await sleep(700);
-  await punchClick(page, page.getByRole("button", { name: "Open full profile" }));
-  await page.locator("h1", { hasText: "Gilly Zaid" }).waitFor({ state: "visible" });
-  await sleep(2000);
-  await punchClick(page, page.locator(".profile-actions").getByRole("button", { name: "Record a memory" }), { stay: true });
-  await typeHuman(page, page.locator("#profile-memory"), "If he comes through the city this month, dinner — no agenda.");
-  await zoomReset(page);
-  await punchClick(page, page.getByRole("button", { name: "Save as written" }));
-  await sleep(1100);
+  await sleep(2400);
 
-  await page.request.post(`${API}/api/intelligence/index`, { data: { limit: 400 } }).catch(() => undefined);
   mark("ask");
-  await punchClick(page, rail("Ask"));
+  await softClick(page, rail("Ask"));
   await page.locator("#ask-nett-query").waitFor({ state: "visible" });
-  await sleep(500);
+  await sleep(800);
   const ask = page.locator("#ask-nett-query");
   await moveTo(page, ask);
-  await zoomTo(page, ask, 1.22);
   await typeHuman(page, ask, "What do I know about Kendra Mysore?");
-  await zoomReset(page);
-  await punchClick(page, page.locator("button.ask-send"));
+  await softClick(page, page.locator("button.ask-send"));
   await waitForAskAnswer(page, "What do I know about Kendra Mysore?");
-  await sleep(12_000);
+  await expandAskEvidence(page, "What do I know about Kendra Mysore?");
+  await sleep(14_000);
 
+  mark("synthesis");
   await moveTo(page, ask);
-  await zoomTo(page, ask, 1.22);
-  await typeHuman(page, ask, "Tell me about Gilly Zaid.");
-  await zoomReset(page);
+  await typeHuman(page, ask, "Who might I know that would be a good lead for legal tech?");
   await punchClick(page, page.locator("button.ask-send"));
-  await waitForAskAnswer(page, "Tell me about Gilly Zaid.");
-  await sleep(12_000);
+  await waitForAskAnswer(page, "Who might I know that would be a good lead for legal tech?");
+  await expandAskEvidence(page, "Who might I know that would be a good lead for legal tech?");
+  await page.mouse.wheel(0, 280);
+  await sleep(16_000);
 
   mark("remember");
-  const remember = page.locator(".rail-remember");
-  await punchClick(page, remember, { stay: true });
+  await softClick(page, page.locator(".rail-remember"));
   const composer = page.locator(".memory-composer textarea");
   await composer.waitFor({ state: "visible" });
   await typeHuman(
@@ -375,13 +390,12 @@ async function walkthrough(page: Page, mark: (id: string) => void) {
     composer,
     "Gilly Zaid likes photography. Follow up in 5 days about dinner.",
   );
-  await zoomReset(page);
-  await punchClick(page, page.getByRole("button", { name: "Structure into fields" }));
+  await softClick(page, page.getByRole("button", { name: "Structure into fields" }));
   const savePerson = page.getByRole("button", { name: "Save to person" });
   await savePerson.waitFor({ state: "visible", timeout: 60_000 });
-  await sleep(800);
+  await sleep(1200);
   await punchClick(page, savePerson);
-  await sleep(4000);
+  await sleep(4500);
 }
 
 async function encodeMp4(
@@ -433,6 +447,13 @@ async function main() {
     if (!inbox.suggestions?.length) {
       throw new Error("Review inbox is empty — the API is not serving the seeded demo database");
     }
+    const directory = await fetch(`${API}/api/people/page?limit=40`).then((response) => response.json()) as {
+      people?: DemoPerson[];
+    };
+    const people = directory.people ?? [];
+    if (!people.some((row) => row.name === "Dana Ruiz") || !people.some((row) => row.name === "Noor Alvi")) {
+      throw new Error("Demo seed is missing the legal-tech cluster");
+    }
     console.log("Recording…");
 
     const browser = await chromium.launch({
@@ -442,12 +463,13 @@ async function main() {
       viewport: { width: 1440, height: 900 },
       deviceScaleFactor: 2,
       colorScheme: "dark",
-      reducedMotion: "no-preference",
+      reducedMotion: "reduce",
       recordVideo: { dir: RAW_DIR, size: { width: 1440, height: 900 } },
     });
     context.setDefaultTimeout(12_000);
     context.setDefaultNavigationTimeout(15_000);
     await context.addInitScript(OVERLAY);
+    await context.addInitScript(installAskStandin, people);
     const page = await context.newPage();
     page.on("pageerror", (error) => console.warn("pageerror", error.message));
     const origin = Date.now();

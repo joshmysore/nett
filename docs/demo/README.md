@@ -10,19 +10,16 @@ npm run demo:record
 Writes `docs/demo/output/nett-investor-demo.mp4` and, in this environment,
 `/opt/cursor/artifacts/nett-investor-demo.mp4`.
 
-The cut holds the landing, then opens `/today` (no first-run setup,
-no About essay). Review is one accept. Sources refresh Messages and
-WhatsApp only. Landing’s Spline scene freezes in-page timers in
-headless Chromium, so the recorder does not click through that page.
+Landing holds about fifteen seconds with the Spline robot hidden — it
+glitches in headless Chromium. The workbench then shows People, a short
+Review accept, Messages and WhatsApp pull, Kendra’s profile, Gilly’s
+drawer, and Ask.
 
-The cut is silent unless a neural voice (`edge-tts`) is available. When
-it is, lines are timed to walkthrough beats rather than dumped at the
-start. Force silence with `NETT_DEMO_SILENT=1`. Headed Chromium:
+Ask is a paced stand-in of the real agent UI: thinking stages, sources,
+cited evidence, and full paragraphs. First question is a Kendra brief.
+Second is a synthesis: who would be a good lead for legal tech.
+
+Punch-in zoom is used only a few times. Other clicks are a move and a
+ripple. Neural voiceover is timed to beats when `edge-tts` is available.
+`NETT_DEMO_SILENT=1` forces a silent cut. Headed Chromium:
 `NETT_DEMO_HEADED=1`.
-
-Ask uses Ollama when a local model is reachable on loopback. Without it,
-Ask still answers from stored evidence.
-
-Messages and WhatsApp cannot refresh on this Linux host. The recorder
-presents them as already-owned sources and intercepts Pull so the beat
-does not open a Mac-only setup dialog.

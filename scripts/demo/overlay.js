@@ -17,11 +17,17 @@
     }
     html.nett-demo-on, html.nett-demo-on body, html.nett-demo-on * { cursor: none !important; }
     html.nett-demo-on body { overflow: hidden; }
+    .landing-spline-scene { display: none !important; }
     #root {
       transform-origin: var(--nett-demo-ox, 50%) var(--nett-demo-oy, 50%);
       transform: scale(var(--nett-demo-scale, 1));
-      transition: transform 420ms cubic-bezier(0.16, 1, 0.3, 1);
+      transition: transform 420ms cubic-bezier(0.16, 1, 0.3, 1), opacity 520ms ease;
+      animation: nett-demo-enter 640ms ease;
       will-change: transform;
+    }
+    @keyframes nett-demo-enter {
+      from { opacity: 0.55; }
+      to { opacity: 1; }
     }
     .nett-demo-cursor {
       position: fixed;
