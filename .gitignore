@@ -10,5 +10,6 @@ data/imports/
 tools/bin/
 test-results/
 playwright-report/
+docs/demo/output/
 .env
 .DS_Store
