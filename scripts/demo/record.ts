@@ -361,8 +361,15 @@ async function walkthrough(page: Page, mark: (id: string) => void) {
   await sleep(2400);
 
   mark("ask");
+  await page.keyboard.press("Escape").catch(() => undefined);
+  await sleep(400);
   await softClick(page, rail("Ask"));
-  await page.locator("#ask-nett-query").waitFor({ state: "visible" });
+  try {
+    await page.locator("#ask-nett-query").waitFor({ state: "visible", timeout: 8000 });
+  } catch {
+    await page.goto(`${BASE}/today`, { waitUntil: "domcontentloaded", timeout: 15_000 });
+    await page.locator("#ask-nett-query").waitFor({ state: "visible", timeout: 20_000 });
+  }
   await sleep(800);
   const ask = page.locator("#ask-nett-query");
   await moveTo(page, ask);
@@ -469,7 +476,9 @@ async function main() {
     context.setDefaultTimeout(12_000);
     context.setDefaultNavigationTimeout(15_000);
     await context.addInitScript(OVERLAY);
-    await context.addInitScript(installAskStandin, people);
+    await context.addInitScript({
+      content: `(${installAskStandin.toString()})(${JSON.stringify(people)})`,
+    });
     const page = await context.newPage();
     page.on("pageerror", (error) => console.warn("pageerror", error.message));
     const origin = Date.now();
