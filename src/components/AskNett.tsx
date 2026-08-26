@@ -5,16 +5,38 @@ import {
   WarningCircle,
 } from "@phosphor-icons/react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { AskComposer, type AskComposerValue, type AskPersonRef } from "@/components/AskComposer";
+import { AskMarkdown } from "@/components/ask/AskMarkdown";
+import { AskPersonCard } from "@/components/ask/AskPersonCard";
+import { AskRuntimeProvider } from "@/components/ask/AskRuntime";
+import { AskThinking } from "@/components/ask/AskThinking";
+import { AskThreadList } from "@/components/ask/AskThreadList";
 import { Avatar } from "@/components/Primitives";
 import {
   abilityById,
   composeAskQuestion,
   primaryAskAbility,
+  type AskAbilityId,
 } from "@/lib/ask-composer";
-import { api, isAbortError } from "@/lib/api";
+import {
+  api,
+  isAbortError,
+  type AskThreadMessage,
+  type AskThreadSummary,
+  type AskWriterId,
+} from "@/lib/api";
+import {
+  cleanExcerpt,
+  groupCitations,
+  relativeAge,
+  type AskStage,
+} from "@/lib/ask-display";
+import { buildAskSuggestions, type AskSuggestion } from "@/lib/ask-suggestions";
+import { applyAskStreamEvent, emptyAskLiveAnswer } from "@/lib/ask-stream";
 import type { AgentAnswer, Citation, Person } from "@/types";
+
+const THREADS_OPEN_KEY = "nett.ask.threadsOpen";
 
 type ModelState =
   | { checked: false }
@@ -22,57 +44,38 @@ type ModelState =
       checked: true;
       available: boolean;
       model?: string;
-      reasonModel?: string;
-      embedModel?: string;
-      askWriter?: "local" | "anthropic" | "openai";
-      askWriterModel?: string | null;
-      askWriterHasKey?: boolean;
+      askWriter?: AskWriterId;
       askWriterDisclosure?: string;
-      documents?: number;
-      indexedAt?: string | null;
+      askWriterHasKey?: boolean;
       interactionIndexedAt?: string | null;
-      stale?: boolean;
+      indexedAt?: string | null;
       staleSources?: string[];
     };
 
-type Stage = {
+type AskUiMessage = {
   id: string;
-  label: string;
-  detail?: string;
-  done: boolean;
-};
-
-type Turn = {
-  id: number;
-  question: string;
+  role: "user" | "assistant";
+  text: string;
   people: AskPersonRef[];
-  abilities: AskComposerValue["abilities"];
-  answer: AgentAnswer | null;
-  stages: Stage[];
+  abilities: AskAbilityId[];
+  stages: AskStage[];
+  evidence: Array<{ id: string; title: string; text: string }>;
+  citations: Citation[];
+  provider?: string;
+  note?: string;
   error: string | null;
   loading: boolean;
+  createdAt: string;
 };
 
 const emptyComposer = (): AskComposerValue => ({ text: "", people: [], abilities: [] });
 
-const examples = [
-  "What do I know about Serena?",
-  "What's their message history?",
-  "What group chats am I in with them?",
-  "Who do I know in Paris who like spicy food?",
-];
-
-const PIXEL_DELAYS = [0, 90, 180, 90, 180, 270, 180, 270, 360];
-
-function relativeAge(iso?: string | null): string | null {
-  if (!iso) return null;
-  const ms = Date.now() - Date.parse(iso);
-  if (!Number.isFinite(ms) || ms < 0) return null;
-  const minutes = Math.round(ms / 60_000);
-  if (minutes < 60) return minutes <= 1 ? "just now" : `${minutes}m ago`;
-  const hours = Math.round(minutes / 60);
-  if (hours < 48) return `${hours}h ago`;
-  return `${Math.round(hours / 24)}d ago`;
+function readThreadsOpen(): boolean {
+  try {
+    return window.localStorage.getItem(THREADS_OPEN_KEY) !== "0";
+  } catch {
+    return true;
+  }
 }
 
 function indexNote(model: Extract<ModelState, { checked: true }>): string {
@@ -85,10 +88,13 @@ function indexNote(model: Extract<ModelState, { checked: true }>): string {
   return "Index age unknown";
 }
 
-function providerNote(answer: AgentAnswer) {
+function providerNote(answer: Pick<AgentAnswer, "provider" | "note">) {
+  if (answer.provider.endsWith(":error")) {
+    return answer.note || "OpenRouter did not return an answer.";
+  }
   if (answer.note) return answer.note;
-  if (answer.provider.startsWith("ollama:")) {
-    return `Written by ${answer.provider.slice("ollama:".length)} on this Mac.`;
+  if (answer.provider.startsWith("openrouter:")) {
+    return `Written by ${answer.provider.slice("openrouter:".length)} via OpenRouter. Records left this Mac.`;
   }
   if (answer.provider.startsWith("anthropic:")) {
     return `Written by ${answer.provider.slice("anthropic:".length)}. Records left this Mac.`;
@@ -100,64 +106,7 @@ function providerNote(answer: AgentAnswer) {
   return "From stored records.";
 }
 
-function cleanExcerpt(value: string) {
-  return value
-    .replace(/\bdirection:\s*(incoming|outgoing)\b/gi, "")
-    .replace(/\b(conversation|subject):\s*/gi, "")
-    .replace(/^name:\s*/i, "")
-    .replace(/\d{4}-\d{2}-\d{2}T[\d:.+-]+Z?/g, (iso) => {
-      const ms = Date.parse(iso);
-      if (!Number.isFinite(ms)) return iso;
-      return new Date(ms).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
-    })
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function sourceLabel(source: string) {
-  if (source === "messages") return "Messages";
-  if (source === "whatsapp") return "WhatsApp";
-  if (source === "gmail") return "Gmail";
-  if (source === "telegram") return "Telegram";
-  return source;
-}
-
-type PersonHit = {
-  personId: string;
-  name: string;
-  sources: string[];
-  excerpts: Citation[];
-};
-
-function groupCitations(citations: Citation[]): PersonHit[] {
-  const order: PersonHit[] = [];
-  const byId = new Map<string, PersonHit>();
-  for (const citation of citations) {
-    if (!citation.personId) continue;
-    const existing = byId.get(citation.personId);
-    const excerpt = cleanExcerpt(citation.value || "");
-    if (existing) {
-      if (citation.source && !existing.sources.includes(citation.source)) {
-        existing.sources.push(citation.source);
-      }
-      if (excerpt && !existing.excerpts.some((item) => item.value === citation.value)) {
-        existing.excerpts.push(citation);
-      }
-      continue;
-    }
-    const next: PersonHit = {
-      personId: citation.personId,
-      name: citation.label,
-      sources: citation.source ? [citation.source] : [],
-      excerpts: excerpt ? [citation] : [],
-    };
-    byId.set(citation.personId, next);
-    order.push(next);
-  }
-  return order.slice(0, 8);
-}
-
-function followUps(question: string, people: PersonHit[]): string[] {
+function followUps(question: string, people: ReturnType<typeof groupCitations>): string[] {
   const first = people[0]?.name;
   if (people.length === 1 && first) {
     return [
@@ -189,146 +138,27 @@ function useElapsed(active: boolean) {
   return `${Math.floor(total / 60)}m ${(total % 60).toFixed(1)}s`;
 }
 
-function upsertStage(stages: Stage[], next: Omit<Stage, "done"> & { done?: boolean }): Stage[] {
-  const done = next.done ?? false;
-  const existing = stages.findIndex((stage) => stage.id === next.id);
-  const marked = stages.map((stage, index) => (
-    index === existing ? { ...stage, ...next, done } : { ...stage, done: true }
-  ));
-  if (existing >= 0) return marked;
-  return [...stages.map((stage) => ({ ...stage, done: true })), { ...next, done }];
+function asIsoDate(value: string): string {
+  const normalized = value.includes("T") ? value : value.replace(" ", "T") + "Z";
+  const ms = Date.parse(normalized);
+  return Number.isFinite(ms) ? new Date(ms).toISOString() : new Date().toISOString();
 }
 
-function PixelGrid() {
-  return (
-    <span className="ask-pixel" aria-hidden="true">
-      {PIXEL_DELAYS.map((delay, index) => (
-        <span key={index} style={{ animationDelay: `${delay}ms` }} />
-      ))}
-    </span>
-  );
-}
-
-function ThinkingTrace({
-  stages,
-  loading,
-  elapsed,
-}: {
-  stages: Stage[];
-  loading: boolean;
-  elapsed: string;
-}) {
-  const [open, setOpen] = useState(true);
-  const current = [...stages].reverse().find((stage) => !stage.done) || stages[stages.length - 1];
-  if (!stages.length && !loading) return null;
-
-  return (
-    <div className="ask-thinking-block">
-      <button
-        type="button"
-        className="ask-thinking"
-        aria-expanded={open}
-        onClick={() => setOpen((value) => !value)}
-      >
-        {loading ? <PixelGrid /> : <span className="ask-pixel is-still" aria-hidden="true" />}
-        <span className={`ask-thinking-label ${loading ? "is-live" : ""}`}>
-          {loading ? current?.label || "Searching records" : "Thought process"}
-        </span>
-        {elapsed ? <span className="ask-thinking-time">{elapsed}</span> : null}
-        <CaretDown size={14} aria-hidden="true" />
-      </button>
-      {open && (
-        <ol className="ask-trace">
-          {(stages.length ? stages : [{ id: "search", label: "Searching records", done: false }]).map((stage) => (
-            <li key={stage.id} className={stage.done ? "is-done" : "is-live"}>
-              <i aria-hidden="true" />
-              <span>
-                <strong>{stage.label}</strong>
-                {stage.detail ? <small>{stage.detail}</small> : null}
-              </span>
-            </li>
-          ))}
-        </ol>
-      )}
-    </div>
-  );
-}
-
-function StreamingWords({
-  text,
-  live,
-}: {
-  text: string;
-  live: boolean;
-}) {
-  const parts = text.split(/(\s+)/);
-  return (
-    <>
-      {parts.map((part, index) =>
-        part.trim() ? (
-          <span key={`${index}:${part}`} className={live ? "ask-word" : undefined}>
-            {part}
-          </span>
-        ) : (
-          <span key={`s${index}`}>{part}</span>
-        ),
-      )}
-    </>
-  );
-}
-
-function CitedProse({
-  text,
-  people,
-  live,
-  onOpen,
-}: {
-  text: string;
-  people: PersonHit[];
-  live: boolean;
-  onOpen: (id: string, index: number) => void;
-}) {
-  const parts: Array<
-    | { type: "text"; value: string }
-    | { type: "cite"; person: PersonHit; index: number }
-  > = [];
-  let cursor = 0;
-  const found = people
-    .map((person, index) => {
-      const at = text.toLocaleLowerCase().indexOf(person.name.toLocaleLowerCase());
-      return at >= 0 ? { person, index, at } : null;
-    })
-    .filter((item): item is { person: PersonHit; index: number; at: number } => Boolean(item))
-    .sort((a, b) => a.at - b.at);
-  for (const hit of found) {
-    if (hit.at < cursor) continue;
-    if (hit.at > cursor) parts.push({ type: "text", value: text.slice(cursor, hit.at) });
-    parts.push({ type: "text", value: text.slice(hit.at, hit.at + hit.person.name.length) });
-    parts.push({ type: "cite", person: hit.person, index: hit.index });
-    cursor = hit.at + hit.person.name.length;
-  }
-  if (cursor < text.length) parts.push({ type: "text", value: text.slice(cursor) });
-  if (!parts.length) parts.push({ type: "text", value: text });
-
-  return (
-    <p className="ask-prose">
-      {parts.map((part, i) =>
-        part.type === "cite" ? (
-          <button
-            key={`${part.person.personId}:${i}`}
-            type="button"
-            className="ask-cite"
-            onClick={() => onOpen(part.person.personId, part.index)}
-            aria-label={`Evidence for ${part.person.name}`}
-          >
-            {part.index + 1}
-          </button>
-        ) : (
-          <StreamingWords key={`t${i}`} text={part.value} live={live} />
-        ),
-      )}
-    </p>
-  );
+function fromStoredMessage(message: AskThreadMessage): AskUiMessage {
+  return {
+    id: message.id,
+    role: message.role === "assistant" ? "assistant" : "user",
+    text: message.content?.text || "",
+    people: (message.content?.people || []) as AskPersonRef[],
+    abilities: (message.content?.abilities || []) as AskAbilityId[],
+    stages: (message.content?.stages || []).map((stage) => ({ ...stage, done: true })),
+    evidence: message.content?.evidence || [],
+    citations: Array.isArray(message.citations) ? message.citations : [],
+    provider: message.provider || undefined,
+    error: message.content?.error || null,
+    loading: false,
+    createdAt: asIsoDate(message.createdAt),
+  };
 }
 
 function SelectionActions({ root }: { root: HTMLElement | null }) {
@@ -381,17 +211,52 @@ function SelectionActions({ root }: { root: HTMLElement | null }) {
 
 export function AskNett({ onOpen }: { onOpen: (id: string) => void }) {
   const navigate = useNavigate();
+  const [params, setParams] = useSearchParams();
+  const threadParam = params.get("thread");
   const [draft, setDraft] = useState<AskComposerValue>(emptyComposer);
-  const [turns, setTurns] = useState<Turn[]>([]);
+  const [threads, setThreads] = useState<AskThreadSummary[]>([]);
+  const [messages, setMessages] = useState<AskUiMessage[]>([]);
   const [model, setModel] = useState<ModelState>({ checked: false });
   const [evidenceOpen, setEvidenceOpen] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [threadsOpen, setThreadsOpen] = useState(readThreadsOpen);
+  const [suggestions, setSuggestions] = useState<AskSuggestion[]>([]);
   const abortRef = useRef<AbortController | null>(null);
+  const loadRef = useRef<AbortController | null>(null);
+  const liveRef = useRef(false);
   const requestId = useRef(0);
   const threadRef = useRef<HTMLDivElement>(null);
   const answerRef = useRef<HTMLElement | null>(null);
-  const loading = turns.some((turn) => turn.loading);
+  const loading = messages.some((message) => message.loading);
   const elapsed = useElapsed(loading);
+
+  const setThreadParam = (id: string | null) => {
+    const next = new URLSearchParams(params);
+    if (id) next.set("thread", id);
+    else next.delete("thread");
+    setParams(next, { replace: true });
+  };
+
+  const refreshThreads = async (signal?: AbortSignal) => {
+    const result = await api.listAskThreads(signal);
+    setThreads(result.threads);
+  };
+
+  const loadThread = async (id: string) => {
+    loadRef.current?.abort();
+    const abort = new AbortController();
+    loadRef.current = abort;
+    setLoadError(null);
+    try {
+      const detail = await api.getAskThread(id, abort.signal);
+      if (abort.signal.aborted) return;
+      setMessages(detail.messages.map(fromStoredMessage));
+    } catch (reason) {
+      if (isAbortError(reason) || abort.signal.aborted) return;
+      setLoadError(reason instanceof Error ? reason.message : "Could not open that conversation");
+    }
+  };
 
   useEffect(() => {
     let current = true;
@@ -403,37 +268,58 @@ export function AskNett({ onOpen }: { onOpen: (id: string) => void }) {
           checked: true,
           available: Boolean(status.ok),
           model: status.fastModel || status.selectedModel,
-          reasonModel: status.reasonModel,
-          embedModel: status.embedModel,
           askWriter: status.askWriter,
-          askWriterModel: status.askWriterModel,
-          askWriterHasKey: status.askWriterHasKey,
           askWriterDisclosure: status.askWriterDisclosure,
-          documents: status.evidenceDocuments,
+          askWriterHasKey: status.askWriterHasKey,
           indexedAt: status.indexedAt,
           interactionIndexedAt: status.interactionIndexedAt,
-          stale: status.stale,
           staleSources: status.staleSources,
         });
       })
       .catch(() => current && setModel({ checked: true, available: false }));
+    api.listAskThreads().then((result) => {
+      if (current) setThreads(result.threads);
+    }).catch(() => undefined);
+    const suggest = new AbortController();
+    Promise.all([
+      api.peoplePage({ recency: "90d", page: 1, limit: 6 }, suggest.signal),
+      api.peoplePage({ filter: "cold", page: 1, limit: 4 }, suggest.signal),
+      api.peopleFacets({}, suggest.signal),
+    ]).then(([recent, cold, facets]) => {
+      if (!current) return;
+      setSuggestions(buildAskSuggestions({
+        recent: recent.people,
+        cold: cold.people,
+        places: facets.countries.map((facet) => facet.value),
+      }));
+    }).catch((reason) => {
+      if (!current || isAbortError(reason)) return;
+      setSuggestions(buildAskSuggestions({ recent: [], cold: [], places: [] }));
+    });
     return () => {
       current = false;
+      suggest.abort();
       abortRef.current?.abort();
+      loadRef.current?.abort();
     };
   }, []);
+
+  useEffect(() => {
+    if (liveRef.current || !threadParam) return;
+    void loadThread(threadParam);
+  }, [threadParam]);
 
   useEffect(() => {
     const node = threadRef.current;
     if (!node) return;
     node.scrollTop = node.scrollHeight;
-  }, [turns]);
+  }, [messages]);
 
-  const patchTurn = (id: number, patch: Partial<Turn> | ((current: Turn) => Turn)) => {
-    setTurns((current) =>
-      current.map((turn) => {
-        if (turn.id !== id) return turn;
-        return typeof patch === "function" ? patch(turn) : { ...turn, ...patch };
+  const patchMessage = (id: string, patch: Partial<AskUiMessage> | ((current: AskUiMessage) => AskUiMessage)) => {
+    setMessages((current) =>
+      current.map((message) => {
+        if (message.id !== id) return message;
+        return typeof patch === "function" ? patch(message) : { ...message, ...patch };
       }),
     );
   };
@@ -452,28 +338,60 @@ export function AskNett({ onOpen }: { onOpen: (id: string) => void }) {
     const abort = new AbortController();
     abortRef.current = abort;
     const id = ++requestId.current;
-    const contextPersonIds = turns
-      .flatMap((item) => (item.answer?.citations || []).map((citation) => citation.personId))
+    liveRef.current = true;
+    let threadId = threadParam;
+    if (!threadId) {
+      const created = await api.createAskThread("New chat", abort.signal);
+      threadId = created.id;
+      setThreads((current) => [created, ...current.filter((item) => item.id !== created.id)]);
+      setThreadParam(created.id);
+    }
+    const contextPersonIds = messages
+      .flatMap((item) => item.citations.map((citation) => citation.personId))
       .filter(Boolean)
       .filter((personId, index, all) => all.indexOf(personId) === index)
       .slice(-3);
     const payload = {
       query: next,
+      threadId,
       personIds: attached.people.map((person) => person.id),
+      people: attached.people.map((person) => ({ id: person.id, name: person.name })),
       ability: primaryAskAbility(attached.abilities),
+      abilities: attached.abilities,
       contextPersonIds,
     };
-    const turn: Turn = {
-      id,
-      question: next,
-      people: attached.people,
-      abilities: attached.abilities,
-      answer: { answer: "", citations: [], provider: "local-evidence" },
-      stages: [{ id: "search", label: "Searching records", done: false }],
-      error: null,
-      loading: true,
-    };
-    setTurns((current) => [...current, turn]);
+    const userId = `local-user-${id}`;
+    const assistantId = `local-assistant-${id}`;
+    const now = new Date().toISOString();
+    setMessages((current) => [
+      ...current,
+      {
+        id: userId,
+        role: "user",
+        text: next,
+        people: attached.people,
+        abilities: attached.abilities,
+        stages: [],
+        evidence: [],
+        citations: [],
+        error: null,
+        loading: false,
+        createdAt: now,
+      },
+      {
+        id: assistantId,
+        role: "assistant",
+        text: "",
+        people: [],
+        abilities: [],
+        stages: emptyAskLiveAnswer().stages,
+        evidence: [],
+        citations: [],
+        error: null,
+        loading: true,
+        createdAt: now,
+      },
+    ]);
     setEvidenceOpen(false);
     setCopied(false);
     try {
@@ -482,86 +400,62 @@ export function AskNett({ onOpen }: { onOpen: (id: string) => void }) {
         for await (const event of api.queryStream(payload, abort.signal)) {
           if (id !== requestId.current || abort.signal.aborted) return;
           streamed = true;
-          if (event.type === "stage") {
-            patchTurn(id, (current) => ({
-              ...current,
-              stages: upsertStage(current.stages, {
-                id: event.id,
-                label: event.label,
-                detail: event.detail,
-              }),
-            }));
-          } else if (event.type === "meta") {
-            patchTurn(id, (current) => ({
-              ...current,
-              answer: {
-                answer: current.answer?.answer || "",
-                citations: event.citations || [],
-                provider: event.provider,
-                note: event.note,
-              },
-            }));
-          } else if (event.type === "token") {
-            patchTurn(id, (current) => ({
-              ...current,
-              answer: {
-                answer: `${current.answer?.answer || ""}${event.text}`,
-                citations: current.answer?.citations || [],
-                provider: current.answer?.provider || "local-evidence",
-                note: current.answer?.note,
-              },
-            }));
-          } else if (event.type === "reset") {
-            patchTurn(id, (current) => ({
-              ...current,
-              answer: {
-                answer: "",
-                citations: current.answer?.citations || [],
-                provider: current.answer?.provider || "local-evidence",
-                note: current.answer?.note,
-              },
-              stages: upsertStage(current.stages, {
-                id: "escalate",
-                label: "First pass was thin — trying the larger local model",
-              }),
-            }));
-          } else if (event.type === "done") {
-            patchTurn(id, (current) => ({
-              ...current,
-              loading: false,
-              stages: current.stages.map((stage) => ({ ...stage, done: true })),
-              answer: {
-                answer: event.answer,
-                citations: event.citations || [],
-                provider: event.provider,
-                note: event.note,
-              },
-            }));
+          if (event.type === "thread") {
+            setThreads((current) => current.map((item) => (
+              item.id === event.threadId ? { ...item, title: event.title, updatedAt: new Date().toISOString() } : item
+            )));
+            continue;
           }
+          patchMessage(assistantId, (current) => {
+            const nextState = applyAskStreamEvent({
+              text: current.text,
+              citations: current.citations,
+              provider: current.provider || "local-evidence",
+              note: current.note,
+              stages: current.stages,
+              evidence: current.evidence,
+              loading: current.loading,
+            }, event);
+            return {
+              ...current,
+              text: nextState.text,
+              citations: nextState.citations,
+              provider: nextState.provider,
+              note: nextState.note,
+              stages: nextState.stages,
+              evidence: nextState.evidence,
+              loading: nextState.loading,
+            };
+          });
         }
       } catch (reason) {
         if (isAbortError(reason) || abort.signal.aborted) return;
         if (streamed) throw reason;
         const result = await api.query(payload, abort.signal);
         if (id !== requestId.current || abort.signal.aborted) return;
-        patchTurn(id, {
+        patchMessage(assistantId, {
           loading: false,
-          answer: result,
+          text: result.answer,
+          citations: result.citations,
+          provider: result.provider,
+          note: result.note,
           stages: [
             { id: "search", label: "Searching records", done: true },
             { id: "write", label: "Writing from stored records", done: true },
           ],
         });
       }
+      void refreshThreads();
     } catch (reason) {
       if (isAbortError(reason) || abort.signal.aborted) return;
-      patchTurn(id, {
+      patchMessage(assistantId, {
         loading: false,
         error: reason instanceof Error ? reason.message : "Nett could not answer that question",
       });
     } finally {
       if (id === requestId.current) {
-        patchTurn(id, (current) => ({
+        liveRef.current = false;
+        patchMessage(assistantId, (current) => ({
           ...current,
           loading: false,
           stages: current.stages.map((stage) => ({ ...stage, done: true })),
@@ -570,10 +464,11 @@ export function AskNett({ onOpen }: { onOpen: (id: string) => void }) {
     }
   };
 
-  const latest = turns[turns.length - 1];
+  const latestAssistant = [...messages].reverse().find((message) => message.role === "assistant");
+  const latestUser = [...messages].reverse().find((message) => message.role === "user");
   const people = useMemo(
-    () => groupCitations(latest?.answer?.citations || []),
-    [latest?.answer?.citations],
+    () => groupCitations(latestAssistant?.citations || []),
+    [latestAssistant?.citations],
   );
 
   const openPerson = (personId: string) => {
@@ -581,10 +476,10 @@ export function AskNett({ onOpen }: { onOpen: (id: string) => void }) {
     navigate(`/people/${personId}#recent`);
   };
 
-  const copyAnswer = async (turn: Turn) => {
-    const hits = groupCitations(turn.answer?.citations || []);
+  const copyAnswer = async (message: AskUiMessage) => {
+    const hits = groupCitations(message.citations);
     const lines = [
-      turn.answer?.answer || "",
+      message.text,
       ...hits.map((person) => {
         const quote = person.excerpts[0] ? cleanExcerpt(person.excerpts[0].value) : "";
         return quote ? `${person.name}: “${quote}”` : person.name;
@@ -599,8 +494,79 @@ export function AskNett({ onOpen }: { onOpen: (id: string) => void }) {
     }
   };
 
+  const startNewChat = () => {
+    abortRef.current?.abort();
+    setMessages([]);
+    setDraft(emptyComposer());
+    setThreadParam(null);
+  };
+
+  const toggleThreads = () => {
+    setThreadsOpen((current) => {
+      const next = !current;
+      try {
+        window.localStorage.setItem(THREADS_OPEN_KEY, next ? "1" : "0");
+      } catch {
+        /* ignore quota */
+      }
+      return next;
+    });
+  };
+
+  const archiveAll = () => {
+    if (!threads.length) return;
+    if (!window.confirm(`Delete all ${threads.length} conversations? They leave this list.`)) return;
+    void api.archiveAllAskThreads().then(() => {
+      setThreads([]);
+      startNewChat();
+    });
+  };
+
   return (
-    <section className="ask ask-agent" id="ask" aria-labelledby="ask-nett-title">
+    <AskRuntimeProvider
+      messages={messages.map((message) => ({
+        id: message.id,
+        role: message.role,
+        text: message.text,
+        createdAt: message.createdAt,
+        running: message.loading,
+      }))}
+      isRunning={loading}
+      onNew={(text) => ask(text)}
+      onCancel={() => abortRef.current?.abort()}
+    >
+    <section
+      className={`ask ask-agent ask-workspace${threadsOpen ? "" : " is-threads-collapsed"}`}
+      id="ask"
+      aria-labelledby="ask-nett-title"
+    >
+      <AskThreadList
+        threads={threads}
+        activeId={threadParam}
+        open={threadsOpen}
+        onToggle={toggleThreads}
+        onNew={startNewChat}
+        onSelect={(id) => {
+          abortRef.current?.abort();
+          liveRef.current = false;
+          setThreadParam(id);
+          void loadThread(id);
+        }}
+        onRename={(id, title) => {
+          void api.renameAskThread(id, title).then((thread) => {
+            setThreads((current) => current.map((item) => item.id === id ? thread : item));
+          });
+        }}
+        onArchive={(id) => {
+          void api.archiveAskThread(id).then(() => {
+            setThreads((current) => current.filter((item) => item.id !== id));
+            if (threadParam === id) startNewChat();
+          });
+        }}
+        onArchiveAll={archiveAll}
+      />
+
+      <div className="ask-main">
       <header className="ask-head">
         <div>
           <h1 id="ask-nett-title">Ask Nett</h1>
@@ -610,17 +576,24 @@ export function AskNett({ onOpen }: { onOpen: (id: string) => void }) {
       </header>
 
       <div className="ask-thread" ref={threadRef}>
-        {!turns.length && (
+        {loadError && (
+          <p className="inline-error" role="alert">{loadError}</p>
+        )}
+
+        {!messages.length && !loadError && (
           <div className="ask-empty">
             <p className="ask-empty-lead">
               Point at a person with <kbd>@</kbd>, or pick an ability with <kbd>/</kbd>.
               Ask still only reads stored records.
             </p>
             <ul className="ask-examples">
-              {examples.map((example) => (
-                <li key={example}>
-                  <button type="button" onClick={() => void ask(example, emptyComposer())}>
-                    {example}
+              {suggestions.map((example, index) => (
+                <li key={example.text}>
+                  <button type="button" onClick={() => void ask(example.text, { people: example.people, abilities: [] })}>
+                    <span className="ask-example-mark" aria-hidden="true">
+                      {String(index + 1).padStart(2, "0")}
+                    </span>
+                    <span>{example.text}</span>
                     <ArrowRight size={13} aria-hidden="true" />
                   </button>
                 </li>
@@ -629,52 +602,59 @@ export function AskNett({ onOpen }: { onOpen: (id: string) => void }) {
           </div>
         )}
 
-        {turns.map((turn) => {
-          const hits = groupCitations(turn.answer?.citations || []);
-          const prose = (turn.answer?.answer || "").trim();
-          const hasResult = Boolean(prose || hits.length);
+        {messages.map((message) => {
+          if (message.role === "user") {
+            return (
+              <article key={message.id} className="ask-turn ask-turn-user">
+                <p className="ask-asked">
+                  <span>You</span>
+                  {(message.people.length > 0 || message.abilities.length > 0) && (
+                    <span className="ask-asked-refs">
+                      {message.people.map((person) => (
+                        <button
+                          key={person.id}
+                          type="button"
+                          className="ask-chip"
+                          onClick={() => openPerson(person.id)}
+                        >
+                          <Avatar person={person} size="sm" />
+                          {person.name}
+                        </button>
+                      ))}
+                      {message.abilities.map((abilityId) => (
+                        <span key={abilityId} className="ask-chip ask-chip-ability">
+                          <span className="ask-chip-slash" aria-hidden="true">/</span>
+                          {abilityById(abilityId).label}
+                        </span>
+                      ))}
+                    </span>
+                  )}
+                  {message.text}
+                </p>
+              </article>
+            );
+          }
+
+          const hits = groupCitations(message.citations);
+          const prose = message.text.trim();
+          const hasResult = Boolean(prose || hits.length || message.loading);
           return (
-            <article key={turn.id} className="ask-turn">
-              <p className="ask-asked">
-                <span>You asked</span>
-                {(turn.people.length > 0 || turn.abilities.length > 0) && (
-                  <span className="ask-asked-refs">
-                    {turn.people.map((person) => (
-                      <button
-                        key={person.id}
-                        type="button"
-                        className="ask-chip"
-                        onClick={() => openPerson(person.id)}
-                      >
-                        <Avatar person={person} size="sm" />
-                        {person.name}
-                      </button>
-                    ))}
-                    {turn.abilities.map((id) => (
-                      <span key={id} className="ask-chip ask-chip-ability">
-                        <span className="ask-chip-slash" aria-hidden="true">/</span>
-                        {abilityById(id).label}
-                      </span>
-                    ))}
-                  </span>
-                )}
-                {turn.question}
-              </p>
-              <ThinkingTrace stages={turn.stages} loading={turn.loading} elapsed={turn.loading ? elapsed : ""} />
+            <article key={message.id} className="ask-turn">
+              <AskThinking stages={message.stages} loading={message.loading} elapsed={message.loading ? elapsed : ""} />
               {hasResult && (
                 <div
                   className="ask-answer"
-                  ref={turn.id === latest?.id ? (node) => { answerRef.current = node; } : undefined}
+                  ref={message.id === latestAssistant?.id ? (node) => { answerRef.current = node; } : undefined}
                 >
-                  <SelectionActions root={turn.id === latest?.id ? answerRef.current : null} />
+                  <SelectionActions root={message.id === latestAssistant?.id ? answerRef.current : null} />
                   {prose ? (
-                    <CitedProse
+                    <AskMarkdown
                       text={prose}
                       people={hits}
-                      live={turn.loading}
-                      onOpen={(id) => openPerson(id)}
+                      live={message.loading}
+                      onOpen={openPerson}
                     />
-                  ) : turn.loading ? null : (
+                  ) : message.loading ? null : (
                     <p className="ask-prose">
                       That question came back empty. Try naming a person, a place, or a phrase you wrote down.
                     </p>
@@ -682,94 +662,109 @@ export function AskNett({ onOpen }: { onOpen: (id: string) => void }) {
 
                   {hits.length > 0 && (
                     <ol className="ask-people">
-                      {hits.map((person, index) => {
-                        const quote = person.excerpts[0] ? cleanExcerpt(person.excerpts[0].value) : "";
-                        return (
-                          <li key={person.personId}>
-                            <button type="button" onClick={() => openPerson(person.personId)}>
-                              <span className="ask-cite" aria-hidden="true">{index + 1}</span>
-                              <Avatar person={{ id: person.personId, name: person.name }} size="sm" />
-                              <span>
-                                <strong>{person.name}</strong>
-                                {quote ? <small>“{quote.slice(0, 160)}”</small> : (
-                                  <small>{person.sources.map(sourceLabel).join(" · ") || "Stored record"}</small>
-                                )}
-                              </span>
-                            </button>
-                          </li>
-                        );
-                      })}
+                      {hits.map((person, index) => (
+                        <AskPersonCard
+                          key={person.personId}
+                          person={person}
+                          index={index}
+                          onOpen={openPerson}
+                        />
+                      ))}
                     </ol>
                   )}
 
-                  {hits.some((person) => person.excerpts.length) && (
+                  {(message.evidence.length > 0 || hits.some((person) => person.excerpts.length)) && (
                     <details
                       className="ask-evidence"
-                      open={turn.id === latest?.id ? evidenceOpen : false}
+                      open={message.id === latestAssistant?.id ? evidenceOpen : false}
                       onToggle={(event) => {
-                        if (turn.id === latest?.id) setEvidenceOpen(event.currentTarget.open);
+                        if (message.id === latestAssistant?.id) setEvidenceOpen(event.currentTarget.open);
                       }}
                     >
                       <summary>
-                        Evidence
-                        <span>{hits.reduce((count, person) => count + person.excerpts.length, 0)}</span>
+                        {message.evidence.length ? "Sent to model" : "Evidence"}
+                        <span>
+                          {message.evidence.length
+                            || hits.reduce((count, person) => count + person.excerpts.length, 0)}
+                        </span>
                         <CaretDown size={14} aria-hidden="true" />
                       </summary>
-                      <ul>
-                        {hits.flatMap((person) =>
-                          person.excerpts.slice(0, 2).map((citation, index) => (
-                            <li key={`${person.personId}:${index}`}>
-                              <button type="button" onClick={() => openPerson(person.personId)}>
-                                <strong>{person.name}</strong>
-                                <small>
-                                  {sourceLabel(citation.source)}
-                                  {citation.field ? ` · ${citation.field.replace(/_/g, " ")}` : ""}
-                                </small>
-                                <span>{cleanExcerpt(citation.value).slice(0, 180)}</span>
-                              </button>
+                      {message.evidence.length > 0 ? (
+                        <ul>
+                          {message.evidence.map((block) => (
+                            <li key={block.id}>
+                              <strong>{block.title}</strong>
+                              <span>{cleanExcerpt(block.text).slice(0, 320)}</span>
                             </li>
-                          )),
-                        )}
-                      </ul>
+                          ))}
+                        </ul>
+                      ) : (
+                        <ul>
+                          {hits.flatMap((person) =>
+                            person.excerpts.slice(0, 2).map((citation, index) => (
+                              <li key={`${person.personId}:${index}`}>
+                                <button type="button" onClick={() => openPerson(person.personId)}>
+                                  <strong>{person.name}</strong>
+                                  <small>
+                                    {citation.source}
+                                    {citation.field ? ` · ${citation.field.replace(/_/g, " ")}` : ""}
+                                  </small>
+                                  <span>{cleanExcerpt(citation.value).slice(0, 180)}</span>
+                                </button>
+                              </li>
+                            )),
+                          )}
+                        </ul>
+                      )}
                     </details>
                   )}
 
-                  {!hits.length && !turn.loading && prose && (
+                  {!hits.length && !message.loading && prose && (
                     <p className="ask-uncited">
                       No stored record was linked to this answer. Treat it as a guess.
                     </p>
                   )}
 
-                  {!turn.loading && (
+                  {!message.loading && (
                     <div className="ask-actions">
-                      <button type="button" className="text-button" onClick={() => void copyAnswer(turn)}>
+                      <button type="button" className="text-button" onClick={() => void copyAnswer(message)}>
                         <Copy size={14} aria-hidden="true" />
-                        {copied && turn.id === latest?.id ? "Copied" : "Copy"}
+                        {copied && message.id === latestAssistant?.id ? "Copied" : "Copy"}
                       </button>
                       <button
                         type="button"
                         className="text-button"
                         onClick={() => {
+                          const source = messages.slice(0, messages.indexOf(message)).reverse().find((item) => item.role === "user");
+                          if (!source) return;
                           setDraft({
-                            text: turn.question,
-                            people: turn.people,
-                            abilities: turn.abilities,
+                            text: source.text,
+                            people: source.people,
+                            abilities: source.abilities,
                           });
-                          void ask(turn.question, turn);
+                          void ask(source.text, source);
                         }}
                       >
                         Retry
                       </button>
-                      {turn.answer && <span className="ask-path">{providerNote(turn.answer)}</span>}
+                      {message.provider && (
+                        <span className="ask-path">{providerNote({ provider: message.provider, note: message.note })}</span>
+                      )}
                     </div>
                   )}
                 </div>
               )}
-              {turn.error && (
+              {message.error && (
                 <p className="inline-error" role="alert">
                   <WarningCircle size={15} aria-hidden="true" />
-                  {turn.error}
-                  <button className="text-button" onClick={() => void ask(turn.question, turn)}>
+                  {message.error}
+                  <button
+                    className="text-button"
+                    onClick={() => {
+                      const source = messages.slice(0, messages.indexOf(message)).reverse().find((item) => item.role === "user");
+                      if (source) void ask(source.text, source);
+                    }}
+                  >
                     Try again
                   </button>
                 </p>
@@ -778,10 +773,10 @@ export function AskNett({ onOpen }: { onOpen: (id: string) => void }) {
           );
         })}
 
-        {latest && !latest.loading && people.length > 0 && (
+        {latestAssistant && !latestAssistant.loading && people.length > 0 && latestUser && (
           <div className="ask-follow">
             <p>Follow-ups</p>
-            {followUps(latest.question, people).map((item) => (
+            {followUps(latestUser.text, people).map((item) => (
               <button key={item} type="button" onClick={() => void ask(item)}>
                 <ArrowRight size={12} aria-hidden="true" />
                 {item}
@@ -802,14 +797,14 @@ export function AskNett({ onOpen }: { onOpen: (id: string) => void }) {
 
       <p className="ask-provider" id="ask-nett-provider">
         {!model.checked
-          ? "Checking the local model…"
+          ? "Checking the Ask writer…"
           : model.askWriter && model.askWriter !== "local" && model.askWriterHasKey
             ? model.askWriterDisclosure || `This question and matching records will be sent to ${model.askWriter}. Ask never writes.`
-            : model.available
-              ? `Local ${model.reasonModel && model.reasonModel !== model.model ? model.reasonModel : model.model || "model"} · Ask never writes.`
-              : "No local model. Matches come from stored records only. Add an Anthropic or OpenAI key on Sources to write answers."}
+            : "Matching records stay on this Mac unless you add an OpenRouter key on Sources. Ask never writes."}
       </p>
+      </div>
     </section>
+    </AskRuntimeProvider>
   );
 }
 

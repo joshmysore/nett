@@ -64,6 +64,16 @@ import {
   syncGmail,
   syncTelegram
 } from "./platform/service.js";
+import {
+  archiveAllAskThreads,
+  archiveAskThread,
+  createAskThread,
+  getAskThread,
+  listAskThreads,
+  persistAskUserMessage,
+  appendAskMessage,
+  renameAskThread,
+} from "./ask-threads.js";
 import { getOnboardingState, setupStatus, updateOnboarding } from "./setup.js";
 import {
   freshnessStatus,
@@ -1104,6 +1114,43 @@ app.post("/api/import/csv", upload.single("file"), (req, res) => {
   }
 });
 
+app.get("/api/ask/threads", (_req, res) => {
+  res.json({ threads: listAskThreads(db) });
+});
+
+app.post("/api/ask/threads", (req, res) => {
+  const title = typeof req.body?.title === "string" ? req.body.title : "New chat";
+  res.status(201).json(createAskThread(db, title));
+});
+
+app.get("/api/ask/threads/:id", (req, res) => {
+  const detail = getAskThread(db, req.params.id);
+  if (!detail) return res.status(404).json({ error: "Thread not found" });
+  res.json(detail);
+});
+
+app.delete("/api/ask/threads", (_req, res) => {
+  res.json({ ok: true, archived: archiveAllAskThreads(db) });
+});
+
+app.patch("/api/ask/threads/:id", (req, res) => {
+  if (req.body?.archived === true) {
+    if (!archiveAskThread(db, req.params.id)) return res.status(404).json({ error: "Thread not found" });
+    return res.json({ ok: true });
+  }
+  if (typeof req.body?.title === "string") {
+    const thread = renameAskThread(db, req.params.id, req.body.title);
+    if (!thread) return res.status(404).json({ error: "Thread not found" });
+    return res.json(thread);
+  }
+  return res.status(400).json({ error: "Provide a title or archived flag" });
+});
+
+app.delete("/api/ask/threads/:id", (req, res) => {
+  if (!archiveAskThread(db, req.params.id)) return res.status(404).json({ error: "Thread not found" });
+  res.json({ ok: true });
+});
+
 app.post("/api/agent/query", async (req, res) => {
   const query = String(req.body.query || "").trim();
   if (!query) return res.status(400).json({ error: "Ask a question about your network" });
@@ -1114,8 +1161,24 @@ app.post("/api/agent/query", async (req, res) => {
   const contextPersonIds = Array.isArray(req.body.contextPersonIds)
     ? req.body.contextPersonIds.map((id: unknown) => String(id || "")).filter(Boolean).slice(0, 4)
     : [];
+  const people = Array.isArray(req.body.people)
+    ? req.body.people.filter((item: unknown): item is { id: string; name: string } => (
+      Boolean(item) && typeof item === "object"
+      && typeof (item as { id?: unknown }).id === "string"
+      && typeof (item as { name?: unknown }).name === "string"
+    )).slice(0, 12)
+    : [];
+  const abilities = Array.isArray(req.body.abilities)
+    ? req.body.abilities.filter((id: unknown): id is string => typeof id === "string").slice(0, 6)
+    : ability ? [ability] : [];
+  const persisted = persistAskUserMessage(db, {
+    threadId: typeof req.body.threadId === "string" ? req.body.threadId : "",
+    query,
+    people,
+    abilities,
+  });
   const controller = new AbortController();
-  req.on("close", () => { if (!res.writableEnded) controller.abort(); });
+  res.on("close", () => { if (!res.writableEnded) controller.abort(); });
   const wantsStream = req.query.stream === "1"
     || String(req.headers.accept || "").includes("text/event-stream");
   try {
@@ -1124,7 +1187,11 @@ app.post("/api/agent/query", async (req, res) => {
       res.setHeader("Cache-Control", "no-cache");
       res.setHeader("Connection", "keep-alive");
       res.setHeader("X-Accel-Buffering", "no");
+      res.setHeader("X-Ask-Thread-Id", persisted.thread.id);
       res.flushHeaders();
+      res.write(`data: ${JSON.stringify({ type: "thread", threadId: persisted.thread.id, title: persisted.thread.title })}\n\n`);
+      let stages: Array<{ id: string; label: string; detail?: string }> = [];
+      let evidence: Array<{ id: string; title: string; text: string }> = [];
       for await (const event of streamRelationshipQuestion(query, {
         signal: controller.signal,
         personIds,
@@ -1132,10 +1199,26 @@ app.post("/api/agent/query", async (req, res) => {
         contextPersonIds,
       })) {
         if (res.writableEnded) return;
+        if (event.type === "stage") {
+          stages = [...stages.filter((stage) => stage.id !== event.id), {
+            id: event.id,
+            label: event.label,
+            detail: event.detail,
+          }];
+        } else if (event.type === "meta" && event.evidence) {
+          evidence = event.evidence;
+        }
         res.write(`data: ${JSON.stringify(event)}\n\n`);
         const flushable = res as typeof res & { flush?: () => void };
         flushable.flush?.();
         if (event.type === "done") {
+          appendAskMessage(db, {
+            threadId: persisted.thread.id,
+            role: "assistant",
+            content: { text: event.answer, stages, evidence },
+            citations: event.citations,
+            provider: event.provider,
+          });
           db.prepare("INSERT INTO ai_queries (id, query, response, citations_json, provider, created_at) VALUES (?, ?, ?, ?, ?, datetime('now'))")
             .run(randomUUID(), query, event.answer, JSON.stringify(event.citations), event.provider);
         }
@@ -1150,12 +1233,27 @@ app.post("/api/agent/query", async (req, res) => {
       contextPersonIds,
     });
     if (res.writableEnded) return;
+    appendAskMessage(db, {
+      threadId: persisted.thread.id,
+      role: "assistant",
+      content: { text: result.answer },
+      citations: result.citations,
+      provider: result.provider,
+    });
     db.prepare("INSERT INTO ai_queries (id, query, response, citations_json, provider, created_at) VALUES (?, ?, ?, ?, ?, datetime('now'))")
       .run(randomUUID(), query, result.answer, JSON.stringify(result.citations), result.provider);
-    res.json(result);
+    res.json({ ...result, threadId: persisted.thread.id });
   } catch (error) {
     if (res.writableEnded) return;
     if (error instanceof Error && error.name === "AbortError") return;
+    appendAskMessage(db, {
+      threadId: persisted.thread.id,
+      role: "assistant",
+      content: {
+        text: "",
+        error: error instanceof Error ? error.message : "Insight query failed",
+      },
+    });
     res.status(500).json({ error: error instanceof Error ? error.message : "Insight query failed" });
   }
 });

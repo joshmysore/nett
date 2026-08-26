@@ -110,6 +110,7 @@ type GlowCardProps = {
   tabIndex?: number;
   role?: string;
   "aria-label"?: string;
+  "aria-expanded"?: boolean;
 };
 
 /**
@@ -127,6 +128,7 @@ export const GlowCard = forwardRef<HTMLDivElement, GlowCardProps>(function GlowC
     tabIndex,
     role,
     "aria-label": ariaLabel,
+    "aria-expanded": ariaExpanded,
   },
   forwardedRef,
 ) {
@@ -157,6 +159,7 @@ export const GlowCard = forwardRef<HTMLDivElement, GlowCardProps>(function GlowC
       role={role ?? (interactive ? "button" : undefined)}
       tabIndex={tabIndex ?? (interactive ? 0 : undefined)}
       aria-label={ariaLabel}
+      aria-expanded={ariaExpanded}
       className={cn("glow-card", !customSize && "glow-card-fixed", className)}
       style={
         {

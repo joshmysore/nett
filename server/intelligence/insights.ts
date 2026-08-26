@@ -6,9 +6,8 @@ import type {
   RelationshipMode,
 } from "../../src/lib/contracts.js";
 import { calculateRelationshipSignals } from "./service.js";
-import { OllamaProvider, OllamaProviderError } from "./ollama.js";
-
-const ollama = new OllamaProvider();
+import { defaultCloudModel, getAskWriterKey, getAskWriterSettings } from "./ask-writer.js";
+import { CloudLlmError, generateCloudStructured, isOpenAiCompatible, type CloudWriter } from "./cloud-llm.js";
 
 const THEME_WORDS: Record<string, string[]> = {
   work: ["meeting", "deadline", "project", "client", "office", "standup", "okr", "launch"],
@@ -165,29 +164,27 @@ async function llmBriefing(
   bodies: string[],
   abort?: AbortSignal,
 ): Promise<{ briefing: string; provider: string; degraded: boolean; note?: string }> {
-  const health = await ollama.health(abort).catch(() => ({ ok: false, latencyMs: 0 }));
-  if (!health.ok) {
+  const fallback = () => {
     const themeText = themes.length ? themes.map((theme) => theme.label).join(", ") : "no clear themes";
     return {
       briefing: `${name}: ${signal.explanation.interactions} interactions across ${(signal.explanation.channels as string[]).join(", ") || "no channel"}. Cadence gap ~${signal.explanation.typicalCadenceDays || "—"} days; last contact ${signal.explanation.daysSinceContact} days ago. Themes: ${themeText}. Mode looks ${mode || "unclear"}.`,
       provider: "signals",
       degraded: true,
-      note: "Local model unavailable — showing deterministic signals only.",
+      note: "Hosted model unavailable — showing deterministic signals only.",
     };
-  }
-  const models = await ollama.listModels(abort);
-  const model = models[0]?.name;
-  if (!model) {
-    return {
-      briefing: `${name}: ${signal.explanation.interactions} stored interactions. Local model list was empty.`,
-      provider: "signals",
-      degraded: true,
-      note: "No local model installed.",
-    };
-  }
+  };
+  const settings = await getAskWriterSettings();
+  if (settings.writer === "local" || !settings.hasKey) return fallback();
+  const writer = settings.writer as CloudWriter;
+  if (!isOpenAiCompatible(writer)) return fallback();
+  const apiKey = await getAskWriterKey(settings.writer);
+  if (!apiKey) return fallback();
+  const model = settings.model || defaultCloudModel(writer);
   try {
-    const result = await ollama.generateStructured<{ briefing: string }>({
+    const result = await generateCloudStructured<{ briefing: string }>({
+      writer,
       model,
+      apiKey,
       system: "You summarize relationship messaging patterns. Cite only the evidence provided. Never invent protected traits (health, religion, politics, ethnicity, sexuality). Keep the briefing under 80 words.",
       prompt: JSON.stringify({
         name,
@@ -205,9 +202,9 @@ async function llmBriefing(
       validate: (value): value is { briefing: string } =>
         Boolean(value && typeof value === "object" && typeof (value as { briefing?: unknown }).briefing === "string"),
     });
-    return { briefing: result.briefing, provider: `ollama:${model}`, degraded: false };
+    return { briefing: result.briefing, provider: `${writer}:${model}`, degraded: false };
   } catch (error) {
-    if (error instanceof OllamaProviderError && error.code === "CANCELLED") throw error;
+    if (error instanceof CloudLlmError && error.code === "CANCELLED") throw error;
     const themeText = themes.length ? themes.map((theme) => theme.label).join(", ") : "no clear themes";
     return {
       briefing: `${name}: ${signal.explanation.interactions} interactions. Themes: ${themeText}. Mode looks ${mode || "unclear"}.`,

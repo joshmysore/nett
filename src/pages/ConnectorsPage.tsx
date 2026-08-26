@@ -72,37 +72,31 @@ type AskWriter = Awaited<ReturnType<typeof api.askWriterSettings>>;
 
 function AskWriterSettings({ notify }: { notify: (kind: ToastKind, message: string) => void }) {
   const [settings, setSettings] = useState<AskWriter | null>(null);
-  const [writer, setWriter] = useState<AskWriter["writer"]>("local");
-  const [model, setModel] = useState("");
   const [apiKey, setApiKey] = useState("");
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     api.askWriterSettings()
-      .then((next) => {
-        setSettings(next);
-        setWriter(next.writer);
-        setModel(next.model || "");
-      })
+      .then(setSettings)
       .catch(() => setSettings(null));
   }, []);
 
   const save = async (event: FormEvent) => {
     event.preventDefault();
+    const key = apiKey.trim();
+    if (!key) return;
     setSaving(true);
     try {
       const next = await api.saveAskWriterSettings({
-        writer,
-        model: model.trim() || null,
-        apiKey: writer === "local" ? undefined : (apiKey.trim() || undefined),
+        writer: "openrouter",
+        model: "stealth/ox-alpha",
+        apiKey: key,
       });
       setSettings(next);
       setApiKey("");
-      notify("success", writer === "local"
-        ? "Ask will write with the local model when one is running."
-        : `Ask will send matching records to ${writer} when you ask.`);
+      notify("success", "Ask will send matching records to Ox Alpha via OpenRouter.");
     } catch (error) {
-      notify("error", error instanceof Error ? error.message : "Could not save Ask writer");
+      notify("error", error instanceof Error ? error.message : "Could not save the OpenRouter key");
     } finally {
       setSaving(false);
     }
@@ -114,52 +108,28 @@ function AskWriterSettings({ notify }: { notify: (kind: ToastKind, message: stri
         <h2 id="ask-writer-title">Ask writer</h2>
       </div>
       <p className="ask-writer-copy">
-        Local Ollama stays the default. A small hosted model can write from the same
-        evidence if you supply a key. Disabled until you choose it.
+        Ask writes with Ox Alpha through OpenRouter from retrieved evidence only.
+        Ask still does not write records.
       </p>
       <form className="ask-writer-form" onSubmit={(event) => void save(event)}>
         <label>
-          Writer
-          <select
-            value={writer}
-            onChange={(event) => setWriter(event.target.value as AskWriter["writer"])}
-          >
-            <option value="local">Local Ollama</option>
-            <option value="anthropic">Anthropic (Haiku)</option>
-            <option value="openai">OpenAI (GPT mini)</option>
-          </select>
+          OpenRouter key
+          <input
+            type="password"
+            value={apiKey}
+            onChange={(event) => setApiKey(event.target.value)}
+            placeholder={settings?.hasKey ? "Key saved — paste to replace" : "Paste your OpenRouter key"}
+            autoComplete="off"
+          />
         </label>
-        {writer !== "local" && (
-          <>
-            <label>
-              Model
-              <input
-                value={model}
-                onChange={(event) => setModel(event.target.value)}
-                placeholder={writer === "anthropic" ? "claude-haiku-4-5" : "gpt-4o-mini"}
-                autoComplete="off"
-              />
-            </label>
-            <label>
-              API key
-              <input
-                type="password"
-                value={apiKey}
-                onChange={(event) => setApiKey(event.target.value)}
-                placeholder={settings?.hasKey ? "Key saved — paste to replace" : "Paste a key you own"}
-                autoComplete="off"
-              />
-            </label>
-          </>
-        )}
-        <button className="quiet-action" disabled={saving || (writer !== "local" && !apiKey.trim() && !settings?.hasKey)}>
-          {saving ? "Saving" : "Save"}
+        <button className="quiet-action" disabled={saving || !apiKey.trim()}>
+          {saving ? "Saving" : settings?.hasKey ? "Replace" : "Save"}
         </button>
       </form>
       <p className="ask-writer-note">
-        {writer === "local"
-          ? "Answers stay on this Mac. Ollama is loopback only."
-          : settings?.disclosure || "The question and matching records leave this Mac. Ask still does not write."}
+        {settings?.disclosure
+          || "This question and matching profile, note, and message excerpts leave this Mac and are sent to OpenRouter, which forwards them to Ox Alpha (stealth/ox-alpha) — not Anthropic or OpenAI. The stealth provider retains prompts and completions and does not use them for training. Ask still does not write to your records."}
+        {settings?.hasKey ? " The OpenRouter key is stored in the Keychain on this Mac." : ""}
         {settings?.envKey ? " An environment key is already available." : ""}
       </p>
     </section>
@@ -395,7 +365,7 @@ export function ConnectorsPage({
         <div className="sources-toolbar-cluster">
           <span className={`permission-state ${intelligence?.ok ? "state-granted" : "state-blocked"}`}>
             {intelligence?.ok ? <Check size={13} /> : <WarningCircle size={13} />}
-            {intelligence?.ok ? "Ollama ready" : "Ollama unavailable"}
+            {intelligence?.ok ? "OpenRouter ready" : "Ask writer unset"}
           </span>
           <span className="sources-meta-copy">
             {intelligence?.selectedModel
@@ -408,11 +378,11 @@ export function ConnectorsPage({
                   `${(intelligence.evidenceDocuments || 0).toLocaleString()} evidence`,
                   `${(intelligence.embeddedDocuments || 0).toLocaleString()} embedded`,
                 ].filter(Boolean).join(" · ")
-              : "Start Ollama locally for cited answers"}
+              : "Add an OpenRouter key under Ask writer for cited answers"}
           </span>
           <button
             className="quiet-action"
-            disabled={indexing || !intelligence?.ok}
+            disabled={indexing}
             onClick={() => {
               setIndexing(true);
               api.refreshIntelligence(500)

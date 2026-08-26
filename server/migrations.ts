@@ -3,7 +3,7 @@ import { mkdirSync } from "node:fs";
 import path from "node:path";
 import { parsePhoneNumberFromString, type CountryCode } from "libphonenumber-js";
 
-export const latestSchemaVersion = 8;
+export const latestSchemaVersion = 10;
 
 export function normalizePhoneValue(value: string, defaultCountry = process.env.NETT_PHONE_REGION || "US"): string {
   const raw = value.trim();
@@ -479,8 +479,114 @@ const migrations: Migration[] = [
           WHERE LOWER(TRIM(COALESCE(gender,''))) IN ('f','female','woman','girl');
       `);
     }
+  },
+  {
+    version: 9,
+    name: "person-working-briefs",
+    run(database) {
+      // Model-derived working context for Ask reuse. Not evidence and not a
+      // profile write — fingerprint invalidates when packed evidence changes.
+      database.exec(`
+        CREATE TABLE IF NOT EXISTS person_working_briefs (
+          person_id TEXT PRIMARY KEY,
+          body TEXT NOT NULL,
+          evidence_fingerprint TEXT NOT NULL,
+          evidence_ids_json TEXT NOT NULL,
+          model TEXT,
+          provider TEXT,
+          source_question TEXT,
+          generated_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          FOREIGN KEY (person_id) REFERENCES people(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_working_briefs_updated
+          ON person_working_briefs(updated_at DESC);
+      `);
+    }
+  },
+  {
+    version: 10,
+    name: "ask-threads",
+    run(database) {
+      database.exec(`
+        CREATE TABLE IF NOT EXISTS ask_threads (
+          id TEXT PRIMARY KEY,
+          title TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          archived_at TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_ask_threads_updated
+          ON ask_threads(updated_at DESC);
+        CREATE TABLE IF NOT EXISTS ask_messages (
+          id TEXT PRIMARY KEY,
+          thread_id TEXT NOT NULL REFERENCES ask_threads(id) ON DELETE CASCADE,
+          role TEXT NOT NULL,
+          content_json TEXT NOT NULL,
+          citations_json TEXT,
+          provider TEXT,
+          created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_ask_messages_thread
+          ON ask_messages(thread_id, created_at);
+      `);
+      backfillAskThreadsFromQueries(database);
+    }
   }
 ];
+
+function titleFromAskQuery(query: string): string {
+  const clean = query.replace(/\s+/g, " ").trim();
+  if (!clean) return "New chat";
+  if (clean.length <= 48) return clean;
+  return `${clean.slice(0, 45).trimEnd()}…`;
+}
+
+function backfillAskThreadsFromQueries(database: Database.Database): void {
+  const hasQueries = database.prepare(
+    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='ai_queries'"
+  ).get();
+  if (!hasQueries) return;
+  const rows = database.prepare(
+    "SELECT id, query, response, citations_json, provider, created_at FROM ai_queries ORDER BY created_at ASC"
+  ).all() as Array<{
+    id: string;
+    query: string;
+    response: string;
+    citations_json: string;
+    provider: string;
+    created_at: string;
+  }>;
+  const insertThread = database.prepare(
+    "INSERT INTO ask_threads (id, title, created_at, updated_at, archived_at) VALUES (?, ?, ?, ?, NULL)"
+  );
+  const insertMessage = database.prepare(
+    "INSERT INTO ask_messages (id, thread_id, role, content_json, citations_json, provider, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
+  );
+  for (const row of rows) {
+    const threadId = `thread-${row.id}`;
+    const title = titleFromAskQuery(row.query);
+    insertThread.run(threadId, title, row.created_at, row.created_at);
+    insertMessage.run(
+      `user-${row.id}`,
+      threadId,
+      "user",
+      JSON.stringify({ text: row.query }),
+      null,
+      null,
+      row.created_at
+    );
+    insertMessage.run(
+      `assistant-${row.id}`,
+      threadId,
+      "assistant",
+      JSON.stringify({ text: row.response }),
+      row.citations_json,
+      row.provider,
+      row.created_at
+    );
+  }
+}
 
 export function migrateDatabase(database: Database.Database): void {
   database.pragma("foreign_keys = ON");

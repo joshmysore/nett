@@ -41,11 +41,6 @@ const ConnectorsPage = lazy(() =>
     default: module.ConnectorsPage,
   })),
 );
-const SetupPage = lazy(() =>
-  import("@/pages/SetupPage").then((module) => ({
-    default: module.SetupPage,
-  })),
-);
 const ReviewPage = lazy(() =>
   import("@/pages/ReviewPage").then((module) => ({
     default: module.ReviewPage,
@@ -93,7 +88,7 @@ const initialOverview: Overview = {
       gmail: { permission: "unknown", status: "idle", synced: false, seen: 0, error: null },
       whatsapp: { permission: "unknown", status: "idle", synced: false, seen: 0, error: null },
     },
-    nextAction: { step: "welcome", label: "Start local setup", route: "/setup" },
+    nextAction: { step: "welcome", label: "Ask a question", route: "/today" },
   },
 };
 
@@ -233,20 +228,6 @@ function NettApp() {
   if (error && overview.total === 0) {
     return <ServerError message={error} onRetry={() => void refresh()} />;
   }
-  if (overview.setup.isFirstRun && location.pathname !== "/setup") {
-    return <Navigate to="/setup" replace />;
-  }
-  if (location.pathname === "/setup") {
-    return (
-      <>
-        <Suspense fallback={<AppSkeleton />}>
-          <SetupPage initialStatus={overview.setup} onChanged={refresh} />
-        </Suspense>
-        <AnimatePresence>{toast && <ToastMessage toast={toast} />}</AnimatePresence>
-      </>
-    );
-  }
-
   return (
     <>
       <AppShell
@@ -283,6 +264,7 @@ function NettApp() {
                   />
                 }
               />
+              <Route path="/setup" element={<Navigate to="/today" replace />} />
               <Route path="/connectors" element={<Navigate to="/settings/connectors" replace />} />
               <Route path="/settings" element={<Navigate to="/settings/connectors" replace />} />
               <Route path="/sources" element={<Navigate to="/settings/connectors" replace />} />

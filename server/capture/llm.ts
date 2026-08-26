@@ -1,7 +1,8 @@
-/** Optional local-model capture extract. Same proposal shape as regex extract.
+/** Optional hosted-model capture extract. Same proposal shape as regex extract.
  *  Regex wins on a field the model also proposed. Nothing writes. */
 
-import { OllamaProvider } from "../intelligence/ollama.js";
+import { defaultCloudModel, getAskWriterKey, getAskWriterSettings } from "../intelligence/ask-writer.js";
+import { generateCloudStructured, isOpenAiCompatible, type CloudWriter } from "../intelligence/cloud-llm.js";
 import { extractCapture, type CaptureExtraction } from "./extract.js";
 import type { CaptureField, CaptureProposal } from "../../src/lib/contracts.js";
 
@@ -41,21 +42,21 @@ export async function extractCaptureWithModel(
   options: { signal?: AbortSignal; today?: Date } = {},
 ): Promise<CaptureExtraction> {
   const deterministic = extractCapture(transcript, options.today);
-  const ollama = new OllamaProvider();
-  const health = await ollama.health().catch(() => ({ ok: false }));
-  if (!health.ok) return deterministic;
-
-  const models = await ollama.listModels(options.signal).catch(() => []);
-  const chat = models.find((model) => /llama3\.2:3b|qwen2\.5:3b|phi3:mini|gemma2:2b/i.test(model.name))
-    ?? models.find((model) => !/embed|minilm|nomic|mxbai/i.test(model.name));
-  if (!chat) return deterministic;
+  const settings = await getAskWriterSettings();
+  if (settings.writer === "local" || !settings.hasKey) return deterministic;
+  const writer = settings.writer as CloudWriter;
+  if (!isOpenAiCompatible(writer)) return deterministic;
+  const apiKey = await getAskWriterKey(settings.writer);
+  if (!apiKey) return deterministic;
 
   try {
-    const generated = await ollama.generateStructured<{
+    const generated = await generateCloudStructured<{
       nameHint: string | null;
       proposals: Array<{ field: string; value: string; values?: string[]; evidence: string; confidence: number }>;
     }>({
-      model: chat.name,
+      writer,
+      model: settings.model || defaultCloudModel(writer),
+      apiKey,
       signal: options.signal,
       system: [
         "Extract reviewable person-field operations from a private note.",

@@ -22,8 +22,12 @@ Information priority, in order. Do not give every field equal weight.
 ### Privacy and local-first
 
 - Everything runs on the user's Mac. No account, no cloud sync, no telemetry.
-- Ollama is reachable on loopback only. Remote hosts are rejected in
-  `server/intelligence/ollama.ts` unless a developer explicitly enables them.
+- Ask answers are written by OpenRouter Ox Alpha (`stealth/ox-alpha`). OpenRouter
+  Ask must not route to Anthropic or OpenAI models. The question and retrieved
+  evidence excerpts leave this Mac only when an OpenRouter key is stored.
+  Disclose that on Ask and Sources. Ask still does not write records. Working
+  briefs in `person_working_briefs` are a separate model-synthesis cache for Ask
+  reuse — not evidence and not profile fields.
 - Apple Contacts and Messages are **read-only**. Never write to them.
 - Never transmit private notes, messages, contacts, or address-book data to any
   external service without explicit user configuration and per-use approval.
@@ -111,8 +115,8 @@ node scripts/measure.mjs <label>   # browser latency, CLS, overflow, screenshots
   the workbench stays token-led (`design.md`).
 - Restrained glass is allowed only for elevated contextual layers named in
   `design.md` (search, Ask Nett, quick-look, provenance overlays, transient
-  controls, landing/setup chrome). The crystal N (static or intro video) is
-  ceremonial for landing/setup only; everyday chrome uses the continuous-line
+  controls, landing chrome). The crystal N (static or intro video) is
+  ceremonial for landing only; everyday chrome uses the continuous-line
   monogram. Landing may keep Digital Serenity word-roll and held-thread path
   drift. Still banned on workbench routes: generic AI-SaaS gradient kits,
   glow-everything chrome, full-page animated backgrounds, invented metrics,
@@ -121,18 +125,24 @@ node scripts/measure.mjs <label>   # browser latency, CLS, overflow, screenshots
   another override block to the bottom of `src/index.css`; the file has been
   corrupted that way before.
 
+Parked Elaya landing skills live in `.agents/skills/landing-page-design/` and
+`.agents/skills/redesign-existing-projects/`. They apply only when explicitly
+invoked, and only to `/` and `/about`. `design.md` still wins; do not apply
+their Tailwind / Phosphor-only / island-nav Design Values to the workbench.
+
 ## Component and route conventions
 
 - Routes: `/` landing, `/about`, `/today` Ask, `/people`, `/people/:id`,
-  `/review`, `/settings/connectors` (Sources), `/setup`. `/connectors` and
-  `/settings` redirect. **These are deep links — preserve them and their query
-  parameters.**
+  `/review`, `/settings/connectors` (Sources). `/setup` redirects to `/today`.
+  `/connectors` and `/settings` redirect. **These are deep links — preserve them
+  and their query parameters.**
 - Primary nav is a workspace sidebar: Ask · Review · People · Sources.
   `/today` remains the Ask/Home route for deep-link compatibility. Find and
   Remember live in the rail.
 - People list state (`q`, `filter`, `page`, `view`, facet params) lives in the
   URL, not in component state. Deep links must survive reload and back/forward.
-  Cards is the default People surface; dense list uses `view=list`, and
+  Contact cards are the default People surface; click peeks metadata, and a
+  folder opens the person page, not the quick-profile drawer. Dense list uses `view=list`, and
   spreadsheet editing uses `view=sheet`.
 - Pages are lazy-loaded in `src/App.tsx`. Keep secondary features out of the
   initial chunk.
@@ -201,9 +211,9 @@ state, and duplicate design-system layers.
 - **Verify in a real browser.** A UI change is not done until it has been run,
   exercised at desktop and mobile widths in both colour schemes, keyboard-tested,
   visually inspected, and repaired.
-- **Feature-detect optional capabilities** — speech recognition, Ollama,
-  connectors, Full Disk Access, network. Every one of them must degrade to a
-  clearly explained, usable fallback rather than a broken control.
+- **Feature-detect optional capabilities** — speech recognition, hosted Ask
+  writer, connectors, Full Disk Access, network. Every one of them must degrade
+  to a clearly explained, usable fallback rather than a broken control.
 - Match the surrounding code's style. Comment only what the code cannot say.
 - Do not weaken a test to make it pass.
 
@@ -214,7 +224,9 @@ state, and duplicate design-system layers.
 | Schema and migrations | `server/migrations.ts` |
 | Person queries, hydration, provenance | `server/db.ts` |
 | HTTP routes | `server/index.ts` |
-| Ollama, evidence index, suggestions | `server/intelligence/` |
+| Ask writer, evidence index, suggestions | `server/intelligence/` |
+| Ask threads | `server/ask-threads.ts` |
+| Chat UI skills (assistant-ui, 21st, clone-ui) | `.agents/skills/assistant-ui/`, `.agents/skills/runtime/` |
 | Connector platform, credentials, MCP | `server/platform/` |
 | Apple Contacts / Messages | `server/connectors.ts`, `server/macos/` |
 | WhatsApp Desktop (wacrawl) | `server/connectors/whatsapp-desktop.ts` |
@@ -222,6 +234,9 @@ state, and duplicate design-system layers.
 | Design tokens and component CSS | `src/index.css` |
 | Shared UI | `src/components/Primitives.tsx` |
 | API client | `src/lib/api.ts` |
-| Skills for this repo | `.agents/skills/nett-*/SKILL.md` |
+| Skills for this repo | `.agents/skills/` |
+| Nett product skills | `.agents/skills/nett-*/SKILL.md` |
+| Anti-slop design | `.agents/skills/hallmark/SKILL.md` |
+| Parked landing design (later) | `.agents/skills/landing-page-design/SKILL.md`, `.agents/skills/redesign-existing-projects/SKILL.md` |
 | Executable workflows | `docs/workflows/` |
 | Measurements | `docs/audits/` |

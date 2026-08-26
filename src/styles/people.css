@@ -6,9 +6,17 @@
 }
 
 .people-page .page-heading h1 {
-  font-size: clamp(36px, 4vw, 42px);
-  font-weight: 600;
-  letter-spacing: -0.035em;
+  font-size: clamp(22px, 2.4vw, 26px);
+  font-weight: 500;
+  letter-spacing: -0.02em;
+}
+
+.people-page .page-heading p {
+  max-width: 42rem;
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 15px;
+  line-height: 1.6;
 }
 
 .people-recent {
@@ -535,7 +543,7 @@
     display: none;
   }
 
-  .people-page .page-heading > div > p:last-child {
+  .people-page .page-heading p {
     font-size: 15px;
   }
 }
@@ -754,9 +762,24 @@
   gap: var(--space-md);
 }
 
+.people-cards > li {
+  position: relative;
+  z-index: 0;
+  min-width: 0;
+}
+
+.people-cards > li.is-peeking {
+  z-index: 3;
+}
+
 .person-glow-card {
   min-height: 220px;
   height: 100%;
+}
+
+.person-glow-card.is-peeking,
+.person-glow-card.is-active {
+  z-index: 2;
 }
 
 .person-glow-inner {
@@ -799,6 +822,7 @@
   -webkit-line-clamp: 3;
   -webkit-box-orient: vertical;
   overflow: hidden;
+  overflow-wrap: anywhere;
 }
 
 .person-glow-foot {
@@ -848,7 +872,7 @@
 
 .person-glow-when small {
   font-family: inherit;
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .person-glow-card mark {
@@ -857,8 +881,293 @@
   border-radius: 3px;
 }
 
+.person-peek {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  min-height: 220px;
+  height: 100%;
+}
+
+.person-peek-facts {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.person-peek-fact {
+  position: relative;
+  display: grid;
+  grid-template-columns: 6.75rem minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+  margin: 0;
+}
+
+.person-peek-fact dt {
+  color: var(--muted);
+  font-size: 12px;
+  padding-top: 8px;
+}
+
+.person-peek-fact dd {
+  margin: 0;
+  min-width: 0;
+}
+
+.person-peek-fact button {
+  width: 100%;
+  min-height: 32px;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 14px;
+  line-height: 1.4;
+  text-align: left;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  cursor: help;
+}
+
+.person-peek-fact button:hover,
+.person-peek-fact button:focus-visible {
+  background: var(--tint);
+}
+
+.person-peek-fact button:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+
+.person-peek-tip {
+  position: absolute;
+  left: 6.75rem;
+  right: 0;
+  top: calc(100% - 2px);
+  z-index: 4;
+  display: none;
+  padding: 8px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  background: var(--overlay-surface);
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+  box-shadow: 0 12px 32px var(--shadow);
+}
+
+.person-peek-fact:hover .person-peek-tip,
+.person-peek-fact:focus-within .person-peek-tip {
+  display: block;
+}
+
+.person-peek-empty {
+  margin: 0;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.person-peek-folder {
+  --packet-back: var(--surface);
+  --packet-back-inset: inset 0 0 6px 2px color-mix(in oklch, var(--muted) 22%, transparent);
+  --packet-flap: var(--bg-deep);
+  --packet-flap-opacity: 0.88;
+  --packet-flap-stroke: var(--line-strong);
+  --packet-card: var(--text);
+  --packet-card-stroke: color-mix(in oklch, var(--text) 72%, var(--bg));
+  --packet-card-line: var(--muted);
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 44px;
+  margin-top: auto;
+  padding: 6px 10px 6px 6px;
+  border: 1px solid var(--line);
+  border-radius: var(--control-radius);
+  background: var(--tint);
+  color: inherit;
+  font-size: 14px;
+  text-decoration: none;
+  overflow: hidden;
+}
+
+.person-peek-folder:hover,
+.person-peek-folder:focus-visible {
+  border-color: var(--line-strong);
+  background: var(--tint-2);
+}
+
+.person-peek-folder:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.person-peek-folder-mark {
+  width: 72px;
+  height: 56px;
+  overflow: hidden;
+  display: grid;
+  place-items: center;
+}
+
+.person-peek-folder-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  font-weight: 560;
+}
+
+.person-peek-folder-copy small {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.evidence-folder {
+  position: relative;
+  flex: none;
+  overflow: hidden;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.evidence-folder-inner {
+  position: absolute;
+  top: 0;
+  left: 0;
+  transform: scale(var(--packet-scale, 1));
+  transform-origin: top left;
+  perspective: 800px;
+}
+
+.evidence-folder-back {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 321px;
+  height: 270px;
+  border-radius: 25px;
+  background: var(--packet-back);
+  transform: translate(-50%, -50%);
+}
+
+.evidence-folder-leaves {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+}
+
+.evidence-folder-leaf {
+  position: absolute;
+}
+
+.packet-leaf {
+  position: relative;
+}
+
+.packet-leaf-label {
+  position: absolute;
+  left: 18px;
+  right: 18px;
+  top: 108px;
+  color: var(--bg);
+  font-size: 13px;
+  font-weight: 560;
+  letter-spacing: -0.02em;
+  text-align: left;
+}
+
+.evidence-folder-flap {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 321px;
+  height: 241px;
+  margin-top: 16px;
+  transform-origin: bottom center;
+  transform-style: preserve-3d;
+}
+
+.evidence-folder-flap-glass {
+  position: absolute;
+  inset: 0;
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  clip-path: path("M0 25C0 11.1929 11.1929 0 25 0H136.084C143.044 0 149.689 2.90139 154.42 8.00608L178.08 33.5343C182.811 38.639 189.456 41.5404 196.416 41.5404H296C309.807 41.5404 321 52.7333 321 66.5404V216C321 229.807 309.807 241 296 241H25C11.1929 241 0 229.807 0 216V25Z");
+}
+
+.people-cards-placeholder {
+  min-height: 220px;
+  border-radius: var(--panel-radius);
+  background: var(--tint);
+}
+
+@media (prefers-color-scheme: dark) {
+  .person-peek-folder {
+    --packet-back: var(--bg-deep);
+    --packet-back-inset: inset 0 0 6px 2px color-mix(in oklch, var(--surface) 35%, transparent);
+    --packet-flap: var(--surface);
+    --packet-flap-opacity: 0.32;
+    --packet-flap-stroke: var(--line-strong);
+    --packet-card: var(--bg);
+    --packet-card-stroke: var(--line);
+    --packet-card-line: var(--line-strong);
+  }
+  .packet-leaf-label {
+    color: var(--text);
+  }
+}
+
+:root[data-theme="dark"] .person-peek-folder {
+  --packet-back: var(--bg-deep);
+  --packet-back-inset: inset 0 0 6px 2px color-mix(in oklch, var(--surface) 35%, transparent);
+  --packet-flap: var(--surface);
+  --packet-flap-opacity: 0.32;
+  --packet-flap-stroke: var(--line-strong);
+  --packet-card: var(--bg);
+  --packet-card-stroke: var(--line);
+  --packet-card-line: var(--line-strong);
+}
+
+:root[data-theme="dark"] .packet-leaf-label {
+  color: var(--text);
+}
+
+:root[data-theme="light"] .person-peek-folder {
+  --packet-back: var(--surface);
+  --packet-flap: var(--bg-deep);
+  --packet-flap-opacity: 0.88;
+  --packet-card: var(--text);
+}
+
 @media (max-width: 560px) {
   .people-cards {
     grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (pointer: coarse) {
+  .person-peek-fact button,
+  .person-peek-folder {
+    min-height: 44px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .evidence-folder-flap-glass {
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
   }
 }

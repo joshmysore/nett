@@ -5,8 +5,8 @@
  *  evidence. Nothing here writes to the database — the caller shows these to
  *  the user for approval first.
  *
- *  This runs with no model available, so capture keeps working when Ollama is
- *  not installed. When a model is available it can propose more, but it may
+ *  This runs with no model available, so capture keeps working when the hosted
+ *  writer is unset. When a model is available it can propose more, but it may
  *  never bypass the same review step.
  */
 

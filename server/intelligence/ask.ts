@@ -41,6 +41,9 @@ export type AskPerson = {
   score: number;
   groups: Set<string>;
   matches: AskMatch[];
+  /** Other stored people rows that look like the same name — used for evidence, not a merge. */
+  aliasIds: string[];
+  aliasNames: string[];
 };
 
 export type AskGroup = {
@@ -92,7 +95,7 @@ export type AskRetrieveOptions = {
   signal?: AbortSignal;
   personIds?: readonly string[];
   ability?: AskAbilityId | null;
-  /** Dedicated embedding model only. Omit when Ollama has no embed model. */
+  /** Dedicated embedding model only. Omit when no hosted embed writer is configured. */
   embedQuery?: (text: string, signal?: AbortSignal) => Promise<number[] | null>;
   /** Prior Ask turn — used to resolve they/them/their. */
   contextPersonIds?: readonly string[];
@@ -176,6 +179,8 @@ const PLACE_STOP = /^(who|that|which|with|and|or|to|for|about|like|likes|interes
 const PERSON_LIMIT = 12;
 const CANDIDATE_LIMIT = 48;
 const EVIDENCE_PER_PERSON = 8;
+/** Extra message/note excerpts packed for a single-person brief. */
+const BRIEF_EVIDENCE_PER_PERSON = 16;
 const MESSAGE_WINDOW = 40;
 const GROUP_WINDOW = 20;
 
@@ -223,7 +228,7 @@ function expandTerm(term: string): string[] {
 }
 
 const INFERENTIAL_PATTERN = /\b(might|maybe|perhaps|would|could|should|interested|recommend|suggest|introduc(?:e|tion)?|relevant|good fit|who would|who might|likely|probably)\b/i;
-const PERSON_BRIEF_PATTERN = /^(?:tell me about|what(?: else)? do i know about|who is|who'?s|about)\s+(.+?)\s*[.?!]*$/i;
+const PERSON_BRIEF_PATTERN = /^(?:tell me about|what(?: else)? do i know about|who is|who'?s|about)\s+(.+?)(?:\s*[.?!]|$)/i;
 const PRONOUN_PATTERN = /\b(they|them|their|theirs|this person)\b/i;
 const MESSAGE_INTENT_PATTERN = /\b(message history|messages?|texted|texts|sms|imessage|e-?mails?|gmail|whatsapp|talked|said|wrote|inbox|thread)\b/i;
 const GROUP_INTENT_PATTERN = /\b(group chats?|group threads?|groups)\b/i;
@@ -528,6 +533,8 @@ export function ftsQuery(question: string): string {
 type ProfileRow = {
   id: string;
   name: string;
+  first_name: string | null;
+  last_name: string | null;
   location: string | null;
   hometown: string | null;
   company: string | null;
@@ -547,10 +554,39 @@ type ProfileRow = {
 };
 
 const PROFILE_SELECT = `
-  SELECT p.id, p.preferred_name AS name, m.location, m.hometown, m.company, m.job_title,
-    m.industry, m.foods, m.interests, m.skills, m.notes, m.quick_memories, m.headline,
-    m.relationship, m.how_met, m.when_met, m.where_met, m.last_contact
+  SELECT p.id, p.preferred_name AS name, p.first_name, p.last_name, m.location, m.hometown,
+    m.company, m.job_title, m.industry, m.foods, m.interests, m.skills, m.notes,
+    m.quick_memories, m.headline, m.relationship, m.how_met, m.when_met, m.where_met,
+    m.last_contact
 `;
+
+const NAME_APOSTROPHES = /[\u2018\u2019\u201A\u201B\u2032\u00B4`]/g;
+
+export function normalizeAskName(value: string): string {
+  return value.normalize("NFKC").replace(NAME_APOSTROPHES, "'").replace(/\s+/g, " ").trim();
+}
+
+function nameKey(value: string | null | undefined): string {
+  return normalizeAskName(value || "").toLocaleLowerCase();
+}
+
+function structuredNameParts(row: Pick<ProfileRow, "name" | "first_name" | "last_name">): {
+  first: string;
+  last: string;
+  full: string;
+} {
+  const first = nameKey(row.first_name) || nameKey(row.name).split(/\s+/)[0] || "";
+  const last = nameKey(row.last_name);
+  const fromDisplay = nameKey(row.name);
+  const full = last ? `${first} ${last}` : fromDisplay || first;
+  return { first, last, full };
+}
+
+function queryNameParts(query: string): { first: string; last: string; full: string } {
+  const full = nameKey(query);
+  const tokens = full.split(/\s+/).filter(Boolean);
+  return { first: tokens[0] ?? "", last: tokens.slice(1).join(" "), full };
+}
 
 function emptyPerson(row: ProfileRow): AskPerson {
   return {
@@ -575,6 +611,8 @@ function emptyPerson(row: ProfileRow): AskPerson {
     score: 0,
     groups: new Set(),
     matches: [],
+    aliasIds: [],
+    aliasNames: [],
   };
 }
 
@@ -835,7 +873,7 @@ function selectPeople(people: Map<string, AskPerson>, intent: AskIntent): AskPer
 
 function attachEvidenceForPeople(people: AskPerson[], intent: AskIntent): void {
   if (!people.length) return;
-  const ids = people.map((person) => person.personId);
+  const ids = [...new Set(people.flatMap(evidencePersonIds))];
   const topicMatch = ftsMatchFromTerms([...intent.topics, ...intent.expansions]);
   const placeMatch = ftsMatchFromTerms(intent.places);
   const match = [placeMatch, topicMatch].filter(Boolean).join(" OR ") || topicMatch || placeMatch;
@@ -851,6 +889,8 @@ function attachEvidenceForPeople(people: AskPerson[], intent: AskIntent): void {
   const profiles = new Map(people.map((person) => [person.personId, {
     id: person.personId,
     name: person.name,
+    first_name: person.name.split(/\s+/)[0] || null,
+    last_name: person.name.split(/\s+/).slice(1).join(" ") || null,
     location: person.location,
     hometown: person.hometown,
     company: person.company,
@@ -934,14 +974,154 @@ function nameSearchIndex(): Fuse<NameRow> {
 }
 
 function nameScore(row: ProfileRow, query: string): number {
-  const needle = query.toLocaleLowerCase();
-  const name = row.name.toLocaleLowerCase();
-  if (name === needle) return 100;
-  const parts = needle.split(/\s+/);
-  if (name.startsWith(needle)) return 85;
-  if (parts.length >= 2 && name.endsWith(parts[parts.length - 1]) && name.startsWith(parts[0])) return 80;
-  if (parts.length === 1 && (name.startsWith(parts[0]) || name.split(/\s+/)[0] === parts[0])) return 45;
+  const needle = queryNameParts(query);
+  const name = structuredNameParts(row);
+  if (name.full === needle.full || nameKey(row.name) === needle.full) return 100;
+  if (nameKey(row.name).startsWith(needle.full)) return 85;
+  if (needle.last && name.first === needle.first && name.last === needle.last) return 100;
+  if (needle.last && name.first === needle.first && !name.last) return 80;
+  if (needle.last && name.first === needle.first && name.last.startsWith(needle.last)) return 80;
+  if (!needle.last && name.first === needle.first) return 45;
   return 20;
+}
+
+function loadAliasCandidateRows(query: string): ProfileRow[] {
+  const { first, last } = queryNameParts(query);
+  if (first.length < 2) return [];
+  if (last) {
+    return db.prepare(`
+      ${PROFILE_SELECT}
+      FROM people p
+      LEFT JOIN nett_metadata m ON m.person_id = p.id
+      WHERE p.last_name = ? COLLATE NOCASE
+         OR p.first_name = ? COLLATE NOCASE
+         OR p.preferred_name = ? COLLATE NOCASE
+      LIMIT 24
+    `).all(last, first, first) as ProfileRow[];
+  }
+  return db.prepare(`
+    ${PROFILE_SELECT}
+    FROM people p
+    LEFT JOIN nett_metadata m ON m.person_id = p.id
+    WHERE p.first_name = ? COLLATE NOCASE
+       OR p.preferred_name = ? COLLATE NOCASE
+       OR p.nickname = ? COLLATE NOCASE
+    LIMIT 16
+  `).all(first, first, first) as ProfileRow[];
+}
+
+function firstNameAliasAllowed(query: string, rows: readonly ProfileRow[]): boolean {
+  const needle = queryNameParts(query);
+  if (!needle.last) return false;
+  const sameFirst = rows.filter((row) => structuredNameParts(row).first === needle.first);
+  const firstOnly = sameFirst.filter((row) => !structuredNameParts(row).last);
+  const otherLasts = sameFirst.filter((row) => {
+    const last = structuredNameParts(row).last;
+    return Boolean(last) && last !== needle.last;
+  });
+  return firstOnly.length === 1 && otherLasts.length === 0;
+}
+
+function isNameAliasRow(query: string, row: ProfileRow, allowFirstOnly: boolean): boolean {
+  const needle = queryNameParts(query);
+  const name = structuredNameParts(row);
+  if (name.full === needle.full || nameKey(row.name) === needle.full) return true;
+  if (allowFirstOnly && name.first === needle.first && !name.last) return true;
+  return false;
+}
+
+function personAliasRow(person: AskPerson): ProfileRow {
+  const tokens = person.name.split(/\s+/);
+  return {
+    id: person.personId,
+    name: person.name,
+    first_name: tokens[0] || null,
+    last_name: tokens.slice(1).join(" ") || null,
+    location: person.location,
+    hometown: person.hometown,
+    company: person.company,
+    job_title: person.jobTitle,
+    industry: person.industry,
+    foods: person.foods,
+    interests: person.interests,
+    skills: person.skills,
+    notes: person.notes,
+    quick_memories: person.quickMemories,
+    headline: person.headline,
+    relationship: person.relationship,
+    how_met: person.howMet,
+    when_met: person.whenMet,
+    where_met: person.whereMet,
+    last_contact: person.lastContact,
+  };
+}
+
+function pickPrimaryAskPerson(group: AskPerson[]): AskPerson {
+  return [...group].sort((a, b) => {
+    const relationship = Number(Boolean(b.relationship)) - Number(Boolean(a.relationship));
+    if (relationship) return relationship;
+    const named = b.name.length - a.name.length;
+    if (named) return named;
+    const contact = Number(Boolean(b.lastContact)) - Number(Boolean(a.lastContact));
+    if (contact) return contact;
+    return b.score - a.score;
+  })[0];
+}
+
+function coalesceEquivalentAskPeople(people: AskPerson[], query?: string): AskPerson[] {
+  if (!people.length) return people;
+  const used = new Set<string>();
+  const result: AskPerson[] = [];
+  for (const person of people) {
+    if (used.has(person.personId)) continue;
+    const needle = query || person.name;
+    const rows = people.map(personAliasRow);
+    const allowFirstOnly = firstNameAliasAllowed(needle, rows)
+      || firstNameAliasAllowed(person.name, rows);
+    const group = people.filter((other) => {
+      if (other.personId === person.personId) return true;
+      if (person.aliasIds.includes(other.personId) || other.aliasIds.includes(person.personId)) return true;
+      return isNameAliasRow(needle, personAliasRow(other), allowFirstOnly)
+        || isNameAliasRow(person.name, personAliasRow(other), allowFirstOnly);
+    });
+    for (const item of group) used.add(item.personId);
+    const primary = pickPrimaryAskPerson(group);
+    const aliases = group.filter((item) => item.personId !== primary.personId);
+    if (!primary.lastContact) {
+      primary.lastContact = aliases.find((item) => item.lastContact)?.lastContact ?? null;
+    }
+    primary.aliasIds = [...new Set([...primary.aliasIds, ...aliases.map((item) => item.personId)])];
+    primary.aliasNames = [...new Set([...primary.aliasNames, ...aliases.map((item) => item.name)])];
+    result.push(primary);
+  }
+  return result;
+}
+
+function expandWithNameAliases(people: AskPerson[], query?: string): AskPerson[] {
+  const merged = new Map(people.map((person) => [person.personId, person]));
+  for (const person of people) {
+    const needle = query || person.name;
+    const rows = loadAliasCandidateRows(needle);
+    const allowFirstOnly = firstNameAliasAllowed(needle, rows);
+    for (const row of rows) {
+      if (merged.has(row.id) || !isNameAliasRow(needle, row, allowFirstOnly)) continue;
+      const alias = emptyPerson(row);
+      alias.score = Math.max(nameScore(row, needle), 80);
+      alias.groups.add("name");
+      merged.set(row.id, alias);
+    }
+  }
+  return coalesceEquivalentAskPeople([...merged.values()], query);
+}
+
+function evidencePersonIds(person: AskPerson): string[] {
+  return [...new Set([person.personId, ...person.aliasIds])];
+}
+
+function aliasNote(people: readonly AskPerson[]): string | undefined {
+  const names = [...new Set(people.flatMap((person) => person.aliasNames))].filter(Boolean);
+  if (!names.length) return undefined;
+  return `Also using records stored as ${names.join(", ")}.`;
 }
 
 function fuseNameScore(score: number): number {
@@ -983,7 +1163,8 @@ function loadExactNamedPeople(query: string): AskPerson[] {
   `).all(
     trimmed, trimmed, first, last, last || first, like, like, last, last, `${first}%`,
   ) as ProfileRow[];
-  const ranked = [...new Map(rows.map((row) => [row.id, row])).values()]
+  const aliases = loadAliasCandidateRows(trimmed);
+  const ranked = [...new Map([...rows, ...aliases].map((row) => [row.id, row])).values()]
     .map((row) => ({ row, score: nameScore(row, trimmed) }))
     .sort((a, b) => b.score - a.score);
   return peopleFromRanked(ranked);
@@ -1010,15 +1191,15 @@ export function fuzzyNamedPeople(query: string, limit = 5): AskPerson[] {
 
 export function loadNamedPeople(query: string): AskPerson[] {
   const exact = loadExactNamedPeople(query);
-  if (exact.some((person) => person.score >= 80)) return exact;
-  const fuzzy = fuzzyNamedPeople(query);
-  if (fuzzy.length) return fuzzy;
-  return exact;
+  const base = exact.some((person) => person.score >= 80)
+    ? exact
+    : (fuzzyNamedPeople(query).length ? fuzzyNamedPeople(query) : exact);
+  return expandWithNameAliases(base, query);
 }
 
 function loadPeopleByIds(ids: readonly string[]): AskPerson[] {
   const profiles = profilesByIds(ids);
-  return ids.flatMap((id) => {
+  const people = ids.flatMap((id) => {
     const row = profiles.get(id);
     if (!row) return [];
     const person = emptyPerson(row);
@@ -1026,6 +1207,7 @@ function loadPeopleByIds(ids: readonly string[]): AskPerson[] {
     person.groups.add("name");
     return [person];
   });
+  return expandWithNameAliases(people, people[0]?.name);
 }
 
 function resolveNamedPeople(intent: AskIntent, options: AskRetrieveOptions): {
@@ -1056,12 +1238,18 @@ function resolveNamedPeople(intent: AskIntent, options: AskRetrieveOptions): {
       if (!existing || existing.score < person.score) merged.set(person.personId, person);
     }
   }
-  const people = [...merged.values()].sort((a, b) => b.score - a.score);
+  const people = expandWithNameAliases(
+    [...merged.values()].sort((a, b) => b.score - a.score),
+    queries[0],
+  );
   if (!people.length) return { people };
-  const nameNote = fuzzyQuery && people[0]
-    ? `Matched ${people.map((person) => person.name).join(", ")} from “${fuzzyQuery}”.`
-    : undefined;
-  return { people, nameNote };
+  const notes = [
+    fuzzyQuery && people[0]
+      ? `Matched ${people.map((person) => person.name).join(", ")} from “${fuzzyQuery}”.`
+      : "",
+    aliasNote(people),
+  ].filter(Boolean);
+  return { people, nameNote: notes.join(" ") || undefined };
 }
 
 function attachPersonProfile(person: AskPerson): void {
@@ -1093,10 +1281,11 @@ function attachPersonProfile(person: AskPerson): void {
 }
 
 function attachPersonDocuments(person: AskPerson): void {
+  const ids = evidencePersonIds(person);
   const docs = db.prepare(`
     SELECT id, source, kind, text, occurred_at
     FROM evidence_documents
-    WHERE person_id = ?
+    WHERE person_id IN (${ids.map(() => "?").join(",")})
       AND kind IN ('memory', 'conversation-summary', 'interaction', 'profile')
     ORDER BY CASE kind
       WHEN 'memory' THEN 0
@@ -1105,7 +1294,7 @@ function attachPersonDocuments(person: AskPerson): void {
       ELSE 3
     END, occurred_at DESC
     LIMIT 10
-  `).all(person.personId) as Array<{
+  `).all(...ids) as Array<{
     id: string;
     source: string;
     kind: string;
@@ -1113,7 +1302,7 @@ function attachPersonDocuments(person: AskPerson): void {
     occurred_at: string | null;
   }>;
   for (const doc of docs) {
-    const excerpt = doc.text.replace(/\s+/g, " ").trim().slice(0, 240);
+    const excerpt = doc.text.replace(/\s+/g, " ").trim().slice(0, 600);
     if (!usefulExcerpt(person, excerpt)) continue;
     addMatch(person, "evidence", {
       field: doc.kind === "memory" ? "memory" : doc.kind === "conversation-summary" ? "conversation" : "profile",
@@ -1131,24 +1320,25 @@ function communicationExcerpt(body: string, subject: string | null, title: strin
     subject ? `subject: ${subject}` : "",
     body.replace(/\s+/g, " ").trim(),
   ].filter(Boolean);
-  return parts.join(" · ").slice(0, 280);
+  return parts.join(" · ").slice(0, 600);
 }
 
 function attachPersonMessages(person: AskPerson, intent: AskIntent): void {
   const sources = intent.sources.length ? intent.sources : ["gmail", "whatsapp", "messages"];
+  const ids = evidencePersonIds(person);
   const rows = db.prepare(`
     SELECT c.id, c.connector_id, c.body, c.occurred_at, c.direction, c.evidence_json,
       cv.title AS thread_title, cv.is_group
     FROM communication_people cp
     JOIN communications c ON c.id = cp.communication_id
     LEFT JOIN conversations cv ON cv.id = c.conversation_id
-    WHERE cp.person_id = ?
+    WHERE cp.person_id IN (${ids.map(() => "?").join(",")})
       AND c.connector_id IN (${sources.map(() => "?").join(",")})
       AND c.body IS NOT NULL
       AND TRIM(c.body) != ''
     ORDER BY c.occurred_at DESC
     LIMIT ?
-  `).all(person.personId, ...sources, MESSAGE_WINDOW) as Array<{
+  `).all(...ids, ...sources, MESSAGE_WINDOW) as Array<{
     id: string;
     connector_id: string;
     body: string;
@@ -1238,11 +1428,15 @@ function normalizeGroups(rows: Array<{ id: string; title: string | null; source:
 
 function attachPersonRecordEvidence(people: AskPerson[], intent: AskIntent, options: { messages?: boolean } = {}): void {
   const includeMessages = options.messages ?? (people.length <= 2);
+  const brief = people.length <= 2 && (intent.personBrief || Boolean(intent.namedPerson) || intent.wantsMessages);
+  const matchCap = brief
+    ? BRIEF_EVIDENCE_PER_PERSON + 10
+    : includeMessages ? EVIDENCE_PER_PERSON + 8 : EVIDENCE_PER_PERSON + 2;
   for (const person of people) {
     attachPersonProfile(person);
     attachPersonDocuments(person);
     if (includeMessages) attachPersonMessages(person, intent);
-    person.matches = person.matches.slice(0, includeMessages ? EVIDENCE_PER_PERSON + 8 : EVIDENCE_PER_PERSON + 2);
+    person.matches = person.matches.slice(0, matchCap);
   }
 }
 
@@ -1261,7 +1455,7 @@ function retrieveScopedPeople(
   people: AskPerson[],
   options: AskRetrieveOptions,
 ): AskRetrieval {
-  const ids = people.map((person) => person.personId);
+  const ids = [...new Set(people.flatMap(evidencePersonIds))];
   const hasConstraint = Boolean(intent.places.length || intent.topics.length || intent.foodIntent);
   if (hasConstraint && !intent.personBrief) {
     const topicMatch = topicFtsMatch(intent);
@@ -1289,6 +1483,7 @@ function retrieveScopedPeople(
         people: next,
         groups: loadGroupsForPeople(ids),
         provider: "local-evidence",
+        nameNote: aliasNote(next),
       };
     }
   }
@@ -1302,6 +1497,7 @@ function retrieveScopedPeople(
     people,
     groups: loadGroupsForPeople(ids),
     provider: "local-evidence",
+    nameNote: aliasNote(people),
   };
 }
 
@@ -1319,7 +1515,7 @@ export async function retrieveAskMatches(
     const ambiguous = resolved.people.length > 1 && resolved.people[0].score - (resolved.people[1]?.score ?? 0) < 15;
     attachPersonRecordEvidence(resolved.people, intent, { messages: !ambiguous });
     const groups = intent.wantsGroups || resolved.people.length <= 2
-      ? loadGroupsForPeople(resolved.people.map((person) => person.personId))
+      ? loadGroupsForPeople(resolved.people.flatMap(evidencePersonIds))
       : [];
     return {
       intent,
@@ -1543,6 +1739,13 @@ export function askEvidenceBlocks(retrieval: AskRetrieval): Array<{
   title: string;
   text: string;
 }> {
+  const brief = retrieval.people.length <= 2
+    && (retrieval.intent.personBrief || Boolean(retrieval.intent.namedPerson) || retrieval.intent.wantsMessages);
+  const perPerson = brief ? BRIEF_EVIDENCE_PER_PERSON : EVIDENCE_PER_PERSON;
+  const noteLimit = brief ? 2_000 : 800;
+  const memoryLimit = brief ? 1_200 : 400;
+  const excerptLimit = brief ? 1_400 : 900;
+  const blockCap = brief ? 48 : 40;
   const blocks: Array<{ id: string; title: string; text: string }> = [];
   if (retrieval.nameNote) {
     blocks.push({ id: "name-match", title: "Name match", text: retrieval.nameNote });
@@ -1560,39 +1763,40 @@ export function askEvidenceBlocks(retrieval: AskRetrieval): Array<{
   }
   for (const person of retrieval.people) {
     const profile = [
-      person.relationship && `relationship: ${person.relationship}`,
+      `name: ${person.name}`,
+      person.relationship && `why they matter / relationship: ${person.relationship}`,
+      person.howMet && `how met: ${person.howMet}`,
+      person.whenMet && `when met: ${person.whenMet}`,
+      person.whereMet && `where met: ${person.whereMet}`,
       person.location && `location: ${person.location}`,
       person.hometown && `hometown: ${listText(person.hometown)}`,
       person.company && `company: ${person.company}`,
       person.jobTitle && `job title: ${person.jobTitle}`,
       person.headline && `headline: ${person.headline}`,
       person.industry && `industry: ${person.industry}`,
-      person.howMet && `how met: ${person.howMet}`,
-      person.whenMet && `when met: ${person.whenMet}`,
-      person.whereMet && `where met: ${person.whereMet}`,
       person.foods && `foods: ${person.foods}`,
       person.interests && `interests: ${person.interests}`,
       person.skills && `skills: ${person.skills}`,
-      person.notes && `notes: ${person.notes.slice(0, 400)}`,
-      person.quickMemories && `memories: ${person.quickMemories.slice(0, 240)}`,
+      person.notes && `notes: ${person.notes.slice(0, noteLimit)}`,
+      person.quickMemories && `memories: ${person.quickMemories.slice(0, memoryLimit)}`,
       person.lastContact && `last contact: ${humanDate(person.lastContact)}`,
     ].filter(Boolean).join("\n");
     blocks.push({
       id: person.personId,
-      title: person.name,
+      title: `${person.name} · profile`,
       text: profile || person.name,
     });
-    for (const match of person.matches.slice(0, EVIDENCE_PER_PERSON)) {
+    for (const match of person.matches.slice(0, perPerson)) {
       if (!match.excerpt) continue;
       const id = match.evidenceId || `${person.personId}:${match.field}:${blocks.length}`;
       blocks.push({
         id,
-        title: `${person.name} · ${match.source}`,
-        text: [match.occurredAt, match.excerpt].filter(Boolean).join("\n").slice(0, 900),
+        title: `${person.name} · ${match.source}${match.field ? ` · ${match.field}` : ""}`,
+        text: [match.occurredAt, match.excerpt].filter(Boolean).join("\n").slice(0, excerptLimit),
       });
     }
   }
-  return blocks.slice(0, 28);
+  return blocks.slice(0, blockCap);
 }
 
 export function retrievalPathNote(retrieval: AskRetrieval): string {

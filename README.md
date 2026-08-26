@@ -34,15 +34,13 @@ The production server is available at [http://127.0.0.1:4174](http://127.0.0.1:4
 
 ## First-run workflow
 
-Setup is `/setup`. The intended path is short:
+Open Nett goes to Ask. `/setup` still exists as a deep link and redirects there.
 
-1. **You.** Name yourself, then speak or type a couple of hometowns and a couple of interests. The transcript is kept; chips are editable; nothing is written onto other people yet.
-2. **Contacts.** Apple Contacts is the identity foundation. Skip if you do not want it yet.
-3. **Conversations.** Connect Messages, WhatsApp Desktop, and Gmail from the same step. Spreadsheet import remains available as a fallback. Open Nett whenever you are ready — sources can be added later from **Sources**.
+1. **Ask** any question about people you already have.
+2. **Sources** connect Apple Contacts, Messages, WhatsApp Desktop, and Gmail. Spreadsheet import remains available as a fallback.
+3. **People** is the recognition surface — contact cards and folders. **Fill gaps** walks missing hometowns and interests one field at a time.
 
-Nett then uses your hometowns as a private cluster prior: people you already connected who share one of those places can get a reviewable hometown suggestion, and mutual suggestions that already qualify on school/place can mention that the overlap is one of your hometowns. It does not assume that strangers in the same city know each other, and it does not scrape Instagram.
-
-After setup, People opens filtered to missing hometowns so **Fill gaps** is the easy manual path beside autofill.
+Nett uses owner hometowns as a private cluster prior when they exist: people who share one of those places can get a reviewable hometown suggestion. It does not assume that strangers in the same city know each other, and it does not scrape Instagram.
 
 ## Apple Contacts access
 
@@ -138,33 +136,29 @@ Email and phone columns are also accepted for matching. Exact contact methods me
 - Ask Nett is Home. It questions stored records and does not write. People, Review, and Sources live in the sidebar.
 - Voice capture uses the browser Speech Recognition API when available. The transcript is always shown for approval before saving.
 
-## Local intelligence with Ollama
+## Hosted Ask with OpenRouter
 
-Nett uses Ollama on the loopback interface. Remote Ollama hosts are rejected unless a developer explicitly enables them in code. No remote LLM provider is configured.
+Ask retrieves matching people, notes, and messages locally, then sends **only
+those evidence excerpts** plus the question to OpenRouter. The OpenRouter key
+is stored in the macOS Keychain (`com.nett.local.ask`), not in git. Set it on
+Sources → Ask writer, or with `NETT_OPENROUTER_API_KEY`.
 
-```bash
-brew install ollama
-ollama serve
-ollama pull nomic-embed-text
-ollama pull llama3.2:3b
-ollama pull qwen3:14b
-```
+Ask uses `stealth/ox-alpha` (Ox Alpha via OpenRouter’s stealth provider — not
+Anthropic or OpenAI). Embeddings still use `openai/text-embedding-3-small`
+through OpenRouter because Ox Alpha is not an embedding model. Chat models are
+never used to embed.
 
-Nett detects installed models automatically:
+If no key is stored, lexical retrieval still works and Ask answers from stored
+records only. Autofill never writes automatically. Accepted and rejected
+suggestions are stored as local feedback.
 
-- **Embed** — `nomic-embed-text` (then `mxbai-embed-large`, `all-minilm`). Chat models are never used to embed.
-- **Fast chat** — `llama3.2:3b` for anything that should stay snappy. Factual Ask lists skip the chat model entirely.
-- **Reasoning chat** — `qwen3:14b` for “who might be interested” write-ups and profile autofill.
-
-Override with `NETT_OLLAMA_EMBED_MODEL`, `NETT_OLLAMA_FAST_MODEL`, and `NETT_OLLAMA_MODEL`. Open Sources and choose **Refresh index** to build:
+Open Sources and choose **Index** to rebuild:
 
 - an SQLite FTS5 evidence index over profiles, provenance, memories, and communications;
-- compact local embeddings for hybrid retrieval;
+- compact embeddings for hybrid retrieval;
 - cited answers that must reference retrieved evidence;
 - reviewable profile autofill suggestions;
 - explainable recency, cadence drift, reciprocity, channel-diversity, and frequency signals.
-
-If Ollama is unavailable, lexical retrieval and deterministic suggestions continue to work. Autofill never writes automatically. Accepted and rejected suggestions are stored as local feedback.
 
 ## LinkedIn public profile assist
 
@@ -207,7 +201,7 @@ npm run test:e2e
 npm run build
 ```
 
-`npm test` runs isolated migration, Apple-note, Messages-cursor, phone-normalization, LinkedIn public-evidence parsing/provenance, bounded dashboard hydration, WhatsApp-parser, credential-vault, Ollama, and atomic-ingestion checks. Browser tests cover desktop and mobile navigation, server pagination, profiles, connector states, command search, and WCAG serious/critical violations.
+`npm test` runs isolated migration, Apple-note, Messages-cursor, phone-normalization, LinkedIn public-evidence parsing/provenance, bounded dashboard hydration, WhatsApp-parser, credential-vault, Ask-writer, and atomic-ingestion checks. Browser tests cover desktop and mobile navigation, server pagination, profiles, connector states, command search, and WCAG serious/critical violations.
 
 ## Architecture
 
@@ -220,7 +214,7 @@ npm run build
 - Connector lifecycle with Keychain credentials, sync cursors, atomic ingestion, source identities, raw records, provenance, and structured errors
 - First-party Gmail, Telegram, WhatsApp-export, Apple Contacts, and Messages adapters
 - Local MCP bridge for optional sidecar connectors
-- Ollama-backed local inference with compact embeddings, cited answers, and reviewable autofill
+- OpenRouter-backed Ask with retrieved evidence, cited answers, and reviewable autofill
 
 The primary table is `people`. Connector-specific identity records belong to `source_identities`, while exact phones and emails live in `contact_methods`. Important facts retain rows in `field_provenance`. Memories, interactions, tags, source records, imports, message links, and AI queries are normalized separately.
 

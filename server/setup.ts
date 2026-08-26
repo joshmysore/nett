@@ -202,13 +202,13 @@ export function setupStatus() {
       whatsapp,
     },
     nextAction: phase === "welcome"
-      ? { step: "welcome", label: "Start local setup", route: "/setup" }
+      ? { step: "welcome", label: "Ask a question", route: "/today" }
       : phase === "you"
-        ? { step: "you", label: "Add your hometowns and interests", route: "/setup" }
+        ? { step: "you", label: "Add your hometowns and interests", route: "/people" }
         : phase === "contacts"
-          ? { step: "contacts", label: "Import Apple Contacts", route: "/setup" }
+          ? { step: "contacts", label: "Import Apple Contacts", route: "/settings/connectors" }
           : phase === "conversations"
-            ? { step: "conversations", label: "Connect conversations", route: "/setup" }
+            ? { step: "conversations", label: "Connect conversations", route: "/settings/connectors" }
             : null,
   };
 }

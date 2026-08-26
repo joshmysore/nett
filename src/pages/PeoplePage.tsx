@@ -561,15 +561,25 @@ export function PeoplePage({ onOpen }: { onOpen: (id: string) => void }) {
 
       {!loaded ? (
         <div className="people-index">
-          <ul className="people-list" aria-hidden="true">
-            {Array.from({ length: 12 }).map((_, index) => (
-              <li key={index}>
-                <span className="person-row is-placeholder">
-                  <span />
-                </span>
-              </li>
-            ))}
-          </ul>
+          {view === "cards" ? (
+            <ul className="people-cards" aria-hidden="true">
+              {Array.from({ length: 8 }).map((_, index) => (
+                <li key={index}>
+                  <span className="people-cards-placeholder" />
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <ul className="people-list" aria-hidden="true">
+              {Array.from({ length: 12 }).map((_, index) => (
+                <li key={index}>
+                  <span className="person-row is-placeholder">
+                    <span />
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
         </div>
       ) : rows.length ? (
         <>
@@ -585,7 +595,6 @@ export function PeoplePage({ onOpen }: { onOpen: (id: string) => void }) {
           ) : view === "cards" ? (
             <PeopleCards
               people={rows}
-              onOpen={onOpen}
               activeIndex={activeIndex}
               onActiveIndex={setActiveIndex}
               rowRefs={rowRefs}

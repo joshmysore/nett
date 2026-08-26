@@ -1,4 +1,5 @@
 import {
+  CaretLeft,
   Circle,
   Command,
   Moon,
@@ -14,13 +15,21 @@ import { api, isAbortError } from "@/lib/api";
 import { useTheme } from "@/lib/theme";
 
 const ITEMS = [
-  { key: "ask", to: "/today", label: "Ask", section: "Workspace", end: true },
-  { key: "review", to: "/review", label: "Review", section: "Workspace", count: true, end: true },
-  { key: "people", to: "/people", label: "People", section: "Records", plus: true, end: false },
-  { key: "sources", to: "/settings/connectors", label: "Sources", section: "Records", end: false },
+  { key: "ask", to: "/today", label: "Ask", end: true },
+  { key: "review", to: "/review", label: "Review", count: true, end: true },
+  { key: "people", to: "/people", label: "People", plus: true, end: false },
+  { key: "sources", to: "/settings/connectors", label: "Sources", end: false },
 ] as const;
 
-const SECTIONS = ["Workspace", "Records"] as const;
+const RAIL_COLLAPSED_KEY = "nett.railCollapsed";
+
+function readRailCollapsed() {
+  try {
+    return localStorage.getItem(RAIL_COLLAPSED_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
 
 function NavIcon({ kind }: { kind: string }) {
   const paths: Record<string, ReactNode> = {
@@ -75,6 +84,7 @@ export function AppShell({
   ownerName?: string | null;
 }) {
   const [railOpen, setRailOpen] = useState(false);
+  const [railCollapsed, setRailCollapsed] = useState(readRailCollapsed);
   const [reviewCount, setReviewCount] = useState(0);
   const [freshLabel, setFreshLabel] = useState("Ready");
   const [hovered, setHovered] = useState<string | null>(null);
@@ -106,7 +116,19 @@ export function AppShell({
       top: targetRect.top - containerRect.top,
       height: targetRect.height,
     });
-  }, [hovered, active, reviewCount, railOpen]);
+  }, [hovered, active, reviewCount, railOpen, railCollapsed]);
+
+  const toggleRailCollapsed = () => {
+    setRailCollapsed((collapsed) => {
+      const next = !collapsed;
+      try {
+        localStorage.setItem(RAIL_COLLAPSED_KEY, next ? "1" : "0");
+      } catch {
+        // Ignore storage failures; in-memory toggle still applies.
+      }
+      return next;
+    });
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -148,7 +170,7 @@ export function AppShell({
   const ThemeIcon = preference === "light" ? Sun : preference === "dark" ? Moon : Circle;
 
   return (
-    <div className={`app-frame ${railOpen ? "rail-open" : ""} ${askHome ? "is-ask-home" : ""}`}>
+    <div className={`app-frame ${railOpen ? "rail-open" : ""} ${railCollapsed ? "rail-collapsed" : ""} ${askHome ? "is-ask-home" : ""}`}>
       <a className="skip-link" href="#main-content">Skip to content</a>
       {railOpen && (
         <button
@@ -158,15 +180,12 @@ export function AppShell({
         />
       )}
       <aside className="side-rail" aria-label="Primary navigation">
-        <NavLink className="workspace-switch" to="/setup" title="Local workspace">
+        <NavLink className="workspace-switch" to="/today" title="Ask">
           <span className="workspace-mark" aria-hidden="true">{workspaceInitial}</span>
           <span className="workspace-copy">
             <span className="workspace-name">{workspaceName}</span>
-            <span className="workspace-meta">Local workspace</span>
+            <span className="workspace-meta">On this Mac</span>
           </span>
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-            <path d="M7 15l5 5 5-5M7 9l5-5 5 5" />
-          </svg>
         </NavLink>
 
         <button
@@ -201,6 +220,7 @@ export function AppShell({
 
         <nav
           className="rail-nav"
+          id="primary-rail-nav"
           ref={navRef}
           onMouseLeave={() => setHovered(null)}
         >
@@ -213,59 +233,66 @@ export function AppShell({
               opacity: box ? 1 : 0,
             }}
           />
-          {SECTIONS.map((section) => (
-            <div key={section} className="rail-section">
-              <p className="rail-section-label">{section}</p>
-              <div className="rail-section-items">
-                {ITEMS.filter((item) => item.section === section).map((item) => (
-                  <div
-                    key={item.key}
-                    className="rail-row"
-                    onMouseEnter={() => setHovered(item.key)}
-                    onMouseLeave={() => setHovered(null)}
-                  >
-                    <NavLink
-                      to={item.to}
-                      end={item.end}
-                      ref={(el) => {
-                        itemRefs.current[item.key] = el;
-                      }}
-                      className={({ isActive }) => `rail-link ${isActive ? "is-active" : ""}`}
-                      onFocus={() => setHovered(item.key)}
-                      onBlur={() => setHovered(null)}
-                      aria-current={item.key === active ? "page" : undefined}
+          <div className="rail-section-items">
+            {ITEMS.map((item) => (
+              <div
+                key={item.key}
+                className="rail-row"
+                onMouseEnter={() => setHovered(item.key)}
+                onMouseLeave={() => setHovered(null)}
+              >
+                <NavLink
+                  to={item.to}
+                  end={item.end}
+                  ref={(el) => {
+                    itemRefs.current[item.key] = el;
+                  }}
+                  className={({ isActive }) => `rail-link ${isActive ? "is-active" : ""}`}
+                  onFocus={() => setHovered(item.key)}
+                  onBlur={() => setHovered(null)}
+                  aria-current={item.key === active ? "page" : undefined}
+                  title={railCollapsed ? item.label : undefined}
+                >
+                  <span className="rail-link-icon">
+                    <NavIcon kind={item.key} />
+                  </span>
+                  <span className="rail-link-label">{item.label}</span>
+                  {"count" in item && item.count && reviewCount > 0 && (
+                    <span
+                      className="rail-count"
+                      aria-label={`${reviewCount} unresolved review items`}
                     >
-                      <span className="rail-link-icon">
-                        <NavIcon kind={item.key} />
-                      </span>
-                      <span className="rail-link-label">{item.label}</span>
-                      {"count" in item && item.count && reviewCount > 0 && (
-                        <span
-                          className="rail-count"
-                          aria-label={`${reviewCount} unresolved review items`}
-                        >
-                          {reviewCount > 99 ? "99+" : reviewCount}
-                        </span>
-                      )}
-                    </NavLink>
-                    {"plus" in item && item.plus && (
-                      <button
-                        type="button"
-                        className="rail-plus"
-                        aria-label="Remember someone"
-                        onClick={onCapture}
-                      >
-                        <Plus size={10} weight="bold" />
-                      </button>
-                    )}
-                  </div>
-                ))}
+                      {reviewCount > 99 ? "99+" : reviewCount}
+                    </span>
+                  )}
+                </NavLink>
+                {"plus" in item && item.plus && (
+                  <button
+                    type="button"
+                    className="rail-plus"
+                    aria-label="Remember someone"
+                    onClick={onCapture}
+                  >
+                    <Plus size={10} weight="bold" />
+                  </button>
+                )}
               </div>
-            </div>
-          ))}
+            ))}
+          </div>
         </nav>
 
         <div className="rail-bottom">
+          <button
+            type="button"
+            className="rail-collapse-toggle"
+            onClick={toggleRailCollapsed}
+            aria-expanded={!railCollapsed}
+            aria-controls="primary-rail-nav"
+            aria-label={railCollapsed ? "Expand navigation" : "Collapse navigation"}
+          >
+            {railCollapsed ? <SidebarSimple size={18} aria-hidden="true" /> : <CaretLeft size={16} aria-hidden="true" />}
+            <span className="rail-collapse-label">{railCollapsed ? "Expand" : "Collapse"}</span>
+          </button>
           <span className="local-status">
             <i aria-hidden="true" />
             <span>

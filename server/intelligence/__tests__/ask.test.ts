@@ -9,6 +9,9 @@ const temporaryDirectory = mkdtempSync(path.join(tmpdir(), "nett-ask-test-"));
 process.env.NETT_DB_PATH = path.join(temporaryDirectory, "nett.db");
 process.env.NETT_MESSAGES_DB = path.join(temporaryDirectory, "chat.db");
 delete process.env.NETT_OLLAMA_MODEL;
+delete process.env.NETT_ASK_WRITER;
+delete process.env.NETT_OPENROUTER_API_KEY;
+delete process.env.OPENROUTER_API_KEY;
 
 type FetchHandler = (url: string, init?: RequestInit) => Promise<Response>;
 const offline: FetchHandler = async () => {
@@ -28,8 +31,11 @@ const {
   reciprocalRankFusion,
   extractNamedPerson,
   loadNamedPeople,
+  normalizeAskName,
 } = await import("../ask.js");
 const { answerRelationshipQuestion, refreshEvidenceEmbeddings, resetIntelligenceModelCache, streamRelationshipQuestion } = await import("../service.js");
+const { InMemoryCredentialVault } = await import("../../platform/security/credential-vault.js");
+const { resetAskWriterVault, setAskWriterSettings } = await import("../ask-writer.js");
 
 after(() => {
   db.close();
@@ -91,6 +97,13 @@ function json(body: unknown): Response {
   return new Response(JSON.stringify(body), {
     status: 200,
     headers: { "content-type": "application/json" },
+  });
+}
+
+function sse(events: string[]): Response {
+  return new Response(`${events.join("\n\n")}\n\n`, {
+    status: 200,
+    headers: { "content-type": "text/event-stream" },
   });
 }
 
@@ -199,6 +212,12 @@ test("what-else-about does not treat else as a topic", () => {
   assert.ok(!intent.topics.includes("else"));
 });
 
+test("a follow-up clause does not become part of the person name", () => {
+  const intent = parseAskIntent("what do i know about kendra mysore? any key insights on our relationship?");
+  assert.equal(intent.namedPerson?.toLocaleLowerCase(), "kendra mysore");
+  assert.ok(!intent.namedPerson?.toLocaleLowerCase().includes("insights"));
+});
+
 test("a place-only question still answers from the people index without a model", async () => {
   seedPerson("Giselle Paris", { location: "Paris", job_title: "Editor" });
   seedPerson("Hugo Lyon", { location: "Lyon" });
@@ -285,122 +304,121 @@ test("cosine and reciprocal rank fusion score as expected", () => {
   assert.equal(fused.get("a"), fused.get("b"));
 });
 
-test("tell-me-about uses the local chat model when it is available", async () => {
+test("tell-me-about uses OpenRouter when a key is stored", async () => {
   seedPerson("Nora Brief", { location: "Lisbon", company: "Atelier Nora", relationship: "collaborator" });
   refreshEvidenceIndex();
+  resetAskWriterVault(new InMemoryCredentialVault());
   resetIntelligenceModelCache();
-  let generateModel = "";
+  await setAskWriterSettings({
+    writer: "openrouter",
+    model: "anthropic/claude-sonnet-4.6",
+    apiKey: "test-key",
+  });
+  let askedModel = "";
+  let prompt = "";
+  let provider: { ignore?: string[]; allow_fallbacks?: boolean; only?: string[] } | undefined;
   handler = async (url, init) => {
-    if (url.endsWith("/api/version")) return json({ version: "test" });
-    if (url.endsWith("/api/tags")) {
-      return json({ models: [{ name: "llama3.2:3b" }, { name: "qwen3:14b" }] });
-    }
-    if (url.endsWith("/api/generate")) {
-      generateModel = JSON.parse(String(init?.body || "{}")).model;
-      return json({
-        response: JSON.stringify({
-          answer: "Nora Brief is a collaborator at Atelier Nora in Lisbon.",
-          citations: [],
-        }),
-      });
+    const target = String(url);
+    if (target.includes("/embeddings")) return json({ data: [] });
+    if (target.includes("openrouter.ai/api/v1/chat/completions")) {
+      const body = JSON.parse(String(init?.body || "{}"));
+      askedModel = body.model;
+      provider = body.provider;
+      prompt = JSON.stringify(body.messages);
+      return sse([
+        `data: ${JSON.stringify({ model: "stealth/ox-alpha", choices: [{ delta: { content: "Nora Brief is a collaborator at Atelier Nora in Lisbon." } }] })}`,
+        "data: [DONE]",
+      ]);
     }
     throw new Error(`unexpected ${url}`);
   };
   const answer = await answerRelationshipQuestion("Tell me about Nora Brief");
-  assert.equal(generateModel, "llama3.2:3b");
-  assert.equal(answer.provider, "ollama:llama3.2:3b");
+  assert.equal(askedModel, "stealth/ox-alpha");
+  assert.deepEqual(provider?.ignore, ["anthropic", "openai"]);
+  assert.equal(provider?.allow_fallbacks, false);
+  assert.match(prompt, /Nora Brief|Atelier Nora/i);
+  assert.equal(answer.provider, "openrouter:stealth/ox-alpha");
   assert.match(answer.answer, /Nora Brief/);
   handler = offline;
+  await setAskWriterSettings({ writer: "local" });
+  resetAskWriterVault(new InMemoryCredentialVault());
   resetIntelligenceModelCache();
 });
 
-test("inferential questions use the fast local chat model first", async () => {
-  seedPerson("Dana Legal Model", { location: "Berlin", industry: "Legal technology" });
-  refreshEvidenceIndex();
-  resetIntelligenceModelCache();
-  let generateModel = "";
-  handler = async (url, init) => {
-    if (url.endsWith("/api/version")) return json({ version: "test" });
-    if (url.endsWith("/api/tags")) {
-      return json({ models: [{ name: "llama3.2:3b" }, { name: "qwen3:14b" }, { name: "nomic-embed-text" }] });
-    }
-    if (url.endsWith("/api/embed")) return json({ embeddings: [[0, 0, 1]] });
-    if (url.endsWith("/api/generate")) {
-      generateModel = JSON.parse(String(init?.body || "{}")).model;
-      return json({
-        response: JSON.stringify({
-          answer: "Dana Legal Model works in legal technology.",
-          citations: [],
-        }),
-      });
-    }
-    throw new Error(`unexpected ${url}`);
-  };
-  const answer = await answerRelationshipQuestion("Who might be interested in legal tech?");
-  assert.equal(generateModel, "llama3.2:3b");
-  assert.equal(answer.provider, "ollama:llama3.2:3b");
-  handler = offline;
-  resetIntelligenceModelCache();
-});
-
-test("inferential questions escalate when the fast model is thin", async () => {
-  seedPerson("Dana Legal Escalate", { location: "Berlin", industry: "Legal technology" });
-  refreshEvidenceIndex();
-  resetIntelligenceModelCache();
-  const modelsUsed: string[] = [];
-  handler = async (url, init) => {
-    if (url.endsWith("/api/version")) return json({ version: "test" });
-    if (url.endsWith("/api/tags")) {
-      return json({ models: [{ name: "llama3.2:3b" }, { name: "qwen3:14b" }] });
-    }
-    if (url.endsWith("/api/generate")) {
-      const model = JSON.parse(String(init?.body || "{}")).model;
-      modelsUsed.push(model);
-      if (model === "llama3.2:3b") {
-        return json({
-          response: JSON.stringify({ answer: "No.", citations: [] }),
-        });
-      }
-      return json({
-        response: JSON.stringify({
-          answer: "Dana Legal Escalate works in legal technology.",
-          citations: [],
-        }),
-      });
-    }
-    throw new Error(`unexpected ${url}`);
-  };
-  const answer = await answerRelationshipQuestion("Who might be interested in legal tech?");
-  assert.deepEqual(modelsUsed, ["llama3.2:3b", "qwen3:14b"]);
-  assert.equal(answer.provider, "ollama:qwen3:14b");
-  handler = offline;
-  resetIntelligenceModelCache();
-});
-
-test("any stored-record question uses the local chat model when it is available", async () => {
+test("people questions send stored evidence blocks to OpenRouter", async () => {
   seedPerson("Giselle Model Paris", { location: "Paris", foods: ["Sichuan"] });
   refreshEvidenceIndex();
+  resetAskWriterVault(new InMemoryCredentialVault());
   resetIntelligenceModelCache();
-  let generateCalled = false;
+  await setAskWriterSettings({
+    writer: "openrouter",
+    model: "anthropic/claude-sonnet-4.6",
+    apiKey: "test-key",
+  });
+  let prompt = "";
   handler = async (url, init) => {
-    if (url.endsWith("/api/version")) return json({ version: "test" });
-    if (url.endsWith("/api/tags")) return json({ models: [{ name: "llama3.2:3b" }, { name: "qwen3:14b" }] });
-    if (url.endsWith("/api/generate")) {
-      generateCalled = true;
-      const body = JSON.parse(String(init?.body || "{}"));
-      assert.match(String(body.prompt || body.system || ""), /Giselle Model Paris|Paris/i);
-      return json({
-        response: JSON.stringify({
-          answer: "Giselle Model Paris is in Paris and likes Sichuan.",
-          citations: [],
-        }),
-      });
+    const target = String(url);
+    if (target.includes("/embeddings")) return json({ data: [] });
+    if (target.includes("openrouter.ai/api/v1/chat/completions")) {
+      prompt = JSON.stringify(JSON.parse(String(init?.body || "{}")).messages);
+      return sse([
+        `data: ${JSON.stringify({ choices: [{ delta: { content: "Giselle Model Paris is in Paris and likes Sichuan." } }] })}`,
+        "data: [DONE]",
+      ]);
     }
     throw new Error(`unexpected ${url}`);
   };
   const answer = await answerRelationshipQuestion("Who do I know in Paris who like spicy food?");
-  assert.equal(generateCalled, true);
-  assert.equal(answer.provider, "ollama:llama3.2:3b");
+  assert.match(prompt, /Giselle Model Paris|Paris/i);
+  assert.equal(answer.provider, "openrouter:stealth/ox-alpha");
+  handler = offline;
+  await setAskWriterSettings({ writer: "local" });
+  resetAskWriterVault(new InMemoryCredentialVault());
+  resetIntelligenceModelCache();
+});
+
+test("OpenRouter failures do not fall back to the stored-record card", async () => {
+  seedPerson("Nora OpenRouter Fail", { location: "Lisbon", company: "Atelier Nora" });
+  refreshEvidenceIndex();
+  resetAskWriterVault(new InMemoryCredentialVault());
+  resetIntelligenceModelCache();
+  await setAskWriterSettings({
+    writer: "openrouter",
+    model: "anthropic/claude-sonnet-4.6",
+    apiKey: "test-key",
+  });
+  handler = async (url) => {
+    const target = String(url);
+    if (target.includes("/embeddings")) return json({ data: [] });
+    if (target.includes("openrouter.ai/api/v1/chat/completions")) {
+      return new Response(JSON.stringify({ error: { message: "no credits" } }), {
+        status: 402,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    throw new Error(`unexpected ${url}`);
+  };
+  const answer = await answerRelationshipQuestion("Tell me about Nora OpenRouter Fail");
+  assert.equal(answer.provider, "openrouter:error");
+  assert.match(answer.answer, /OpenRouter/);
+  assert.match(answer.answer, /no credits/);
+  assert.doesNotMatch(answer.answer, /sister|Juniper Square|is in the stored record/);
+  handler = offline;
+  await setAskWriterSettings({ writer: "local" });
+  resetAskWriterVault(new InMemoryCredentialVault());
+  resetIntelligenceModelCache();
+});
+
+test("embeddings are skipped without a hosted embed writer", async () => {
+  await setAskWriterSettings({ writer: "local" });
+  resetAskWriterVault(new InMemoryCredentialVault());
+  resetIntelligenceModelCache();
+  handler = async (url) => {
+    throw new Error(`unexpected ${url}`);
+  };
+  const result = await refreshEvidenceEmbeddings(10);
+  assert.equal(result.embedded, 0);
+  assert.equal(result.model, null);
   handler = offline;
   resetIntelligenceModelCache();
 });
@@ -490,18 +508,49 @@ test("extractNamedPerson still reads a typed name-only question", () => {
   assert.equal(extractNamedPerson("Ada Fong"), "Ada Fong");
 });
 
-test("embeddings are never written with a chat model", async () => {
-  resetIntelligenceModelCache();
-  handler = async (url) => {
-    if (url.endsWith("/api/version")) return json({ version: "test" });
-    if (url.endsWith("/api/tags")) return json({ models: [{ name: "llama3.2:3b" }, { name: "qwen3:14b" }] });
-    if (url.endsWith("/api/embed")) throw new Error("chat models must not be used to embed");
-    throw new Error(`unexpected ${url}`);
-  };
-  const result = await refreshEvidenceEmbeddings(10);
-  assert.equal(result.embedded, 0);
-  assert.equal(result.model, null);
-  handler = offline;
-  resetIntelligenceModelCache();
+test("normalizeAskName folds typographic apostrophes", () => {
+  assert.equal(normalizeAskName("Gil’i Zaid"), "Gil'i Zaid");
+  assert.equal(normalizeAskName("Gil'i Zaid"), "Gil'i Zaid");
+});
+
+test("named-person ask reads messages on an unmerged same-name record", async () => {
+  const profile = seedPerson("Kendrax Relalias", {
+    relationship: "sister",
+    location: "San Francisco",
+    company: "Juniper Square",
+  });
+  const messages = seedPerson("Kendrax");
+  addMessage(messages, "Want to get dinner this weekend in the Mission?");
+  addMessage(messages, "Landed in SF — call me when you're free.");
+  const retrieval = await retrieveAskMatches(
+    "What do I know about Kendrax Relalias? any key insights on our relationship?",
+  );
+  assert.equal(retrieval.people.length, 1);
+  assert.equal(retrieval.people[0]?.personId, profile);
+  assert.ok(retrieval.people[0]?.aliasIds.includes(messages));
+  assert.ok(retrieval.people[0]?.matches.some((match) => /dinner this weekend|Landed in SF/i.test(match.excerpt)));
+  assert.match(retrieval.nameNote || "", /Kendrax/);
+});
+
+test("named-person ask folds apostrophes when messages sit on the other spelling", async () => {
+  const profile = seedPerson("Gil'i Alias Zaid", { relationship: "friend", location: "New York" });
+  const messages = createPerson("Gil’i Alias Zaid");
+  addMessage(messages, "See you at the Jane Street desk tomorrow.");
+  const retrieval = await retrieveAskMatches("What do I know about Gil'i Alias Zaid?");
+  assert.equal(retrieval.people.length, 1);
+  assert.equal(retrieval.people[0]?.personId, profile);
+  assert.ok(retrieval.people[0]?.aliasIds.includes(messages));
+  assert.ok(retrieval.people[0]?.matches.some((match) => /Jane Street desk/i.test(match.excerpt)));
+});
+
+test("same first name with a different last name does not donate messages", async () => {
+  const target = seedPerson("Serena Alias Pellegrino", { location: "Milan" });
+  const other = seedPerson("Serena Alias Pei", { location: "Taipei" });
+  addMessage(other, "This message belongs to the other Serena.");
+  const retrieval = await retrieveAskMatches("Tell me about Serena Alias Pellegrino");
+  assert.deepEqual(peopleNames(retrieval), ["Serena Alias Pellegrino"]);
+  assert.equal(retrieval.people[0]?.personId, target);
+  assert.ok(!retrieval.people[0]?.aliasIds.includes(other));
+  assert.ok(!retrieval.people[0]?.matches.some((match) => /other Serena/i.test(match.excerpt)));
 });
 });

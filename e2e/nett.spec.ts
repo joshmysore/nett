@@ -55,6 +55,13 @@ test("Ask composer attaches people with @ and abilities with /", async ({ page, 
   await expect(abilities.getByRole("option", { name: /About/i })).toBeVisible();
   await abilities.getByRole("option", { name: /About/i }).click();
   await expect(page.getByRole("button", { name: "Remove About" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Conversations" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "New chat" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Hide conversations" })).toBeVisible();
+  await page.getByRole("button", { name: "Hide conversations" }).click();
+  await expect(page.getByRole("button", { name: "Show conversations" })).toBeVisible();
+  await page.getByRole("button", { name: "Show conversations" }).click();
+  await expect(page.getByRole("heading", { name: "Conversations" })).toBeVisible();
   await expectNoSeriousAccessibilityViolations(page);
 });
 
@@ -111,6 +118,35 @@ test("connector setup states are explicit and local", async ({ page }, testInfo)
   // color-contrast; keep other serious rules enforced.
   await expectNoSeriousAccessibilityViolations(page, { disableRules: ["color-contrast"] });
   await page.screenshot({ path: testInfo.outputPath("connectors.png"), fullPage: true });
+});
+
+test("landing story continues below the hero and /about shares it", async ({ page }) => {
+  await page.goto("/");
+  await expect(page.getByRole("heading", { name: /Remember\s+everyone/i })).toBeVisible();
+  await expect(page.getByText("Private. Local. Yours.")).toBeVisible();
+  await expect(page.getByRole("heading", { name: /Use tech to remind what makes you human/i })).toBeVisible();
+  await expect(page.getByText("The tip of your tongue is now yours.")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Recognition, not record keeping" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Questions before you open it" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "How it works" })).toHaveCount(0);
+  await expect(page.getByRole("navigation", { name: "Page sections" })).toHaveCount(0);
+  const overflow = await page.evaluate(() =>
+    document.documentElement.scrollWidth - document.documentElement.clientWidth
+  );
+  expect(overflow).toBeLessThanOrEqual(1);
+
+  await page.getByRole("navigation", { name: "Landing" }).getByRole("link", { name: "About" }).click();
+  await expect(page).toHaveURL(/\/about$/);
+  await expect(page.getByRole("heading", { name: /Use tech to remind what makes you human/i })).toBeVisible();
+  await expect(page.getByText("The tip of your tongue is now yours.")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Questions before you open it" })).toBeVisible();
+  const overflowAbout = await page.evaluate(() =>
+    document.documentElement.scrollWidth - document.documentElement.clientWidth
+  );
+  expect(overflowAbout).toBeLessThanOrEqual(1);
+
+  await page.getByRole("link", { name: /Open Nett/i }).first().click();
+  await expect(page.getByRole("heading", { name: "Ask Nett" })).toBeVisible();
 });
 
 test("mobile navigation and primary actions fit the viewport", async ({ page }, testInfo) => {

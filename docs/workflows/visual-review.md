@@ -3,6 +3,10 @@
 Run before and after any change that produces pixels.
 Skill: `.agents/skills/nett-visual-direction/SKILL.md`.
 
+Parked (do not run until asked): Elaya `landing-page-design` and
+`redesign-existing-projects` in `.agents/skills/`. Those are for a later
+landing-page pass, not for workbench visual review.
+
 ## Before
 
 - [ ] `npm run dev`

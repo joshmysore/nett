@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { extractCaptureWithModel } from "../llm.js";
 
-test("LLM extract degrades to regex when Ollama is down", async () => {
+test("LLM extract degrades to regex when the hosted model is down", async () => {
   const previous = globalThis.fetch;
   globalThis.fetch = (async () => {
     throw new Error("connect ECONNREFUSED 127.0.0.1:11434");

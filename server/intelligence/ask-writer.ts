@@ -6,7 +6,7 @@ import {
   type StringCredentialVault,
 } from "../platform/security/credential-vault.js";
 
-export const ASK_WRITERS = ["local", "anthropic", "openai"] as const;
+export const ASK_WRITERS = ["local", "openrouter"] as const;
 export type AskWriterId = (typeof ASK_WRITERS)[number];
 
 export type AskWriterSettings = {
@@ -19,24 +19,24 @@ export type AskWriterSettings = {
 
 const SETTINGS_KEY = "ask_writer";
 const VAULT_PREFIX = "ask-writer";
-
-const DEFAULT_MODELS: Record<Exclude<AskWriterId, "local">, string> = {
-  anthropic: "claude-haiku-4-5",
-  openai: "gpt-4o-mini",
-};
+const OPENROUTER_MODEL = "stealth/ox-alpha";
+const LEGACY_HOSTED_WRITERS = new Set(["groq", "anthropic", "openai"]);
 
 const DISCLOSURE: Record<AskWriterId, string> = {
-  local: "Answers stay on this Mac. Ollama never leaves loopback.",
-  anthropic: "This question and matching profile, note, and message excerpts leave this Mac and are sent to Anthropic. Ask still does not write to your records.",
-  openai: "This question and matching profile, note, and message excerpts leave this Mac and are sent to OpenAI. Ask still does not write to your records.",
+  local: "Answers stay on this Mac. Matching records are not sent to a hosted model.",
+  openrouter: "This question and matching profile, note, and message excerpts leave this Mac and are sent to OpenRouter, which forwards them to Ox Alpha (stealth/ox-alpha) — not Anthropic or OpenAI. The stealth provider retains prompts and completions and does not use them for training. Ask still does not write to your records.",
 };
+
+function coerceWriter(raw: unknown, fallback: AskWriterId = "local"): AskWriterId {
+  if (raw === "local") return "local";
+  if (raw === "openrouter" || LEGACY_HOSTED_WRITERS.has(String(raw))) return "openrouter";
+  return fallback;
+}
 
 function parseSettings(value: unknown): { writer: AskWriterId; model: string | null } {
   const record = value && typeof value === "object" ? value as Record<string, unknown> : {};
-  const writer = ASK_WRITERS.includes(record.writer as AskWriterId)
-    ? record.writer as AskWriterId
-    : "local";
-  const model = typeof record.model === "string" && record.model.trim() ? record.model.trim() : null;
+  const writer = coerceWriter(record.writer);
+  const model = writer === "openrouter" ? OPENROUTER_MODEL : null;
   return { writer, model };
 }
 
@@ -54,17 +54,15 @@ function readStoredSettings(): { writer: AskWriterId; model: string | null } {
 
 function envWriter(): AskWriterId | null {
   const raw = String(process.env.NETT_ASK_WRITER || "").trim().toLocaleLowerCase();
-  return ASK_WRITERS.includes(raw as AskWriterId) ? raw as AskWriterId : null;
+  if (!raw) return null;
+  if (raw === "local") return "local";
+  if (raw === "openrouter" || LEGACY_HOSTED_WRITERS.has(raw)) return "openrouter";
+  return null;
 }
 
 function envKey(writer: AskWriterId): string | undefined {
-  if (writer === "anthropic") {
-    return process.env.NETT_ANTHROPIC_API_KEY?.trim() || process.env.ANTHROPIC_API_KEY?.trim() || undefined;
-  }
-  if (writer === "openai") {
-    return process.env.NETT_OPENAI_API_KEY?.trim() || process.env.OPENAI_API_KEY?.trim() || undefined;
-  }
-  return undefined;
+  if (writer !== "openrouter") return undefined;
+  return process.env.NETT_OPENROUTER_API_KEY?.trim() || process.env.OPENROUTER_API_KEY?.trim() || undefined;
 }
 
 let vault: StringCredentialVault | null = null;
@@ -92,9 +90,10 @@ export async function getAskWriterSettings(): Promise<AskWriterSettings> {
   const stored = readStoredSettings();
   const writer = envWriter() ?? stored.writer;
   const key = await getAskWriterKey(writer);
+  const model = writer === "local" ? null : OPENROUTER_MODEL;
   return {
     writer,
-    model: stored.model || (writer === "local" ? null : DEFAULT_MODELS[writer]),
+    model,
     hasKey: Boolean(key),
     envKey: Boolean(envKey(writer)),
     disclosure: DISCLOSURE[writer],
@@ -107,12 +106,8 @@ export async function setAskWriterSettings(input: {
   apiKey?: string | null;
 }): Promise<AskWriterSettings> {
   const current = readStoredSettings();
-  const writer = ASK_WRITERS.includes(input.writer as AskWriterId)
-    ? input.writer as AskWriterId
-    : current.writer;
-  const model = input.model === undefined
-    ? current.model
-    : (input.model?.trim() || null);
+  const writer = coerceWriter(input.writer, current.writer);
+  const model = writer === "openrouter" ? OPENROUTER_MODEL : null;
   db.prepare(`
     INSERT INTO app_settings (key, value_json, updated_at)
     VALUES (?, ?, datetime('now'))
@@ -121,18 +116,27 @@ export async function setAskWriterSettings(input: {
       updated_at=excluded.updated_at
   `).run(SETTINGS_KEY, JSON.stringify({ writer, model }));
 
-  if (writer !== "local" && input.apiKey !== undefined) {
+  if (writer === "openrouter" && input.apiKey !== undefined) {
     const key = input.apiKey?.trim() || "";
-    if (key) await writerVault().setString(`${VAULT_PREFIX}:${writer}`, key);
-    else await writerVault().delete(`${VAULT_PREFIX}:${writer}`).catch(() => false);
+    if (key) await writerVault().setString(`${VAULT_PREFIX}:openrouter`, key);
+    else await writerVault().delete(`${VAULT_PREFIX}:openrouter`).catch(() => false);
   }
   return getAskWriterSettings();
 }
 
-export function defaultCloudModel(writer: Exclude<AskWriterId, "local">): string {
-  return DEFAULT_MODELS[writer];
+export function defaultCloudModel(_writer?: string): string {
+  return OPENROUTER_MODEL;
 }
 
-export function askWriterDisclosure(writer: AskWriterId): string {
+export function resolvedCloudModel(_writer?: string, _model?: string | null): string {
+  return OPENROUTER_MODEL;
+}
+
+export function remoteEmbedModel(writer: AskWriterId): string | null {
+  if (writer === "openrouter") return "openai/text-embedding-3-small";
+  return null;
+}
+
+export function askWriterDisclosure(writer: AskWriterId, _model?: string | null): string {
   return DISCLOSURE[writer];
 }

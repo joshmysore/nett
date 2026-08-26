@@ -27,6 +27,34 @@ export function resolvedTheme(preference: ThemePreference): "light" | "dark" {
   return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
 }
 
+/** Live appearance from `<html data-theme>` or the OS, without writing storage. */
+export function useAppearance(): "light" | "dark" {
+  const [scheme, setScheme] = useState<"light" | "dark">(() => resolvedTheme(readThemePreference()));
+
+  useEffect(() => {
+    const root = document.documentElement;
+    const sync = () => {
+      const pinned = root.getAttribute("data-theme");
+      if (pinned === "dark" || pinned === "light") {
+        setScheme(pinned);
+        return;
+      }
+      setScheme(window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+    };
+    sync();
+    const observer = new MutationObserver(sync);
+    observer.observe(root, { attributes: true, attributeFilter: ["data-theme"] });
+    const query = window.matchMedia("(prefers-color-scheme: dark)");
+    query.addEventListener("change", sync);
+    return () => {
+      observer.disconnect();
+      query.removeEventListener("change", sync);
+    };
+  }, []);
+
+  return scheme;
+}
+
 export function useTheme() {
   const [preference, setPreference] = useState<ThemePreference>(readThemePreference);
   const [resolved, setResolved] = useState<"light" | "dark">(() => resolvedTheme(readThemePreference()));

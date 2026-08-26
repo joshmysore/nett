@@ -1,0 +1,45 @@
+{
+  "overflow": {
+    "dark/1440": 0,
+    "light/1440": 0,
+    "dark/768": 0,
+    "dark/375": 0,
+    "light/375": 0,
+    "dark/320": 0
+  },
+  "checks": [
+    [
+      "h1",
+      true
+    ],
+    [
+      "conversations",
+      true
+    ],
+    [
+      "new chat",
+      true
+    ],
+    [
+      "composer",
+      true
+    ],
+    [
+      "history items",
+      1
+    ],
+    [
+      "deep link",
+      "http://127.0.0.1:5173/today?thread=thread-f056cb40-fb9e-47b0-b4eb-3223da7f87a1"
+    ],
+    [
+      "loaded user turns",
+      0
+    ],
+    [
+      "new chat clears thread",
+      true
+    ]
+  ],
+  "defects": []
+}

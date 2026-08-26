@@ -14,7 +14,7 @@ The job is to get a usable graph without filling a spreadsheet of metadata.
    - Lowest-friction: a You step with speak-or-type, then one Conversations step for Messages, WhatsApp, and Gmail.
    - Differentiated: treat owner hometowns as an Instagram-style cluster prior over the user’s own graph.
 7. **Rejected.** Instagram login or mutuals scraping (privacy, ToS, AGENTS.md). A long owner profile form. Auto-writing metadata after sync. A video pipeline when dictation and chips already cover “film a couple hometowns.”
-8. **States.** First-use: empty chips, skip allowed. Normal: chips filled, sources connected independently. Empty: Open Nett with zero sources. Loading: dictation, preview, or import in progress. Failure: mic denied or source unread — type or skip. Conflict: person-field suggestions still show old vs new in review. Recovery: `/setup` “Update hometowns and interests.”
+8. **States.** First-use: Open Nett to Ask. Sources connect independently. Empty: Open Nett with zero sources. Loading: dictation, preview, or import in progress. Failure: mic denied or source unread — type or skip. Conflict: person-field suggestions still show old vs new in review. Recovery: People Fill gaps for hometowns and interests. `/setup` redirects to Ask.
 9. **Keyboard.** Tab through chips; Enter/comma commits; Skip and Continue are buttons; recording is optional and disclosed.
 10. **Chosen.** Lowest-friction setup plus owner hometowns as a cluster prior. Autofill stays reviewable. Fill gaps remains the easy typed path, now with owner interests as typeahead when filling interests.
 
@@ -25,4 +25,4 @@ Instagram mutuals work because the product already knows you and your graph. Net
 ## Verification
 
 - Unit: `server/capture/__tests__/owner-context.test.ts`, `server/setup/__tests__/onboarding.test.ts`, owner cases in `server/intelligence/__tests__/shared-context.test.ts`.
-- E2E: `e2e/setup-workflow.spec.ts` (You + Conversations copy and chips).
+- E2E: `e2e/setup-workflow.spec.ts` (`/setup` redirects to Ask; owner-preview API).

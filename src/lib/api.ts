@@ -10,6 +10,65 @@ import type { AgentAnswer, CommunicationPage, FullPerson, Overview, ParsedMemory
 
 export type { AutofillSuggestion, Facet, GeoOption, PersonPatch, PublicProfileSuggestion, RelationshipInsight };
 
+export type AskWriterId = "local" | "openrouter";
+
+export type AskThreadSummary = {
+  id: string;
+  title: string;
+  createdAt: string;
+  updatedAt: string;
+  archivedAt: string | null;
+};
+
+export type AskMessageContent = {
+  text: string;
+  people?: Array<{ id: string; name: string }>;
+  abilities?: string[];
+  stages?: Array<{ id: string; label: string; detail?: string }>;
+  evidence?: Array<{ id: string; title: string; text: string }>;
+  error?: string;
+};
+
+export type AskThreadMessage = {
+  id: string;
+  threadId: string;
+  role: "user" | "assistant";
+  content: AskMessageContent;
+  citations: AgentAnswer["citations"];
+  provider: string | null;
+  createdAt: string;
+};
+
+export type AskThreadDetail = {
+  thread: AskThreadSummary;
+  messages: AskThreadMessage[];
+};
+
+export type AskQueryInput = {
+  query: string;
+  threadId?: string;
+  personIds?: string[];
+  ability?: string | null;
+  abilities?: string[];
+  people?: Array<{ id: string; name: string }>;
+  contextPersonIds?: string[];
+};
+
+export type AskStreamEvent =
+  | { type: "thread"; threadId: string; title: string }
+  | { type: "stage"; id: string; label: string; detail?: string }
+  | {
+    type: "meta";
+    path: string;
+    provider: string;
+    citations: AgentAnswer["citations"];
+    note?: string;
+    evidence?: Array<{ id: string; title: string; text: string }>;
+  }
+  | { type: "token"; text: string }
+  | { type: "reset" }
+  | { type: "done"; answer: string; citations: AgentAnswer["citations"]; provider: string; note?: string };
+
 export type PeopleFacets = {
   countries: Facet[];
   industries: Facet[];
@@ -160,7 +219,7 @@ export const api = {
   intelligenceStatus: () => request<{
     ok: boolean; version?: string; selectedModel?: string;
     fastModel?: string; reasonModel?: string; embedModel?: string;
-    askWriter?: "local" | "anthropic" | "openai";
+    askWriter?: AskWriterId;
     askWriterModel?: string | null;
     askWriterHasKey?: boolean;
     askWriterDisclosure?: string;
@@ -173,15 +232,15 @@ export const api = {
     staleSources?: string[];
   }>("/api/intelligence/status"),
   askWriterSettings: () => request<{
-    writer: "local" | "anthropic" | "openai";
+    writer: AskWriterId;
     model: string | null;
     hasKey: boolean;
     envKey: boolean;
     disclosure: string;
   }>("/api/intelligence/ask-writer"),
-  saveAskWriterSettings: (input: { writer?: "local" | "anthropic" | "openai"; model?: string | null; apiKey?: string | null }) =>
+  saveAskWriterSettings: (input: { writer?: AskWriterId; model?: string | null; apiKey?: string | null }) =>
     request<{
-      writer: "local" | "anthropic" | "openai";
+      writer: AskWriterId;
       model: string | null;
       hasKey: boolean;
       envKey: boolean;
@@ -315,27 +374,41 @@ export const api = {
     Object.entries(input).forEach(([key, value]) => { if (value) body.append(key, value); });
     return request<{ recordsSeen: number; bundles: number; message: string }>("/api/platform/whatsapp/import", { method: "POST", body });
   },
+  listAskThreads: (signal?: AbortSignal) =>
+    request<{ threads: AskThreadSummary[] }>("/api/ask/threads", { signal }),
+  createAskThread: (title?: string, signal?: AbortSignal) =>
+    request<AskThreadSummary>("/api/ask/threads", {
+      method: "POST",
+      body: JSON.stringify({ title: title || "New chat" }),
+      signal,
+    }),
+  getAskThread: (id: string, signal?: AbortSignal) =>
+    request<AskThreadDetail>(`/api/ask/threads/${encodeURIComponent(id)}`, { signal }),
+  renameAskThread: (id: string, title: string, signal?: AbortSignal) =>
+    request<AskThreadSummary>(`/api/ask/threads/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      body: JSON.stringify({ title }),
+      signal,
+    }),
+  archiveAskThread: (id: string, signal?: AbortSignal) =>
+    request<{ ok: boolean }>(`/api/ask/threads/${encodeURIComponent(id)}`, { method: "DELETE", signal }),
+  archiveAllAskThreads: (signal?: AbortSignal) =>
+    request<{ ok: boolean; archived: number }>("/api/ask/threads", { method: "DELETE", signal }),
   query: (
-    input: string | { query: string; personIds?: string[]; ability?: string | null; contextPersonIds?: string[] },
+    input: string | AskQueryInput,
     signal?: AbortSignal,
     contextPersonIds?: string[],
   ) => {
     const body = typeof input === "string"
       ? { query: input, contextPersonIds }
       : { ...input, contextPersonIds: input.contextPersonIds ?? contextPersonIds };
-    return request<AgentAnswer>("/api/agent/query", { method: "POST", body: JSON.stringify(body), signal });
+    return request<AgentAnswer & { threadId?: string }>("/api/agent/query", { method: "POST", body: JSON.stringify(body), signal });
   },
   queryStream: async function* (
-    input: string | { query: string; personIds?: string[]; ability?: string | null; contextPersonIds?: string[] },
+    input: string | AskQueryInput,
     signal?: AbortSignal,
     contextPersonIds?: string[],
-  ): AsyncGenerator<
-    | { type: "stage"; id: string; label: string; detail?: string }
-    | { type: "meta"; path: string; provider: string; citations: AgentAnswer["citations"]; note?: string }
-    | { type: "token"; text: string }
-    | { type: "reset" }
-    | { type: "done"; answer: string; citations: AgentAnswer["citations"]; provider: string; note?: string }
-  > {
+  ): AsyncGenerator<AskStreamEvent> {
     const body = typeof input === "string"
       ? { query: input, contextPersonIds }
       : { ...input, contextPersonIds: input.contextPersonIds ?? contextPersonIds };

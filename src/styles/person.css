@@ -17,10 +17,10 @@
 .person-workspace .profile-identity { align-items: flex-start; }
 .person-workspace .profile-identity h1 {
   margin: 0;
-  font-size: clamp(36px, 4vw, 42px);
-  line-height: 1.04;
-  letter-spacing: -.035em;
-  font-weight: 600;
+  font-size: clamp(26px, 3vw, 36px);
+  line-height: 1.08;
+  letter-spacing: -.03em;
+  font-weight: 500;
 }
 
 .person-names { display: flex; flex-direction: column; gap: var(--space-3xs); min-width: 0; }
@@ -468,7 +468,7 @@
   .person-workspace .profile-actions { flex-direction: column; align-items: stretch; }
   .person-workspace .profile-actions button { width: 100%; }
   .person-workspace .profile-identity { flex-direction: row; gap: var(--space-xs); }
-  .person-workspace .profile-identity h1 { font-size: 34px; overflow-wrap: anywhere; }
+  .person-workspace .profile-identity h1 { font-size: 26px; overflow-wrap: anywhere; }
   .person-brief { padding-left: var(--space-xs); }
   .person-capture-shell { justify-items: stretch; }
 }

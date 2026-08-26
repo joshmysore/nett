@@ -16,7 +16,6 @@ import {
   type EvidenceDocument,
   type EvidenceIndexState
 } from "./evidence-index.js";
-import { OllamaProvider } from "./ollama.js";
 import {
   askCitations,
   askEvidenceBlocks,
@@ -35,8 +34,26 @@ import {
   defaultCloudModel,
   getAskWriterKey,
   getAskWriterSettings,
+  remoteEmbedModel,
+  type AskWriterId,
 } from "./ask-writer.js";
-import { answerWithCloud, cloudStreamPrompt, streamCloudGenerate } from "./cloud-llm.js";
+import {
+  answerWithCloud,
+  askSystemPrompt,
+  cloudStreamPrompt,
+  embedCloud,
+  generateCloudStructured,
+  isOpenAiCompatible,
+  streamCloudGenerate,
+  type CloudWriter,
+} from "./cloud-llm.js";
+import {
+  packEvidenceWithBrief,
+  upsertWorkingBrief,
+  workingBriefSystemPrompt,
+  workingBriefUserPrompt,
+  type EvidenceBlock,
+} from "./working-brief.js";
 import { collectSharedContextSuggestions } from "./shared-context.js";
 import { collectTraitSuggestions } from "./traits.js";
 
@@ -52,7 +69,9 @@ type IntelligenceCitation = {
   evidenceId?: string;
 };
 
-const ollama = new OllamaProvider();
+function asCloudWriter(writer: AskWriterId): CloudWriter | null {
+  return writer === "openrouter" ? "openrouter" : null;
+}
 
 /**
  * Fields a suggestion may ever target.
@@ -135,14 +154,19 @@ export async function searchEvidence(
   if (!options.skipVector) {
     try {
       assertActive(options.signal);
-      const models = await resolveModels(options.signal);
-      if (models.embed) {
+      const settings = await getAskWriterSettings();
+      const writer = asCloudWriter(settings.writer);
+      const apiKey = writer ? await getAskWriterKey(settings.writer) : undefined;
+      const embedModel = writer && apiKey ? remoteEmbedModel(settings.writer) : null;
+      if (writer && apiKey && embedModel) {
         const intent = parseAskIntent(query);
-        const [queryEmbedding] = await ollama.embed(
-          models.embed,
-          [embedQueryText(intent)],
-          options.signal,
-        );
+        const [queryEmbedding] = await embedCloud({
+          writer,
+          model: embedModel,
+          apiKey,
+          input: [embedQueryText(intent)],
+          signal: options.signal,
+        });
         if (queryEmbedding?.length) {
           const compactQuery = queryEmbedding.slice(0, EMBEDDING_DIMENSIONS);
           const ranked = scoreEmbeddedRows(compactQuery, loadEmbeddableDocuments(), limit * 3);
@@ -158,7 +182,7 @@ export async function searchEvidence(
         }
       }
     } catch {
-      // Lexical retrieval remains fully functional when Ollama is unavailable.
+      // Lexical retrieval remains fully functional when embeddings are unavailable.
     }
   }
 
@@ -173,35 +197,14 @@ export async function searchEvidence(
     .slice(0, limit);
 }
 
-/** Small/fast chat for snappy Ask fallbacks. Override with NETT_OLLAMA_FAST_MODEL. */
-const PREFERRED_FAST_CHAT = [
-  "llama3.2:3b",
-  "llama3.2:1b",
-  "qwen2.5:3b",
-  "qwen2.5:1.5b",
-  "phi3:mini",
-  "gemma2:2b",
-];
-
-/** Stronger local chat for inferential write-ups. Override with NETT_OLLAMA_MODEL. */
-const PREFERRED_REASON_CHAT = [
-  "qwen3:14b",
-  "qwen3.5:9b",
-  "qwen2.5:14b",
-  "qwen3:8b",
-  "llama3.1:8b",
-  "qwen2.5:7b",
-  "mistral:7b",
-];
-
-const PREFERRED_EMBED_MODELS = [
-  "nomic-embed-text",
-  "nomic-embed-text:latest",
-  "mxbai-embed-large",
-  "all-minilm",
-];
-
-type ModelPick = { at: number; fast: string | null; reason: string | null; embed: string | null };
+/** Hosted chat and embeddings. Local Ollama is not used. */
+type ModelPick = {
+  at: number;
+  fast: string | null;
+  reason: string | null;
+  embed: string | null;
+  writer: CloudWriter | null;
+};
 let cachedModelPick: ModelPick | null = null;
 const MODEL_CACHE_MS = 60_000;
 
@@ -209,71 +212,49 @@ export function resetIntelligenceModelCache(): void {
   cachedModelPick = null;
 }
 
-function isEmbedModelName(name: string): boolean {
-  return /embed|minilm|nomic|mxbai/i.test(name);
-}
-
-function pickPreferred(
-  models: readonly { name: string }[],
-  preferred: readonly string[],
-  predicate: (name: string) => boolean = () => true,
-): string | null {
-  for (const wanted of preferred) {
-    const hit = models.find((model) =>
-      predicate(model.name)
-      && (model.name === wanted || model.name.startsWith(`${wanted}:`))
-    );
-    if (hit) return hit.name;
-  }
-  return models.find((model) => predicate(model.name))?.name ?? null;
-}
-
-async function resolveModels(signal?: AbortSignal): Promise<ModelPick> {
+async function resolveModels(): Promise<ModelPick> {
   if (cachedModelPick && Date.now() - cachedModelPick.at < MODEL_CACHE_MS) return cachedModelPick;
-  const listed = await ollama.listModels(signal).catch(() => []);
-  const requestedReason = process.env.NETT_OLLAMA_MODEL;
-  const requestedFast = process.env.NETT_OLLAMA_FAST_MODEL;
-  const requestedEmbed = process.env.NETT_OLLAMA_EMBED_MODEL;
-  const chatModels = listed.filter((model) => !isEmbedModelName(model.name));
-  const embedModels = listed.filter((model) => isEmbedModelName(model.name));
-  const fast = (requestedFast && chatModels.some((model) => model.name === requestedFast) ? requestedFast : null)
-    ?? pickPreferred(chatModels, PREFERRED_FAST_CHAT)
-    ?? chatModels[0]?.name
-    ?? null;
-  const reason = (requestedReason && chatModels.some((model) => model.name === requestedReason) ? requestedReason : null)
-    ?? pickPreferred(chatModels, PREFERRED_REASON_CHAT)
-    ?? fast;
-  const embed = (requestedEmbed && embedModels.some((model) => model.name === requestedEmbed) ? requestedEmbed : null)
-    ?? pickPreferred(embedModels, PREFERRED_EMBED_MODELS, isEmbedModelName);
-  const pick = { at: Date.now(), fast, reason, embed };
-  if (fast || reason || embed) cachedModelPick = pick;
+  const settings = await getAskWriterSettings();
+  const writer = asCloudWriter(settings.writer);
+  const model = writer && settings.hasKey
+    ? (settings.model || defaultCloudModel(writer))
+    : null;
+  const pick: ModelPick = {
+    at: Date.now(),
+    fast: model,
+    reason: model,
+    embed: writer && settings.hasKey ? remoteEmbedModel(settings.writer) : null,
+    writer,
+  };
+  cachedModelPick = pick;
   return pick;
 }
 
-async function selectedModel(signal?: AbortSignal): Promise<string> {
-  const models = await resolveModels(signal);
-  const name = models.reason ?? models.fast;
-  if (!name) throw new Error("No Ollama model is installed");
-  return name;
+async function selectedModel(): Promise<{ writer: CloudWriter; model: string; apiKey: string }> {
+  const settings = await getAskWriterSettings();
+  const writer = asCloudWriter(settings.writer);
+  const apiKey = writer ? await getAskWriterKey(settings.writer) : undefined;
+  if (!writer || !apiKey) throw new Error("No hosted Ask writer is configured");
+  if (!isOpenAiCompatible(writer)) throw new Error("Structured generation needs OpenRouter or OpenAI");
+  return { writer, model: settings.model || defaultCloudModel(writer), apiKey };
 }
 
 export async function intelligenceStatus() {
-  const health = await ollama.health();
-  const models = health.ok ? await ollama.listModels().catch(() => []) : [];
-  const pick = models.length ? await resolveModels().catch(() => null) : null;
+  const settings = await getAskWriterSettings();
+  const pick = await resolveModels();
   const freshness = evidenceFreshness();
-  const askWriter = await getAskWriterSettings();
   return {
-    ...health,
-    models,
-    selectedModel: pick?.fast ?? pick?.reason ?? undefined,
-    fastModel: pick?.fast ?? undefined,
-    reasonModel: pick?.reason ?? undefined,
-    embedModel: pick?.embed ?? undefined,
-    askWriter: askWriter.writer,
-    askWriterModel: askWriter.model,
-    askWriterHasKey: askWriter.hasKey,
-    askWriterDisclosure: askWriter.disclosure,
+    ok: Boolean(settings.hasKey && settings.writer !== "local"),
+    version: settings.writer,
+    models: pick.fast ? [{ name: pick.fast }] : [],
+    selectedModel: pick.fast ?? undefined,
+    fastModel: pick.fast ?? undefined,
+    reasonModel: pick.reason ?? undefined,
+    embedModel: pick.embed ?? undefined,
+    askWriter: settings.writer,
+    askWriterModel: settings.model,
+    askWriterHasKey: settings.hasKey,
+    askWriterDisclosure: settings.disclosure,
     evidenceDocuments: (db.prepare("SELECT COUNT(*) AS count FROM evidence_documents").get() as { count: number }).count,
     embeddedDocuments: (db.prepare("SELECT COUNT(*) AS count FROM evidence_documents WHERE embedding_json IS NOT NULL").get() as { count: number }).count,
     indexedAt: freshness.indexedAt,
@@ -285,8 +266,11 @@ export async function intelligenceStatus() {
 }
 
 export async function refreshEvidenceEmbeddings(limit = 250, options: { signal?: AbortSignal } = {}) {
-  const models = await resolveModels(options.signal);
-  if (!models.embed) return { embedded: 0, model: null as string | null };
+  const settings = await getAskWriterSettings();
+  const writer = asCloudWriter(settings.writer);
+  const apiKey = writer ? await getAskWriterKey(settings.writer) : undefined;
+  const embedModel = writer && apiKey ? remoteEmbedModel(settings.writer) : null;
+  if (!writer || !apiKey || !embedModel) return { embedded: 0, model: null as string | null };
   const rows = db.prepare(`
     SELECT id, text FROM evidence_documents
     WHERE embedding_json IS NULL
@@ -298,7 +282,13 @@ export async function refreshEvidenceEmbeddings(limit = 250, options: { signal?:
   for (let offset = 0; offset < rows.length; offset += 32) {
     if (options.signal?.aborted) break;
     const batch = rows.slice(offset, offset + 32);
-    const vectors = await ollama.embed(models.embed, batch.map((row) => row.text.slice(0, 4_000)), options.signal);
+    const vectors = await embedCloud({
+      writer,
+      model: embedModel,
+      apiKey,
+      input: batch.map((row) => row.text.slice(0, 4_000)),
+      signal: options.signal,
+    });
     db.transaction(() => {
       batch.forEach((row, index) => {
         const compact = (vectors[index] ?? []).slice(0, EMBEDDING_DIMENSIONS);
@@ -307,7 +297,7 @@ export async function refreshEvidenceEmbeddings(limit = 250, options: { signal?:
       });
     })();
   }
-  return { embedded, model: models.embed };
+  return { embedded, model: embedModel };
 }
 
 type AskAnswer = {
@@ -319,32 +309,20 @@ type AskAnswer = {
 
 export type AskStreamEvent =
   | { type: "stage"; id: string; label: string; detail?: string }
-  | { type: "meta"; path: string; provider: string; citations: IntelligenceCitation[]; note?: string }
+  | {
+    type: "meta";
+    path: string;
+    provider: string;
+    citations: IntelligenceCitation[];
+    note?: string;
+    evidence?: Array<{ id: string; title: string; text: string }>;
+  }
   | { type: "token"; text: string }
   | { type: "reset" }
   | { type: "done"; answer: string; citations: IntelligenceCitation[]; provider: string; note?: string };
 
-function askSystemPrompt(): string {
-  return [
-    "You are Nett, a private local relationship assistant.",
-    "Each evidence block is a stored profile, group chat, or a quoted message, email, or note.",
-    "Answer the user's actual question. Do not force a canned brief unless they asked who someone is.",
-    "Name people. Use only these records. If a constraint has no evidence, say so.",
-    "Never invent facts or infer health, politics, religion, sexuality, or ethnicity.",
-    "Answer in under 12 sentences. Cite by using the supplied evidence ids.",
-    "If the question is about one person, include why they matter, role or company, place, last contact, and one or two quoted facts when those exist.",
-  ].join(" ");
-}
-
 function hasAskEvidence(retrieval: Awaited<ReturnType<typeof retrieveAskMatches>>): boolean {
   return retrieval.people.length > 0 || retrieval.groups.length > 0;
-}
-
-function shouldWriteWithModel(
-  retrieval: Awaited<ReturnType<typeof retrieveAskMatches>>,
-  hasWriter: boolean,
-): boolean {
-  return hasWriter && hasAskEvidence(retrieval);
 }
 
 function mapModelCitations(
@@ -370,19 +348,6 @@ function mapModelCitations(
   return mapped.length ? mapped : fallback;
 }
 
-function answerLooksThin(answer: string, retrieval: Awaited<ReturnType<typeof retrieveAskMatches>>): boolean {
-  const text = answer.trim();
-  if (text.length < 24) return true;
-  if (retrieval.groups.length && retrieval.groups.some((group) =>
-    group.title.length > 2 && text.toLocaleLowerCase().includes(group.title.toLocaleLowerCase())
-  )) return false;
-  if (!retrieval.people.length) return false;
-  return !retrieval.people.some((person) => {
-    const first = person.name.split(/\s+/)[0] || "";
-    return first.length > 2 && text.toLocaleLowerCase().includes(first.toLocaleLowerCase());
-  });
-}
-
 export type AskQueryOptions = {
   signal?: AbortSignal;
   personIds?: readonly string[];
@@ -391,20 +356,33 @@ export type AskQueryOptions = {
 };
 
 async function retrieveForAsk(question: string, options: AskQueryOptions = {}) {
-  const models = await resolveModels(options.signal).catch(() => null);
+  const settings = await getAskWriterSettings();
+  const writer = asCloudWriter(settings.writer);
+  const apiKey = writer ? await getAskWriterKey(settings.writer) : undefined;
+  const embedModel = writer && apiKey ? remoteEmbedModel(settings.writer) : null;
   const retrieval = await retrieveAskMatches(question, {
     signal: options.signal,
     personIds: options.personIds,
     ability: options.ability,
     contextPersonIds: options.contextPersonIds,
-    embedQuery: models?.embed
+    embedQuery: writer && apiKey && embedModel
       ? async (text, signal) => {
-        const [vector] = await ollama.embed(models.embed!, [text], signal);
-        return vector?.length ? vector.slice(0, EMBEDDING_DIMENSIONS) : null;
+        try {
+          const [vector] = await embedCloud({
+            writer,
+            model: embedModel,
+            apiKey,
+            input: [text],
+            signal,
+          });
+          return vector?.length ? vector.slice(0, EMBEDDING_DIMENSIONS) : null;
+        } catch {
+          return null;
+        }
       }
       : undefined,
   });
-  return { models, retrieval, citations: askCitations(retrieval), note: retrievalPathNote(retrieval) };
+  return { retrieval, citations: askCitations(retrieval), note: retrievalPathNote(retrieval) };
 }
 
 function emptyAskAnswer(retrieval: Awaited<ReturnType<typeof retrieveAskMatches>>): AskAnswer {
@@ -423,28 +401,6 @@ function emptyAskAnswer(retrieval: Awaited<ReturnType<typeof retrieveAskMatches>
   };
 }
 
-async function generateCitedAnswer(
-  model: string,
-  question: string,
-  retrieval: Awaited<ReturnType<typeof retrieveAskMatches>>,
-  fallback: IntelligenceCitation[],
-  signal?: AbortSignal,
-): Promise<AskAnswer> {
-  assertActive(signal);
-  const generated = await ollama.answerWithCitations({
-    model,
-    question,
-    signal,
-    evidence: askEvidenceBlocks(retrieval),
-    system: askSystemPrompt(),
-  });
-  return {
-    answer: generated.answer,
-    citations: mapModelCitations(retrieval, generated, fallback),
-    provider: `ollama:${model}`,
-  };
-}
-
 async function writeWithCloud(
   question: string,
   retrieval: Awaited<ReturnType<typeof retrieveAskMatches>>,
@@ -452,68 +408,133 @@ async function writeWithCloud(
   signal?: AbortSignal,
 ): Promise<AskAnswer | null> {
   const settings = await getAskWriterSettings();
-  if (settings.writer === "local" || !settings.hasKey) return null;
+  const writer = asCloudWriter(settings.writer);
+  if (!writer || !settings.hasKey) return null;
   const apiKey = await getAskWriterKey(settings.writer);
   if (!apiKey) return null;
-  const model = settings.model || defaultCloudModel(settings.writer);
+  const model = settings.model || defaultCloudModel(writer);
+  const packed = packAskEvidence(retrieval);
   const generated = await answerWithCloud({
-    writer: settings.writer,
+    writer,
     model,
     apiKey,
     system: askSystemPrompt(),
-    prompt: cloudStreamPrompt(question, askEvidenceBlocks(retrieval)),
+    prompt: cloudStreamPrompt(question, packed.evidence),
     question,
-    evidence: askEvidenceBlocks(retrieval),
+    evidence: packed.evidence,
     signal,
   });
+  if (!packed.reused) {
+    await refreshWorkingBriefs({
+      retrieval,
+      fullEvidence: packed.fullEvidence,
+      fingerprint: packed.fingerprint,
+      writer,
+      model,
+      apiKey,
+      question,
+      signal,
+    }).catch(() => undefined);
+  }
   return {
     answer: generated.answer,
     citations: mapModelCitations(retrieval, generated, fallback),
-    provider: `${settings.writer}:${generated.model}`,
-    note: settings.disclosure,
+    provider: `${writer}:${generated.model}`,
+    note: packed.reused
+      ? `${settings.disclosure} Reused working brief for ${packed.personName}.`
+      : settings.disclosure,
   };
 }
 
-export async function answerRelationshipQuestion(question: string, options: AskQueryOptions = {}): Promise<AskAnswer> {
-  const { models, retrieval, citations, note } = await retrieveForAsk(question, options);
-  if (!hasAskEvidence(retrieval)) return emptyAskAnswer(retrieval);
-
-  const cloud = await writeWithCloud(question, retrieval, citations, options.signal).catch(() => null);
-  if (cloud) return { ...cloud, note: [note, cloud.note].filter(Boolean).join(" ") };
-
-  const fast = models?.fast;
-  const reason = models?.reason;
-  if (!shouldWriteWithModel(retrieval, Boolean(fast || reason))) {
-    return { answer: formatAskAnswer(retrieval), citations, provider: retrieval.provider, note };
+function packAskEvidence(retrieval: Awaited<ReturnType<typeof retrieveAskMatches>>): {
+  evidence: EvidenceBlock[];
+  fullEvidence: EvidenceBlock[];
+  reused: boolean;
+  fingerprint: string;
+  personId: string | null;
+  personName: string | null;
+} {
+  const fullEvidence = askEvidenceBlocks(retrieval);
+  if (retrieval.people.length !== 1) {
+    return {
+      evidence: fullEvidence,
+      fullEvidence,
+      reused: false,
+      fingerprint: "",
+      personId: null,
+      personName: null,
+    };
   }
-
-  try {
-    if (fast) {
-      const first = await generateCitedAnswer(fast, question, retrieval, citations, options.signal);
-      const thin = answerLooksThin(first.answer, retrieval) || first.citations.length < 1;
-      if (!thin || !reason || reason === fast) return { ...first, note };
-      try {
-        return { ...await generateCitedAnswer(reason, question, retrieval, citations, options.signal), note };
-      } catch {
-        return { ...first, note };
-      }
-    }
-    return { ...await generateCitedAnswer(reason!, question, retrieval, citations, options.signal), note };
-  } catch {
-    return { answer: formatAskAnswer(retrieval), citations, provider: retrieval.provider, note };
-  }
+  const person = retrieval.people[0];
+  const packed = packEvidenceWithBrief(person.personId, person.name, fullEvidence);
+  return {
+    evidence: packed.blocks,
+    fullEvidence,
+    reused: packed.reused,
+    fingerprint: packed.fingerprint,
+    personId: person.personId,
+    personName: person.name,
+  };
 }
 
-function streamPrompt(question: string, retrieval: Awaited<ReturnType<typeof retrieveAskMatches>>): string {
-  const evidence = askEvidenceBlocks(retrieval).map((block) =>
-    `<evidence id=${JSON.stringify(block.id)} title=${JSON.stringify(block.title)}>\n${block.text}\n</evidence>`
-  ).join("\n\n");
-  return [
-    "Answer the question using only the supplied evidence.",
-    "Name people. If evidence is insufficient, say so.",
-    `Question: ${question}`,
-    evidence,
-  ].join("\n\n");
+async function refreshWorkingBriefs(options: {
+  retrieval: Awaited<ReturnType<typeof retrieveAskMatches>>;
+  fullEvidence: EvidenceBlock[];
+  fingerprint: string;
+  writer: CloudWriter;
+  model: string;
+  apiKey: string;
+  question: string;
+  signal?: AbortSignal;
+}): Promise<void> {
+  if (options.retrieval.people.length !== 1) return;
+  const person = options.retrieval.people[0];
+  const fingerprint = options.fingerprint
+    || packEvidenceWithBrief(person.personId, person.name, options.fullEvidence).fingerprint;
+  const generated = await answerWithCloud({
+    writer: options.writer,
+    model: options.model,
+    apiKey: options.apiKey,
+    system: workingBriefSystemPrompt(),
+    prompt: workingBriefUserPrompt(person.name, options.fullEvidence),
+    question: `Standing working brief for ${person.name}`,
+    evidence: options.fullEvidence,
+    signal: options.signal,
+  });
+  if (!generated.answer.trim()) return;
+  upsertWorkingBrief({
+    personId: person.personId,
+    body: generated.answer.trim(),
+    evidenceFingerprint: fingerprint,
+    evidenceIds: options.fullEvidence.map((block) => block.id),
+    model: generated.model || options.model,
+    provider: `${options.writer}:${generated.model || options.model}`,
+    sourceQuestion: options.question,
+  });
+}
+
+export async function answerRelationshipQuestion(question: string, options: AskQueryOptions = {}): Promise<AskAnswer> {
+  const { retrieval, citations, note } = await retrieveForAsk(question, options);
+  if (!hasAskEvidence(retrieval)) return emptyAskAnswer(retrieval);
+
+  let cloud: AskAnswer | null = null;
+  try {
+    cloud = await writeWithCloud(question, retrieval, citations, options.signal);
+  } catch (error) {
+    if (options.signal?.aborted) throw error;
+    const settings = await getAskWriterSettings();
+    if (settings.writer !== "local" && settings.hasKey) {
+      const message = error instanceof Error ? error.message : "OpenRouter did not return an answer";
+      return {
+        answer: `Ask retrieved matching records but could not write with OpenRouter. ${message}`,
+        citations,
+        provider: `${settings.writer}:error`,
+        note: message,
+      };
+    }
+  }
+  if (cloud) return cloud;
+  return { answer: formatAskAnswer(retrieval), citations, provider: retrieval.provider, note };
 }
 
 function matchStage(retrieval: Awaited<ReturnType<typeof retrieveAskMatches>>): { label: string; detail?: string } {
@@ -554,7 +575,7 @@ export async function* streamRelationshipQuestion(
   options: AskQueryOptions = {},
 ): AsyncGenerator<AskStreamEvent> {
   yield { type: "stage", id: "extract", label: "Reading the question" };
-  const { models, retrieval, citations, note } = await retrieveForAsk(question, options);
+  const { retrieval, citations, note } = await retrieveForAsk(question, options);
   const named = retrieval.intent.namedPerson || retrieval.people[0]?.name;
   yield {
     type: "stage",
@@ -566,7 +587,7 @@ export async function* streamRelationshipQuestion(
     type: "stage",
     id: "match",
     label: matched.label,
-    detail: matched.detail || retrieval.provider,
+    detail: matched.detail,
   };
   if (!hasAskEvidence(retrieval)) {
     const empty = emptyAskAnswer(retrieval);
@@ -574,28 +595,42 @@ export async function* streamRelationshipQuestion(
     return;
   }
   yield { type: "stage", id: "records", label: recordsStage(retrieval) };
+  const packed = packAskEvidence(retrieval);
+  const evidence = packed.evidence;
 
-  const writer = await getAskWriterSettings();
-  if (writer.writer !== "local" && writer.hasKey) {
-    const apiKey = await getAskWriterKey(writer.writer);
-    const model = writer.model || defaultCloudModel(writer.writer);
+  const settings = await getAskWriterSettings();
+  const writer = asCloudWriter(settings.writer);
+  if (writer && settings.hasKey) {
+    const apiKey = await getAskWriterKey(settings.writer);
+    const model = settings.model || defaultCloudModel(writer);
     if (apiKey) {
-      const cloudNote = [note, writer.disclosure].filter(Boolean).join(" ");
+      const cloudNote = packed.reused && packed.personName
+        ? `${settings.disclosure} Reused working brief for ${packed.personName}.`
+        : settings.disclosure;
       yield {
         type: "stage",
         id: "write",
-        label: `Writing with ${model}`,
-        detail: writer.disclosure,
+        label: packed.reused
+          ? `Writing with ${model} · working brief`
+          : `Writing with ${model}`,
+        detail: `${evidence.length} block${evidence.length === 1 ? "" : "s"}${packed.reused ? " (brief + deltas)" : ""} · ${settings.disclosure}`,
       };
-      yield { type: "meta", path: "cloud", provider: `${writer.writer}:${model}`, citations, note: cloudNote };
+      yield {
+        type: "meta",
+        path: packed.reused ? "cloud-brief" : "cloud",
+        provider: `${writer}:${model}`,
+        citations,
+        note: cloudNote,
+        evidence,
+      };
       try {
         let collected = "";
         for await (const event of streamCloudGenerate({
-          writer: writer.writer,
+          writer,
           model,
           apiKey,
           system: askSystemPrompt(),
-          prompt: streamPrompt(question, retrieval),
+          prompt: cloudStreamPrompt(question, evidence),
           signal: options.signal,
         })) {
           if (event.type === "token") {
@@ -603,81 +638,68 @@ export async function* streamRelationshipQuestion(
             yield { type: "token", text: event.text };
           }
         }
+        if (!collected.trim()) {
+          throw new Error(`${model} returned an empty answer`);
+        }
+        if (!packed.reused) {
+          yield {
+            type: "stage",
+            id: "brief",
+            label: packed.personName
+              ? `Saving working brief for ${packed.personName}`
+              : "Saving working brief",
+          };
+          await refreshWorkingBriefs({
+            retrieval,
+            fullEvidence: packed.fullEvidence,
+            fingerprint: packed.fingerprint,
+            writer,
+            model,
+            apiKey,
+            question,
+            signal: options.signal,
+          }).catch(() => undefined);
+        }
         yield {
           type: "done",
-          answer: collected || formatAskAnswer(retrieval),
+          answer: collected,
           citations,
-          provider: `${writer.writer}:${model}`,
+          provider: `${writer}:${model}`,
           note: cloudNote,
         };
         return;
-      } catch {
-        // Fall through to local writer or the stored-record answer.
+      } catch (error) {
+        if (options.signal?.aborted) throw error;
+        const message = error instanceof Error ? error.message : `${writer} did not return an answer`;
+        yield {
+          type: "stage",
+          id: "write",
+          label: "OpenRouter did not return an answer",
+          detail: message,
+        };
+        yield {
+          type: "done",
+          answer: `Ask retrieved matching records but could not write with OpenRouter. ${message}`,
+          citations,
+          provider: `${writer}:error`,
+          note: message,
+        };
+        return;
       }
     }
   }
 
-  const fast = models?.fast;
-  const reason = models?.reason;
-  if (!shouldWriteWithModel(retrieval, Boolean(fast || reason))) {
-    const answer = formatAskAnswer(retrieval);
-    yield { type: "stage", id: "write", label: "Writing from stored records" };
-    yield { type: "meta", path: "index", provider: retrieval.provider, citations, note };
-    yield { type: "done", answer, citations, provider: retrieval.provider, note };
-    return;
-  }
-
-  const runStream = async function* (model: string, path: "fast" | "reason") {
-    yield {
-      type: "stage",
-      id: path === "reason" ? "escalate" : "write",
-      label: path === "reason" ? `Trying ${model}` : `Writing with ${model}`,
-    } satisfies AskStreamEvent;
-    yield { type: "meta", path, provider: `ollama:${model}`, citations, note } satisfies AskStreamEvent;
-    let collected = "";
-    for await (const event of ollama.streamGenerate({
-      model,
-      prompt: streamPrompt(question, retrieval),
-      system: askSystemPrompt(),
-      signal: options.signal,
-    })) {
-      if (event.type === "token") {
-        collected += event.text;
-        yield { type: "token", text: event.text } satisfies AskStreamEvent;
-      }
-    }
-    return collected;
+  const answer = formatAskAnswer(retrieval);
+  yield { type: "stage", id: "write", label: "Writing from stored records" };
+  yield {
+    type: "meta",
+    path: "index",
+    provider: retrieval.provider,
+    citations,
+    note,
+    evidence: packed.fullEvidence,
   };
-
-  try {
-    const model = fast ?? reason!;
-    let collected = "";
-    for await (const event of runStream(model, "fast")) {
-      if (event.type === "token") collected += event.text;
-      yield event;
-    }
-    const thin = answerLooksThin(collected, retrieval);
-    if (thin && reason && reason !== model) {
-      yield { type: "reset" };
-      collected = "";
-      for await (const event of runStream(reason, "reason")) {
-        if (event.type === "token") collected += event.text;
-        yield event;
-      }
-      yield { type: "done", answer: collected || formatAskAnswer(retrieval), citations, provider: `ollama:${reason}`, note };
-      return;
-    }
-    yield {
-      type: "done",
-      answer: collected || formatAskAnswer(retrieval),
-      citations,
-      provider: `ollama:${model}`,
-      note,
-    };
-  } catch {
-    const answer = formatAskAnswer(retrieval);
-    yield { type: "done", answer, citations, provider: retrieval.provider, note };
-  }
+  yield { type: "done", answer, citations, provider: retrieval.provider, note };
 }
 
 export type SuggestionEvidence = {
@@ -1160,13 +1182,18 @@ export async function intelligentAutofill(
 
   const candidates: Candidate[] = [];
   let model: string | null = null;
+  let provider: string | null = null;
   let modelUnavailable = false;
 
   if (generate && documents.length) {
     try {
-      model = await selectedModel(signal);
-      const result = await ollama.generateStructured<{ suggestions: GeneratedSuggestion[] }>({
-        model,
+      const remote = await selectedModel();
+      model = remote.model;
+      provider = `${remote.writer}:${remote.model}`;
+      const result = await generateCloudStructured<{ suggestions: GeneratedSuggestion[] }>({
+        writer: remote.writer,
+        model: remote.model,
+        apiKey: remote.apiKey,
         signal,
         jsonSchema: suggestionSchema,
         system: extractionSystemPrompt,
@@ -1201,13 +1228,14 @@ export async function intelligentAutofill(
           confidence: suggestion.confidence,
           reason: suggestion.rationale,
           evidence: cited,
-          provider: `ollama:${model}`
+          provider: `${remote.writer}:${model}`
         });
       }
     } catch (error) {
       if (signal?.aborted) throw new AutofillCancelled();
       modelUnavailable = true;
       model = null;
+      provider = null;
     }
   }
   assertActive(signal);
@@ -1283,7 +1311,7 @@ export async function intelligentAutofill(
 
   const notes: string[] = [];
   if (modelUnavailable) {
-    notes.push("The local model was not reachable, so these suggestions come from stored evidence only.");
+    notes.push("The hosted model was not reachable, so these suggestions come from stored evidence only.");
   }
   if (index.stale) {
     notes.push(index.reason === "not-indexed"
@@ -1299,7 +1327,7 @@ export async function intelligentAutofill(
     degraded: modelUnavailable || index.stale,
     note: notes.length ? notes.join(" ") : undefined,
     model,
-    provider: model ? `ollama:${model}` : null,
+    provider,
     generatedAt,
     index
   };

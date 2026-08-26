@@ -231,12 +231,13 @@ export function AskComposer({
 
   return (
     <form
-      className="ask-form ask-composer"
+      className="ask-form"
       onSubmit={(event) => {
         event.preventDefault();
         onSubmit();
       }}
     >
+      <div className="ask-composer">
       {(value.people.length > 0 || value.abilities.length > 0) && (
         <ul className="ask-chips" aria-label="Attached to this question">
           {value.people.map((person) => (
@@ -291,6 +292,23 @@ export function AskComposer({
         onKeyDown={onKeyDown}
       />
 
+      <p className="ask-composer-hint">
+        <span><kbd>@</kbd> person</span>
+        <span><kbd>/</kbd> ability</span>
+      </p>
+
+      {loading ? (
+        <button type="button" className="ask-send" onClick={onStop} aria-label="Stop asking">
+          <Stop size={16} aria-hidden="true" />
+        </button>
+      ) : (
+        <button className="ask-send" disabled={!canSend}>
+          <PaperPlaneTilt size={16} aria-hidden="true" />
+          <span className="sr-only">Ask</span>
+        </button>
+      )}
+      </div>
+
       {open && (
         <div className="ask-suggest" id={listId} role="listbox" aria-label={trigger?.kind === "mention" ? "People" : "Abilities"}>
           {trigger?.kind === "mention" && searching && !peopleHits.length && (
@@ -340,22 +358,6 @@ export function AskComposer({
             </button>
           ))}
         </div>
-      )}
-
-      <p className="ask-composer-hint">
-        <span><kbd>@</kbd> person</span>
-        <span><kbd>/</kbd> ability</span>
-      </p>
-
-      {loading ? (
-        <button type="button" className="ask-send" onClick={onStop} aria-label="Stop asking">
-          <Stop size={16} aria-hidden="true" />
-        </button>
-      ) : (
-        <button className="ask-send" disabled={!canSend}>
-          <PaperPlaneTilt size={16} aria-hidden="true" />
-          <span className="sr-only">Ask</span>
-        </button>
       )}
     </form>
   );

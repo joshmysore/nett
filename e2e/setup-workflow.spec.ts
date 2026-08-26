@@ -25,27 +25,17 @@ test("owner-preview extracts hometowns and interests without writing", async ({ 
   expect(body.interests).toEqual(["climbing", "climate"]);
 });
 
-test("setup you and conversations stages are the first-run path", async ({ page, request }, testInfo) => {
+test("/setup redirects to Ask", async ({ page, request }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop", "Mutates shared onboarding; run on one project");
   await request.patch(`${api}/api/setup/onboarding`, {
     data: { phase: "you", ownerHometowns: [], ownerInterests: [] },
   });
   try {
     await page.goto("/setup");
-    await expect(page.getByRole("heading", { name: /Hometowns and interests are enough/i })).toBeVisible();
-    const hometowns = page.getByRole("textbox", { name: "Hometowns", exact: true });
-    await hometowns.fill("Dallas");
-    await hometowns.press("Enter");
-    await expect(page.getByRole("button", { name: "Remove Dallas" })).toBeVisible();
-    await page.getByRole("button", { name: "Continue" }).click();
-    await expect(page.getByRole("heading", { name: /Start with Apple Contacts/i })).toBeVisible();
-    await page.getByRole("button", { name: "Skip for now" }).click();
-    await expect(page.getByRole("heading", { name: /Connect Messages, WhatsApp, and Gmail/i })).toBeVisible();
-    await expect(page.getByText("Messages", { exact: true })).toBeVisible();
-    await expect(page.getByText("WhatsApp", { exact: true })).toBeVisible();
-    await expect(page.getByText("Gmail", { exact: true })).toBeVisible();
+    await expect(page).toHaveURL(/\/today\/?$/);
+    await expect(page.getByRole("heading", { name: "Ask Nett" })).toBeVisible();
     await expectNoSeriousAccessibilityViolations(page);
-    await page.screenshot({ path: testInfo.outputPath("setup-conversations.png"), fullPage: true });
+    await page.screenshot({ path: testInfo.outputPath("setup-redirect.png"), fullPage: true });
   } finally {
     await request.patch(`${api}/api/setup/onboarding`, { data: { complete: true } });
   }

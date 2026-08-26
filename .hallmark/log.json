@@ -1,5 +1,15 @@
 [
   {
+    "date": "2026-08-20",
+    "scope": "landing",
+    "genre": "editorial",
+    "macrostructure": "Index-First",
+    "theme": "studied-DNA",
+    "theme_axes": "dark / roman-serif / neutral",
+    "enrichment": "construction lines",
+    "brief": "Apply desengs.com DNA to / and /about; drop cinematic SaaS hero"
+  },
+  {
     "date": "2026-08-13",
     "scope": "app",
     "genre": "modern-minimal",

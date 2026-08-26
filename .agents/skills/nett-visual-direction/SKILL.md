@@ -10,6 +10,11 @@ version: 1.0.0
 from it before — a purple accent, glass panels, 7 px type, and three stacked
 override blocks all shipped while `design.md` said otherwise.
 
+Parked companions (do not run until the user explicitly invokes them): Elaya
+`landing-page-design` and `redesign-existing-projects` in `.agents/skills/`,
+for a later `/` and `/about` pass only. Their Design Values must not replace
+this file or `design.md` on workbench routes.
+
 ## When this runs
 
 Before editing any file that produces pixels, and again before declaring the

@@ -43,7 +43,8 @@ try {
   const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all().map((row: any) => row.name);
   for (const required of [
     "people", "source_identities", "nett_metadata", "interactions", "source_records",
-    "schema_migrations", "conversations", "conversation_participants", "communications", "communication_people"
+    "schema_migrations", "conversations", "conversation_participants", "communications", "communication_people",
+    "ask_threads", "ask_messages"
   ]) assert.ok(tables.includes(required), `missing table: ${required}`);
   assert.equal(db.pragma("user_version", { simple: true }), latestSchemaVersion);
   assert.equal(getPeople().length, 0, "a new production database must not auto-seed demo people");

@@ -34,12 +34,14 @@ Modern-minimal product UI with a quiet, cinematic landing surface.
 ## Macrostructure family
 
 - App pages: Workbench. Persistent navigation, one clear page heading, and a
-  content-led grid that uses dividers and whitespace before containers.
-- Landing: Recognition sequence. A left-biased promise leads into an authentic
-  retrieval example, provenance, local architecture, and a final crystal-N
-  brand moment.
-- Setup / welcome: Branded entry with a typographic Nett mark, short progress,
-  and one focused task.
+  content-led grid that uses dividers and whitespace before containers. Same
+  paper, hairline, and type language as the landing — Geist, not display serif.
+- Landing: Index-first recognition sequence. Human-scale serif display, Geist
+  body, construction lines, parenthetical links, FAQ as a numbered list.
+  Open Nett goes to Ask.
+- First use: Open Nett. Sources and People hold import and gap-filling. There
+  is no branded setup ceremony. `/setup` remains a deep link and redirects to
+  Ask.
 - Content and evidence pages: Long document. Readable measure, stable section
   anchors, and dense evidence only where requested.
 
@@ -50,30 +52,30 @@ sections never invert independently.
 
 Light:
 
-- `--color-paper`: `oklch(97.5% 0.006 250)`
-- `--color-paper-2`: `oklch(94.8% 0.008 250)`
-- `--color-surface`: `oklch(99% 0.004 250)`
-- `--color-ink`: `oklch(19% 0.015 255)`
-- `--color-ink-2`: `oklch(42% 0.014 255)`
-- `--color-muted`: `oklch(44% 0.014 255)`
-- `--color-rule`: `oklch(85% 0.012 250)`
-- `--color-rule-strong`: `oklch(74% 0.016 250)`
-- `--color-accent`: `oklch(55% 0.16 255)`
-- `--color-focus`: `oklch(60% 0.18 255)`
+- `--color-paper`: `oklch(97.5% 0.004 286)`
+- `--color-paper-2`: `oklch(95% 0.005 286)`
+- `--color-surface`: `oklch(99% 0.002 286)`
+- `--color-ink`: `oklch(19% 0.01 286)`
+- `--color-ink-2`: `oklch(42% 0.01 286)`
+- `--color-muted`: `oklch(44% 0.01 286)`
+- `--color-rule`: `oklch(86% 0.008 286)`
+- `--color-rule-strong`: `oklch(74% 0.01 286)`
+- `--color-accent`: `oklch(28% 0.02 286)`
+- `--color-focus`: `oklch(35% 0.03 286)`
 - `--color-brand-purple`: `oklch(42% 0.18 305)` (Royal Purple — brand absorption only)
 
 Dark:
 
-- `--color-paper`: `oklch(15% 0.012 255)`
-- `--color-paper-2`: `oklch(18.5% 0.014 255)`
-- `--color-surface`: `oklch(21.5% 0.014 255)`
-- `--color-ink`: `oklch(94% 0.006 250)`
-- `--color-ink-2`: `oklch(76% 0.010 250)`
-- `--color-muted`: `oklch(66% 0.012 250)`
-- `--color-rule`: `oklch(31% 0.016 255)`
-- `--color-rule-strong`: `oklch(42% 0.018 255)`
-- `--color-accent`: `oklch(72% 0.14 250)`
-- `--color-focus`: `oklch(77% 0.14 250)`
+- `--color-paper`: `oklch(6.3% 0.005 286)`
+- `--color-paper-2`: `oklch(12% 0.006 286)`
+- `--color-surface`: `oklch(16% 0.007 286)`
+- `--color-ink`: `oklch(98.5% 0 0)`
+- `--color-ink-2`: `oklch(72% 0.014 286)`
+- `--color-muted`: `oklch(62% 0.014 286)`
+- `--color-rule`: `oklch(22% 0.006 286)`
+- `--color-rule-strong`: `oklch(32% 0.008 286)`
+- `--color-accent`: `oklch(92% 0.01 286)`
+- `--color-focus`: `oklch(85% 0.02 286)`
 - `--color-brand-purple`: `oklch(58% 0.16 305)`
 
 Accent is a signal for focus, selection, links, and status. Brand purple is
@@ -83,7 +85,7 @@ standard buttons.
 ## Brand mark
 
 - The supplied `public/brand/nett-crystal-n.png` is the ceremonial mark. Use it
-  only on the landing conclusion and exceptional launch/setup moments.
+  only on the landing.
 - Everyday product chrome uses a restrained continuous-line N monogram and the
   `Nett` wordmark. The wordmark is Geist 400–450, tightly tracked, with generous
   air between symbol and word.
@@ -93,14 +95,15 @@ standard buttons.
 
 ## Typography
 
-- Display and body: Geist Variable. Landing display is 300; workbench page
-  titles are 600; section and card headings are 600; body is 400.
+- Display and body: Geist Variable on the workbench. Landing display is
+  Instrument Serif; landing body is Geist. Workbench page titles are 500;
+  section and card headings are 500–600; body is 400.
 - Mono: JetBrains Mono Variable for source labels, dates, and tabular metrics.
 - Body anchor: 16 px with 1.55 line-height.
 - UI controls: 14–15 px, never smaller.
 - Metadata: 12–13 px only when secondary and still high contrast.
-- Landing display: `clamp(64px, 6vw, 112px) / .96 / -0.055em`.
-- Product page title: `clamp(36px, 4vw, 42px) / 1.04 / -0.035em`.
+- Landing display: about `2.07rem`, not giant marketing type.
+- Product page title: `clamp(22px, 2.4vw, 26px) / 1.15 / -0.02em`.
 - Display tracking elsewhere: `-0.025em`.
 - Numbers use tabular figures.
 - Headings are roman. No gradient display text.
@@ -137,7 +140,8 @@ Restrained glass is allowed for:
 - Ask Nett and person quick-look
 - Provenance and evidence overlays
 - Import progress and transient controls
-- Landing navigation and setup / welcome
+- Landing navigation
+- People evidence-packet flap (6 px blur on the folder face in a person peek)
 
 Glass rules:
 
@@ -164,6 +168,11 @@ Glass rules:
 - Reduced motion removes spatial transitions, freezes path drift, hides the
   ceremonial 3D stand-in, swaps video for the static crystal mark, and caps
   fades at 150 ms.
+- Ask Nett may use a cursor particle-reveal on the agent surface: unrevealed
+  UI is fine graphite dust that merges back into crisp type around a fine
+  pointer. Aberration and warp stay low. This is not a full-page animated
+  background. Reduced motion, coarse pointers, keyboard-only use, and
+  browsers without html-in-canvas stay fully crisp.
 
 ## Microinteractions
 
@@ -191,17 +200,25 @@ lives in Sources. Find jumps to a person or command. Remember turns a sentence
 into fields on a person, after review. Recording a memory is a written note on
 that person’s page — it is not structured.
 
-Home **is** Ask. The page is a local agent: a live thinking trace of real
-retrieval stages, a cited answer, and a composer. The composer attaches people
-with `@` and retrieval abilities with `/` — those are context chips, not a
-second page. It does not write. It must not lead with follow-up,
+Home **is** Ask. The page is a local agent: a conversations rail of named
+threads that survive reload, a live thinking trace of real retrieval stages, a
+cited markdown answer with person objects, and a composer. The composer attaches
+people with `@` and retrieval abilities with `/` — those are context chips, not a
+second page. Deep links use `/today?thread=`. It does not write. It must not lead with follow-up,
 contact-frequency, “going quiet,” or database-completeness metrics. People,
-Review, and Sources stay on their own routes.
+Review, and Sources stay on their own routes. Ask may use a **monochrome
+traveling border beam** on the composer, **dotted thinking orbs** on retrieval
+stages, and a **silver metal ring** on Ask buttons. These stay graphite, pause
+under reduced motion, and must not spread to other workbench routes.
 
-People is search-first. The default surface is a recognition card grid (glow
-spotlight on hover). Dense list (`view=list`) and spreadsheet (`view=sheet`)
-remain secondary modes. Multi-value fields use chip entry, not comma-typed
-strings.
+People is search-first. The default surface is a **contact-card grid**: name,
+face-substitute, why they matter, and a memory. Click or Enter opens a metadata
+peek on that card — relationship, role, place, sources — with hover and focus
+tips. A folder control in the peek opens the person page (`/people/:id`), not
+the quick-profile drawer. Dense list
+(`view=list`) and spreadsheet (`view=sheet`) remain secondary modes. The folder
+motif is the dossier affordance, not the grid. Multi-value fields use chip
+entry, not comma-typed strings.
 
 Sources uses the same GlowCard primitive in a compact grid: connector name,
 permission, last refresh, and the primary pull or connect action on the card.
@@ -211,11 +228,13 @@ so paper does not pick up a muddy halo. `color-scheme` follows the resolved
 theme so native controls never mix with the opposite appearance.
 
 The public `/` landing is the Digital Serenity hero (unboxed crystal N, slow
-word roll-in, held-thread background paths). A local ceremonial 3D stand-in may
-sit beside the hero on wide viewports. It is hidden when motion is reduced, the
-viewport is narrow, or WebGL is unavailable. The scene file lives in `public/`
-and is not fetched from a remote host at runtime. Product explanation lives on
-`/about`.
+word roll-in, held-thread background paths on a flat black field — no background
+gradient wash). Labels are sentence case. A local ceremonial 3D stand-in may sit
+beside the hero on wide viewports and is hidden when motion is reduced, the
+viewport is narrow, or WebGL is unavailable. Below the fold, `/` continues as a
+long-form story: a centered tagline, labelled retrieval examples, FAQ, and a
+final Open Nett. `/about` is the same story without the cinematic hero. The
+scene file lives in `public/` and is not fetched from a remote host at runtime.
 
 Person pages prioritise identity, why the person matters, recent evidence, and
 provenance. A continuous vertical thread may connect timeline evidence. Every
@@ -230,10 +249,15 @@ and optional imports. Every step can be skipped and revisited in Sources.
 ## Per-page allowances
 
 - Landing may use full-page grid and path animation, pointer light, click
-  ripples, and a local ceremonial 3D stand-in beside the hero. These effects
-  remain decorative and never delay navigation.
+  ripples, a local ceremonial 3D stand-in beside the hero, an ASCII “nett”
+  wordmark in the footer, and a graphite-to-cobalt overscroll stretch at the
+  bottom. These effects remain decorative, honour reduced motion, and never
+  delay navigation.
 - Setup and welcome may use decorative brand enrichment.
 - App workbench pages stay content-led; glass is sparse.
+- Ask may use a monochrome border beam, thinking orbs on retrieval stages, and
+  a silver metal ring on its buttons. Graphite only; no rainbow beam, no
+  chromatic metal, no spread to other routes.
 - Evidence-heavy views may increase density, but never reduce readable type.
 - People spreadsheet view may use denser tabular chrome.
 
@@ -249,6 +273,13 @@ and optional imports. Every step can be skipped and revisited in Sources.
 - Grid proportions based on the work.
 - Density for evidence, communications, and spreadsheet editing.
 - Whether the page uses a side inspector or full profile view.
+
+## Landing-page skills
+
+Elaya `landing-page-design` and `redesign-existing-projects` may be invoked for
+`/` and `/about` only. Remap their Design Values onto this file: Nett OKLCH
+tokens, docked nav, Geist, no workbench restyle. Do not apply Tailwind hex
+palettes, island nav, or hero text gradients.
 
 ## Banned
 

@@ -11,6 +11,8 @@ const temporaryDirectory = mkdtempSync(path.join(tmpdir(), "nett-autofill-test-"
 process.env.NETT_DB_PATH = path.join(temporaryDirectory, "nett.db");
 process.env.NETT_MESSAGES_DB = path.join(temporaryDirectory, "chat.db");
 delete process.env.NETT_OLLAMA_MODEL;
+delete process.env.NETT_OPENROUTER_API_KEY;
+delete process.env.OPENROUTER_API_KEY;
 
 type FetchHandler = (url: string, init?: RequestInit) => Promise<Response>;
 
@@ -19,15 +21,16 @@ const offline: FetchHandler = async () => {
 };
 
 let handler: FetchHandler = offline;
-// OllamaProvider captures `fetch` when it is constructed, which happens as the
-// service module is evaluated, so the seam has to be installed first.
 globalThis.fetch = ((input: unknown, init?: RequestInit) => handler(String(input), init)) as typeof fetch;
 
 const { addMemory, createPerson, db, getPerson, updatePerson } = await import("../../db.js");
+const { InMemoryCredentialVault } = await import("../../platform/security/credential-vault.js");
+const { resetAskWriterVault, setAskWriterSettings } = await import("../ask-writer.js");
 const {
   intelligentAutofill,
   personEvidenceIndexState,
   refreshEvidenceIndex,
+  resetIntelligenceModelCache,
   reviewInferenceSuggestion
 } = await import("../service.js");
 
@@ -45,11 +48,19 @@ function json(body: unknown): Response {
 
 function modelReturning(suggestions: unknown[]): FetchHandler {
   return async (url) => {
-    if (url.endsWith("/api/version")) return json({ version: "test" });
-    if (url.endsWith("/api/tags")) return json({ models: [{ name: "qwen3:14b" }, { name: "llama3.2:3b" }] });
-    if (url.endsWith("/api/generate")) return json({ response: JSON.stringify({ suggestions }) });
+    const target = String(url);
+    if (target.includes("openrouter.ai/api/v1/chat/completions")) {
+      return json({ choices: [{ message: { content: JSON.stringify({ suggestions }) } }] });
+    }
+    if (target.includes("/embeddings")) return json({ data: [] });
     throw new Error(`unexpected request to ${url}`);
   };
+}
+
+async function enableOpenRouter(model = "stealth/ox-alpha") {
+  resetAskWriterVault(new InMemoryCredentialVault());
+  resetIntelligenceModelCache();
+  await setAskWriterSettings({ writer: "openrouter", model, apiKey: "test-key" });
 }
 
 function seedPerson(name: string, metadata: Record<string, unknown> = {}): string {
@@ -105,7 +116,7 @@ test("an unindexed person is reported as stale rather than silently empty", asyn
   );
 });
 
-test("autofill degrades honestly when the local model is unavailable", async () => {
+test("autofill degrades honestly when the hosted model is unavailable", async () => {
   handler = offline;
   const id = seedPerson("Ana Degraded");
   addProvenance(id, "company", "Terra Labs");
@@ -117,7 +128,7 @@ test("autofill degrades honestly when the local model is unavailable", async () 
   assert.equal(result.degraded, true);
   assert.equal(result.model, null);
   assert.equal(result.provider, null);
-  assert.match(result.note ?? "", /local model was not reachable/);
+  assert.match(result.note ?? "", /hosted model was not reachable/);
 
   const company = result.suggestions.find((suggestion) => suggestion.field === "company");
   assert.ok(company, "deterministic suggestions must survive an offline model");
@@ -150,9 +161,9 @@ test("autofill stops immediately when the caller aborts", async () => {
   const controller = new AbortController();
   let generateCalls = 0;
   let sawSignal = false;
+  await enableOpenRouter();
   handler = async (url, init) => {
-    if (url.endsWith("/api/tags")) return json({ models: [{ name: "qwen3:14b" }] });
-    if (url.endsWith("/api/generate")) {
+    if (String(url).includes("openrouter.ai/api/v1/chat/completions")) {
       generateCalls++;
       sawSignal = Boolean(init?.signal);
       controller.abort();
@@ -166,13 +177,14 @@ test("autofill stops immediately when the caller aborts", async () => {
     (error: Error) => error.name === "AbortError"
   );
   assert.equal(generateCalls, 1);
-  assert.ok(sawSignal, "the abort signal must reach the Ollama request");
+  assert.ok(sawSignal, "the abort signal must reach the hosted request");
   assert.equal(storedFields(id).length, before, "a cancelled generation must not write suggestions");
 });
 
 test("a suggestion is never produced without supporting evidence", async () => {
   const id = seedPerson("Cy Unsupported");
   refreshEvidenceIndex(id);
+  await enableOpenRouter();
   handler = modelReturning([
     { field: "hometown", value: "Porto", confidence: 0.98, rationale: "Sounds Portuguese", evidenceIds: [] },
     { field: "location", value: "Berlin", confidence: 0.98, rationale: "Invented", evidenceIds: ["evidence:does-not-exist"] },
@@ -190,6 +202,7 @@ test("a proposal that would overwrite an existing value is marked as a conflict"
   addMemory(id, "Dana said she joined New Corp last month.", {}, "manual");
   refreshEvidenceIndex(id);
   const evidenceId = memoryDocumentId(id);
+  await enableOpenRouter();
   handler = modelReturning([
     { field: "company", value: "New Corp", confidence: 0.9, rationale: "Stated in a memory", evidenceIds: [evidenceId] }
   ]);
@@ -197,14 +210,14 @@ test("a proposal that would overwrite an existing value is marked as a conflict"
   const result = await intelligentAutofill(id);
 
   assert.equal(result.degraded, false);
-  assert.equal(result.model, "qwen3:14b");
+  assert.equal(result.model, "stealth/ox-alpha");
   const company = result.suggestions.find((suggestion) => suggestion.field === "company");
   assert.ok(company);
   assert.equal(company.conflict, true);
   assert.equal(company.operation, "replace");
   assert.equal(company.existingValue, "Old Corp");
   assert.match(company.conflictNote ?? "", /Old Corp/);
-  assert.equal(company.provider, "ollama:qwen3:14b");
+  assert.equal(company.provider, "openrouter:stealth/ox-alpha");
 
   handler = modelReturning([
     { field: "company", value: "Old Corp", confidence: 0.9, rationale: "Already known", evidenceIds: [evidenceId] }
@@ -263,6 +276,7 @@ test("protected traits are never proposed, whatever the model returns", async ()
     "religion", "health", "personality",
     "ethnicity", "race", "sexual_orientation", "politics", "marital_status"
   ];
+  await enableOpenRouter();
   handler = modelReturning(forbidden.map((field) => ({
     field,
     value: "Confidently inferred",
